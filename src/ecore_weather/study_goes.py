@@ -115,6 +115,17 @@ def inventory_month(start, end, client=None):
         "scenarios": scenario_rows, "sample_candidates": _sample_candidates(assets, utc(start))}
 
 
+UNCOMPRESSED_NETCDF_METHOD = "packed-uncompressed-v1"
+
+
+def write_uncompressed_netcdf(dataset, path):
+    """Write packed pixels without carrying source HDF compression into the crop."""
+    plain = dataset.copy(deep=False)
+    for name in plain.variables:
+        plain[name].encoding = {}
+    plain.to_netcdf(path, engine="h5netcdf")
+
+
 def sample_crop(asset, bbox=PR_BBOX, scratch=None):
     """One NOAA range read; temporary raw crop and compressed Zarr are removed."""
     band = _band(asset)
@@ -128,7 +139,7 @@ def sample_crop(asset, bbox=PR_BBOX, scratch=None):
         netcdf = directory / "crop.nc"
         # The crop is an uncompressed NetCDF serialization of the same packed
         # source pixels, not an estimate from the full NOAA object size.
-        subset.to_netcdf(netcdf, engine="h5netcdf")
+        write_uncompressed_netcdf(subset, netcdf)
         netcdf_bytes = netcdf.stat().st_size
         zarr_dir = directory / "crop.zarr"
         stamp = np.datetime64(utc(asset.time).replace(tzinfo=None), "ns")
@@ -144,6 +155,7 @@ def sample_crop(asset, bbox=PR_BBOX, scratch=None):
             "roi_bbox": list(bbox),
             "listed_full_file_bytes": asset.size, "roi_transfer_bytes": transfer,
             "uncompressed_crop_netcdf_bytes": netcdf_bytes,
+            "netcdf_size_method": UNCOMPRESSED_NETCDF_METHOD,
             "compressed_zarr_chunk_bytes": payload,
             "sample_zarr_total_bytes": sum(file.stat().st_size for file in zarr_dir.rglob("*") if file.is_file()),
             "read_seconds": read_seconds, "write_seconds": write_seconds,
@@ -182,6 +194,11 @@ def summarize(months_data, samples, start=START, end=END):
                             if not count:
                                 continue
                             group = by_band.get((satellite, band), [])
+                            if metric == "uncompressed_crop_netcdf_bytes":
+                                # Older caches retained source compression and
+                                # cannot support an uncompressed-size claim.
+                                group = [row for row in group if row.get(
+                                    "netcdf_size_method") == UNCOMPRESSED_NETCDF_METHOD]
                             if not group:
                                 complete = False
                                 continue
@@ -215,6 +232,7 @@ def summarize(months_data, samples, start=START, end=END):
         "assumptions": ["GOES-East split at 2025-04-07 15:00 UTC",
             "Nominal opportunities assume at most six full-disk scans per hour",
             "Crop NetCDF is uncompressed serialization of native packed pixels",
+            "Unversioned crop samples are excluded from uncompressed NetCDF estimates; use a fresh output directory to resample",
             "Zarr estimate sums sampled compressed chunks plus 2 KiB provenance allowance per band file",
             "High local time uses sampled 90th percentile plus 30 percent margin; inventory time is separate",
             "Wall-time examples assume eight, four, or one effective concurrent task for low, central, or high; these are not measured parallel speedups"]}

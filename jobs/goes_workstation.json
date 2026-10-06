@@ -1,0 +1,48 @@
+{
+  "pipeline": "shared",
+  "global_config": {
+    "month_writers": 2,
+    "tail_months": 1,
+    "download_concurrency": 32,
+    "local_readers": 2,
+    "range_readers": 8,
+    "roi_budget_mib": 2048,
+    "staging_mib": 16384,
+    "block_size": 1048576,
+    "finalizers": 2,
+    "schema": 2,
+    "scope": "global across all admitted months",
+    "band_modes": {
+      "C02": "range",
+      "other": "async_pipeline"
+    }
+  },
+  "reason": "User requested two normal month writers plus one C02-only tail after the admitted months drain; mixed-band pools unchanged",
+  "scope": "Two normal monthly pipelines plus at most one C02-only tail owner",
+  "benchmark_reference": {
+    "16": {
+      "median_archive_readiness_seconds": 55.48569713899997,
+      "median_returned_bytes": 4079576798,
+      "sample": "2 monthly contexts; eight native day/night observations per band; fresh application caches",
+      "peak_job_rss_bytes": 10603020288
+    },
+    "19": {
+      "median_archive_readiness_seconds": 53.14191962499899,
+      "median_returned_bytes": 3700065361,
+      "sample": "2 monthly contexts; eight native day/night observations per band; fresh application caches",
+      "peak_job_rss_bytes": 10490351616
+    }
+  },
+  "production_pipeline": "shared",
+  "selection_rule": "operating limit, not a new benchmark speedup",
+  "empirical_roi_bytes_per_observation": {
+    "1": 226486.375,
+    "2": 1572386.375,
+    "3": 254878.21875,
+    "7": 153109.125,
+    "8": 147091.1875,
+    "9": 127255.875,
+    "10": 137220.4375,
+    "13": 153427.625
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "1": {
+    "profile": {
+      "read_mode": "async_pipeline",
+      "download_concurrency": 16,
+      "read_processes": 2,
+      "prefetch_mib": 1024,
+      "staging_mib": 8192,
+      "workers": 8,
+      "monthly_writers": 2
+    },
+    "gain": {
+      "16": 0.36958331634836283,
+      "19": 0.2169927216049865
+    },
+    "reason": "verified per-band readiness gain on both satellites",
+    "measurement_scope": "two day/night native scans per band, close/pack/verify included; best tested configuration"
+  },
+  "2": {
+    "profile": {
+      "read_mode": "range",
+      "download_concurrency": 8,
+      "read_processes": 4,
+      "prefetch_mib": 512,
+      "staging_mib": 8192,
+      "workers": 1,
+      "monthly_writers": 2
+    },
+    "gain": {
+      "16": 0.49462290469505665,
+      "19": 0.44550137736287376
+    },
+    "reason": "verified per-band readiness gain on both satellites",
+    "measurement_scope": "visible_final matched native scans; close/pack/verify included; best tested configuration"
+  },
+  "3": {
+    "profile": {
+      "read_mode": "async_pipeline",
+      "download_concurrency": 16,
+      "read_processes": 2,
+      "prefetch_mib": 1024,
+      "staging_mib": 8192,
+      "workers": 8,
+      "monthly_writers": 2
+    },
+    "gain": {
+      "16": 0.40621096300328474,
+      "19": 0.34435797460105555
+    },
+    "reason": "verified per-band readiness gain on both satellites",
+    "measurement_scope": "two day/night native scans per band, close/pack/verify included; best tested configuration"
+  },
+  "7": {
+    "profile": {
+      "read_mode": "async_pipeline",
+      "download_concurrency": 16,
+      "read_processes": 2,
+      "prefetch_mib": 1024,
+      "staging_mib": 8192,
+      "workers": 8,
+      "monthly_writers": 2
+    },
+    "gain": {
+      "16": 0.32420400600368215,
+      "19": 0.3562695646474344
+    },
+    "reason": "verified per-band readiness gain on both satellites",
+    "measurement_scope": "two day/night native scans per band, close/pack/verify included; best tested configuration"
+  },
+  "8": {
+    "profile": {
+      "read_mode": "async_pipeline",
+      "download_concurrency": 16,
+      "read_processes": 2,
+      "prefetch_mib": 1024,
+      "staging_mib": 8192,
+      "workers": 8,
+      "monthly_writers": 2
+    },
+    "gain": {
+      "16": 0.3163972763712888,
+      "19": 0.320643537026
+    },
+    "reason": "verified per-band readiness gain on both satellites",
+    "measurement_scope": "two day/night native scans per band, close/pack/verify included; best tested configuration"
+  },
+  "9": {
+    "profile": {
+      "read_mode": "async_pipeline",
+      "download_concurrency": 16,
+      "read_processes": 2,
+      "prefetch_mib": 1024,
+      "staging_mib": 8192,
+      "workers": 8,
+      "monthly_writers": 2
+    },
+    "gain": {
+      "16": 0.33597864457202264,
+      "19": 0.30685731758264023
+    },
+    "reason": "verified per-band readiness gain on both satellites",
+    "measurement_scope": "two day/night native scans per band, close/pack/verify included; best tested configuration"
+  },
+  "10": {
+    "profile": {
+      "read_mode": "async_pipeline",
+      "download_concurrency": 16,
+      "read_processes": 2,
+      "prefetch_mib": 1024,
+      "staging_mib": 8192,
+      "workers": 8,
+      "monthly_writers": 2
+    },
+    "gain": {
+      "16": 0.324219563201802,
+      "19": 0.3498588248553557
+    },
+    "reason": "verified per-band readiness gain on both satellites",
+    "measurement_scope": "two day/night native scans per band, close/pack/verify included; best tested configuration"
+  },
+  "13": {
+    "profile": {
+      "read_mode": "async_pipeline",
+      "download_concurrency": 16,
+      "read_processes": 2,
+      "prefetch_mib": 1024,
+      "staging_mib": 8192,
+      "workers": 8,
+      "monthly_writers": 2
+    },
+    "gain": {
+      "16": 0.22461512965701336,
+      "19": 0.30174384473476223
+    },
+    "reason": "verified per-band readiness gain on both satellites",
+    "measurement_scope": "two day/night native scans per band, close/pack/verify included; best tested configuration"
+  }
+}

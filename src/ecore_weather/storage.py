@@ -125,7 +125,7 @@ def write_raw(ds, path):
             raise ValueError("The saved raw metadata differ from the source subset.")
 
 
-def open_raw(path):
+def open_raw(path, group=None):
     temporary = None
     archive = None
     metadata = None
@@ -150,7 +150,11 @@ def open_raw(path):
         try:
             import zipfile
             with zipfile.ZipFile(zip_path, "r") as zipped:
-                metadata = json.loads(zipped.read("ecore_metadata.json"))
+                if "ecore_metadata.json.gz" in zipped.namelist():
+                    import gzip
+                    metadata = json.loads(gzip.decompress(zipped.read("ecore_metadata.json.gz")))
+                else:
+                    metadata = json.loads(zipped.read("ecore_metadata.json"))
         except (KeyError, OSError, zipfile.BadZipFile):
             metadata = None
         mapper = archive
@@ -180,9 +184,16 @@ def open_raw(path):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Consolidated metadata is currently not part",
                                     category=UserWarning, module=r"zarr.*")
-            ds = xr.open_zarr(mapper, consolidated=None, decode_cf=False, mask_and_scale=False, chunks=None)
+            ds = xr.open_zarr(mapper, group=group, consolidated=None,
+                              decode_cf=False, mask_and_scale=False, chunks=None)
         if metadata:
             ds.attrs = metadata.get("dataset_attrs", ds.attrs)
+            if group and metadata.get("groups"):
+                ids = metadata["groups"][group]["asset_ids"]
+                if len(ids) != ds.sizes.get("time", 0):
+                    raise IOError(f"Band-group provenance length differs from Zarr time: {group}")
+                ds = ds.assign_coords(source_asset_id=("time", ids),
+                    source_metadata_json=("time", [metadata["source_metadata"][key] for key in ids]))
             for name, attrs in metadata.get("variable_attrs", {}).items():
                 if name in ds.variables:
                     ds[name].attrs = attrs
@@ -563,7 +574,8 @@ def fetch(selection: Selection, destination="hf", workers=None, backend="s3fs", 
         except ImportError:
             pass
     if report_dir is not None:
-        write_json(Path(report_dir) / f"{selection_id}-{backend}-{workers}.json", report)
+        from .runlog import save
+        save(Path(report_dir) / f"{selection_id}-{backend}-{workers}.json", report)
     if interrupted is not None:
         raise interrupted
     return report

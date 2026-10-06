@@ -1,6 +1,9 @@
 # Project specific
 docs/evidence/*
 
+# ignore reference pdfs in root
+*.pdf
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

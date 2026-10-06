@@ -158,7 +158,7 @@ class Transport:
         if backend not in {"s3fs", "obstore"}:
             raise ValueError("Choose s3fs or obstore.")
         self.backend = backend
-        self.bytes = self.requests = 0
+        self.bytes = self.requests = self.retries = self.failed_requests = 0
         self.seconds = 0.0
         self._lock = threading.Lock()
         if decode_workers < 1:
@@ -174,7 +174,10 @@ class Transport:
 
     def read(self, asset: Asset, start=None, end=None):
         before = time.perf_counter()
+        from .transfer_budget import active, BudgetExceeded
+        budget=active()
         for attempt in range(3):
+            reservation=budget.reserve(end-start if start is not None else asset.size) if budget else None
             try:
                 if self.backend == "s3fs":
                     from fsspec.asyn import sync
@@ -197,12 +200,20 @@ class Transport:
                     if start is not None:
                         options["range"] = (start, end)
                     data = bytes(obstore.get(store, asset.key, options=options).bytes())
+                if budget:budget.settle(reservation,len(data))
+                reservation=None
                 with self._lock:
                     self.bytes += len(data)
                     self.requests += 1
                     self.seconds += time.perf_counter() - before
                 return data
             except Exception:
+                if budget and reservation is not None:budget.settle(reservation)
+                with self._lock:
+                    if attempt == 2:
+                        self.failed_requests += 1
+                    else:
+                        self.retries += 1
                 if attempt == 2:
                     raise
                 time.sleep(0.5 * 2**attempt)

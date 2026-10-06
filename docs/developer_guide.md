@@ -1,15 +1,12 @@
-# Developer guide
+# Developer and new-machine guide
 
-Read [AGENTS.md](../AGENTS.md), the [current plan](development_plan.md), and
-[status](status.md) and [study jobs](study_jobs.md) before changing the fetch or archive layout. Keep claims and
-measurements in the docs tied to completed runs.
+Read [AGENTS.md](../AGENTS.md), [storage](storage_and_data_management.md) and [study jobs](study_jobs.md)
+before changing the scientific archive contract. The current environment uses
+Earth2Studio 0.18.0; its stock GOES source reads full-domain MCMIPF. Our compatible
+sources preserve native-band CMIPF crops and CARIB MRMS products instead.
+Compatibility with the API does not establish compatibility with a released model.
 
-## Environment and commands
-
-Create the Conda environment from `environment.yml`. It supplies the data stack,
-Jupytext, DuckDB, notebook tools, and pinned Earth2Studio. The package's
-`notebooks` extra is the Colab install path. GPU and inference dependencies stay
-outside this data-preparation environment.
+## Set up a clean machine
 
 ```bash
 conda env create -f environment.yml
@@ -19,111 +16,89 @@ python notebooks/01_mrms.py --help
 python notebooks/02_goes.py --help
 ```
 
-Examples use the same selection and fetching functions as the widgets:
+Use conda-forge for compiled geospatial dependencies and explicit pip entries
+for pip-only packages. GPU/model training dependencies stay outside this CPU data
+environment. Set destination, scratch and index paths for the machine. On WSL,
+verify P: is mounted at `/mnt/p` before a long job; a writable directory alone
+is not evidence that the intended disk is mounted. Keep scratch/index Linux-local.
+The job performs mount, write, free-space and writer preflight checks.
+
+Start with an inspect operation (listing only), then a short fetch:
 
 ```bash
-python notebooks/01_mrms.py --operation inspect --start 2023-01-01 --end 2023-02-01
-python notebooks/01_mrms.py --operation fetch --start 2023-01-01 --end 2023-02-01 \
-  --product precipitation-rate composite-reflectivity \
-  --destination /mnt/p/ecore_eo_datasets --workers 8 --monthly-writers 2
-python notebooks/02_goes.py --operation fetch --start 2023-01-01 --end 2023-02-01 \
-  --satellite 16 --bands 1 2 3 7 8 9 10 13 --destination /mnt/p/ecore_eo_datasets
+python notebooks/02_goes.py --operation inspect --start 2022-09-18 --end 2022-09-19 --satellite 16
+python notebooks/02_goes.py --operation fetch --start 2022-09-18T12:00:00Z \
+  --end 2022-09-18T12:20:00Z --satellite 16 --bands 13 \
+  --destination /path/to/archives --scratch /path/to/linux-scratch
 ```
 
-MRMS defaults to precipitation rate, composite reflectivity, and low-level
-azimuthal shear sampled every ten minutes, plus hourly multisensor Pass2 QPE.
-Other products remain selectable. The default match is latest at/before a slot
-within five minutes, without reusing a file. GOES defaults to every available scan and
-eight StormScope example bands, using per-band CMIPF. `--scans-per-hour 0`
-means keep all scans. `--monthly-writers` applies to separate local monthly
-stores. The year-bundle HF backup uses four independent product/year files and
-checks each complete remote object against its local SHA-256 before cleanup.
-Direct monthly HF writes remain a separate option. The default download pool is
-half the detected CPU count; decoding is bounded independently. A script's
-`--save-figures DIRECTORY` writes preview PNGs. `--selection` reuses a saved
-STAC collection or manifest.
+Dates are UTC; end is excluded. Tiny fetches still write verified monthly stores.
+Do not run another workstation fetch while the production study is active.
+[Study jobs](study_jobs.md) gives resumable full-period commands and an independent
+MRMS shell wrapper. Scheduler directives await the actual Argonne system/network
+policy. Reuse one command per source across wall-time-limited resumptions.
 
-On the local streaming path, `--workers` controls concurrent NOAA read tasks per
-monthly archive, up to a bound of 16. With the MRMS study defaults of two
-monthly writer processes and two decode slots per process, that permits up to
-32 in-flight source tasks and four simultaneous GRIB decodes. Network reads
-overlap the serial Zarr write; the decode semaphore is separate. A monthly
-writer owns a different product-month archive, so increasing `--workers` does
-not add writer processes. More pending reads can hold more compressed inputs
-and decoded arrays in memory, so keep both limits explicit and compare wall
-time, source wait, decode/write time, and peak memory. The existing short
-one-versus-two-writer MRMS pilot (29.1 s versus 26.3 s) was cache-sensitive and
-does not establish an optimal read-thread count.
+## Where changes belong
 
-Argonne scheduler directives are deferred; the CLIs already accept batch
-arguments. Colab setup detects the runtime, clones the selected revision, and
-installs dependencies. Push the exact changed revision before testing package
-code through a Colab clone.
+| Area | Modules |
+|---|---|
+| NOAA discovery and native reads | `mrms`, `goes`, `goes_native`, `goes_staging` |
+| Earth2Studio-compatible source and storage | `earth2_sources`, `earth2_io`, `monthly`, `monthly_stream` |
+| Concurrent GOES scheduling | `goes_shared`, `goes_rollout`, `jobs_goes` |
+| MRMS jobs | `jobs_mrms` |
+| Operational records and index | `runlog`, `index`, `job_status` |
+| Notebook controls and CLI | `ui`, `cli`, `viewer`, `report_ui`, `report_cli` |
+| Quality/reporting | `diagnostics`, `dataset_report`, `report_views` |
+| HF backup/restore | `jobs_backup`, `hf_storage`, `view_backup` |
 
-## Package map
+Keep scripts thin: `scripts/dataset_jobs.py` for operations and
+`scripts/dataset_report.py` for diagnostics/exports. Avoid new one-off watchers.
+Use the supported verified-pause handoff to change worker settings; never edit a
+running snapshot. GOES global limits do not multiply by band count. MRMS retains
+four product-month writers, eight downloads each and one decode slot each.
 
-| Module | Role |
-| --- | --- |
-| `mrms`, `goes` | Product discovery, cadence, source decoding, and native ROI reads |
-| `earth2_sources` | Earth2Studio-compatible MRMS/GOES data-source adapters |
-| `earth2_io` | Earth2Studio local `ZarrBackend` writer and HF obstore helper |
-| `monthly` | Stable month paths, merge/resume, verification, cleanup, and writer concurrency |
-| `remote_async` | Direct Earth2Studio async HF month writer and local-year mirror |
-| `catalog`, `index` | STAC selection records and rebuildable local DuckDB search/run index |
-| `hf_storage` | HF S3 gateway configuration, one publisher, and read-back verification |
-| `storage` | Raw source staging, fingerprints, readers, and common helpers |
-| `diagnostics`, `visualization`, `view_frames` | Missing-value statistics and session-only views |
-| `viewer`, `view_index` | Notebook 03 controls and monthly observation lookup; direct archive reads work while DuckDB is locked by a fetch |
-| `view_backup`, `view_storage` | Range-read HF annual backup metadata, verify a restored month, and summarize archive/source sizes |
-| `ui`, `cli` | Shared notebook and argparse request/pipeline interfaces |
+## Notebooks and checks
 
-Do not edit the original mentor scripts. Their numerical steps remain a
-reference comparison. Archive content must preserve native raw scientific
-values; masks, interpolation, decoding, reprojection, and display scaling are
-session-only operations.
-
-## Focused checks
+Author `.py` percent-format sources and regenerate clean `.ipynb` partners:
 
 ```bash
-jupytext --sync notebooks/01_mrms.py notebooks/02_goes.py notebooks/03_03_explore_datasets.py
-python -m compileall -q src notebooks
-pytest -q
-python -m pip check
+python -m jupytext --to ipynb notebooks/02_goes.py
+python -m pytest tests/test_goes_shared.py tests/test_job_status.py tests/test_jobs.py -q
 ```
 
-For viewer changes, run `pytest -q tests/test_viewer.py`. Its annual-backup
-fixture uses a fake range-reading S3 client; a separate live check can restore
-one small monthly member into a temporary directory and remove that directory
-after opening a frame. Do not treat an annual ZIP as a Zarr path. The viewer's
-storage explorer reads completion/STAC metadata only; it does not inspect
-every chunk in the archived arrays.
+Choose tests for the changed behavior. Validate source values, coordinates,
+packed calibration/DQF or GRIB bitmap/sentinels, interruption/reuse, and exclusive
+store ownership. No interpolation or cleaning may enter ingestion. Verify a small
+local round trip before a long run; remote HF tests are separate evidence.
 
-Use `ECORE_NOTEBOOK_SMOKE=1` with nbclient for short end-to-end notebook checks
-in a runtime with NOAA access. Save executed notebooks outside the source pair
-and remove them after review. A live HF test must use a unique temporary key or
-archive prefix and remove only that test data after a successful read-back.
+In Colab, detect the runtime, clone the configurable revision and install notebook
+dependencies. Display the resolved revision. Push modified imported modules before
+validating them through a clone; do not call a different revision local validation.
+Restart a notebook kernel after package changes and rerun setup/control cells.
 
-The raw validation compares values and metadata after source-to-Zarr round
-trips. MRMS checks timestamps and accumulation labels; GOES checks packed values,
-coordinates, calibration, and DQF. Monthly archives should reopen through
-`MonthlyZarrSource`, which implements Earth2Studio's `DataSource` call pattern.
-The standard writer is authoritative: a backend or content-check failure stops
-the run rather than switching to another serialization path. Full-period
-historical jobs and external network checks are distinct from unit tests.
+## Recovery decisions
 
-## Archive index and cleanup
+| Situation | Next step |
+|---|---|
+| PID alive and committed counts advancing | Leave the job running; rates can vary across bands |
+| Heartbeat advances but counts do not | Inspect the current bounded run log and task Updated timestamps; distinguish retry/finalization from a true stall |
+| Index is briefly locked | Retry status/Find; use completed-manifest fallback; do not change scientific data |
+| Process absent but status says running | Treat it as interrupted; verify checkpoints and use the recorded resume command |
+| Partial monthly build | Keep its deterministic scratch and saved selection; resume verifies completed batches |
+| `complete.json` plus matching archive hash | Reuse the archive; do not download it again |
+| Intentional exit 75 | Verified resumable pause, not study completion |
+| Other nonzero exit | Retain current failure details and inspect before retry; never relabel it successful |
 
-`results/archive_index.duckdb` is a local rebuildable index. Keep its writes in
-one process and keep the file on local Linux storage. STAC and each monthly
-`complete.json` remain the source of truth. Rebuild with:
+Update current guides and a compact run summary rather than adding a new dated
+log document. Keep credentials out of all artifacts and notebook outputs.
 
-```python
-from ecore_weather.index import rebuild
-rebuild(["/mnt/p/ecore_eo_datasets"])
-```
+The index writer retries brief external DuckDB read-lock conflicts for up to
+30 seconds; notebook/SQL readers should close their connections promptly.
+A persistent read lock still fails clearly after that window. Network MRMS
+reference comparisons must run in a verified fetch pause; use the guarded
+[benchmark command](study_jobs.md#brief-mrms-source-comparison), not a separate
+one-off script.
 
-Keep compact results in `docs/evidence/`. Do not commit per-file selection
-folders, raw weeks, temporary monthly stores, test archives, secrets, or notebook
-execution output. Delete only artifacts created for a successful test; never
-remove ordinary research archives or unrelated bucket objects. Check `findmnt -T`
-before writing to `/mnt/p`; an unmounted WSL path is on the Linux root disk.
+After a crash, use the recovery sequence in [study jobs](study_jobs.md#recovering-after-a-workstation-restart).
+Keep partial native-band stores: scan-batch verification can replay a damaged
+tail while retaining the verified prefix. A stale launcher PID is not live work.

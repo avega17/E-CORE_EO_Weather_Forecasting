@@ -25,7 +25,7 @@ scripts unchanged so new readers can be compared against concrete calculations.
 
 The tested mentor GeoTIFF lacked CRS and units tags in this environment, although
 its transform locates the intended region. This is an observed output limitation,
-not a claim that every library version behaves identically. See [validation](validation.md).
+not a claim that every library version behaves identically. See [validation](storage_and_data_management.md).
 The 2022 and 2025 three-month comparisons matched every available processed image
 and transform: 2,183 and 2,184 files respectively. Earlier repeated weekly tests
 measured roughly sixfold improvement with four download workers. These observations
@@ -58,4 +58,4 @@ model adaptation and large-scale inference remain follow-up work.
 
 Sources: [ALCF PBS guide](https://docs.alcf.anl.gov/running-jobs/),
 [ALCF data management](https://www.alcf.anl.gov/onboarding-your-project/data-management),
-and the project's [supplied model and data references](agent_dev_references).
+and the project's [supplied model and data references](agent_dev_references.md).

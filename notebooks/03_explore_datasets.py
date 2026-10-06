@@ -8,15 +8,17 @@
 # rather than a long dropdown. The **Month** list helps choose a stored period.
 #
 # Three tabs show a single image, every available observation within one day,
-# or 1–24 selected images per day across the period. Maps support dragging and
-# scrolling to zoom. Animations prepare images once, then use Play or the frame
+# or 1–24 selected images per day across the period. The default portable map
+# uses a Zoom slider and scrolling to pan; Leaflet is optional when its frontend
+# extension loads. Animations prepare images once, then use Play or the frame
 # slider. Missing observations are not filled or interpolated in time.
 #
 # For display only, packed values are decoded, quality masks can be applied,
 # and pixels are reprojected onto a small Web Mercator grid using nearest-neighbor
 # sampling. Saved raw Zarr values and coordinates remain unchanged. Each animation
 # is limited to 300 frames; shorten the period if necessary. Colors stay fixed
-# throughout a sequence. Basemap tiles require internet access.
+# throughout a sequence. The portable geographic background uses Natural Earth
+# boundaries, which may be downloaded to a local cache on first use.
 
 # %%
 if __name__ != "__mp_main__":
@@ -88,8 +90,13 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
 # line show the search is running, then report how many observations, days, and
 # datasets matched and how long it took. One period that happens to be split
 # across subset folders appears as a single dataset entry.
-# The satellite **ABI band** dropdown appears after the search. Only stored
-# bands are shown, and switching bands re-reads the selected observation.
+# Local **Find** opens the DuckDB index read-only and refreshes it each click,
+# so a newly completed month appears without restarting the notebook. If the
+# fetch coordinator has the database open for writing at that instant, Find
+# reads completed archive manifests instead. An in-progress scratch batch is
+# not yet a viewable archive; use the study-job progress query for its count.
+# The satellite **ABI band** dropdown stays visible but disabled for MRMS. Only
+# stored GOES bands are shown, and switching bands re-reads the observation.
 # **Hide zero values** makes valid zero rain transparent in the display.
 # Preparing an animation shows its own progress bar.
 #
@@ -117,10 +124,18 @@ if __name__ != "__mp_main__":
     panel = viewer.controls()
 
 # %% [markdown]
-# ## Run from a terminal
-# `python notebooks/03_03_explore_datasets.py /path/to/raw.zarr.zip --hide-zero --output figures/rain.png`
+# ## Map display in VS Code
+# The default portable map uses ordinary notebook widgets and embedded images,
+# so it does not depend on the `jupyter-leaflet` JavaScript module. Use Zoom and
+# scroll in the map to pan; Play and the frame slider work in both animation
+# tabs. Choose **Leaflet map (JupyterLab)** only when that frontend loads its
+# extension. A missing `LeafletMapModel` is a notebook frontend error, not a
+# failure to read the saved Zarr archive.
 #
-# The [storage guide](../docs/storage.md) explains paths and remote access.
+# ## Run from a terminal
+# `python notebooks/03_explore_datasets.py /path/to/raw.zarr.zip --hide-zero --output figures/rain.png`
+#
+# The [storage guide](../docs/storage_and_data_management.md) explains paths and remote access.
 # The [Leafmap Zarr example](https://leafmap.org/notebooks/111_zarr/),
 # [Cloud Native Geospatial guide](https://guide.cloudnativegeo.org/zarr/zarr-in-practice.html),
 # and [Copernicus xarray example](https://help.marine.copernicus.eu/en/articles/8077952-how-to-open-and-visualize-zarr-format-data)

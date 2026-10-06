@@ -14,6 +14,7 @@ import tempfile
 import time
 import zipfile
 import warnings
+from datetime import datetime, timezone
 
 import numpy as np
 import xarray as xr
@@ -291,16 +292,18 @@ def compact(selection, report, destination="hf", monthly_writers=2):
 def fetch_local_streaming(selection, destination, workers=None, backend="obstore",
                           scratch=None, report_dir="artifacts/runs", progress=None,
                           decode_workers=1, block_size=1024*1024, monthly_writers=2,
-                          index_results=True):
+                          index_results=True, read_processes=2, prefetch_mib=512,
+                          read_mode="range", download_concurrency=8, staging_mib=4096, read_profiles=None):
     """Read bounded source batches into independent Earth2Studio month stores."""
     from .common import default_workers
     from .monthly_stream import _write_one
     from .storage import destination_root
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     import __main__
     import multiprocessing
 
     started = time.perf_counter()
+    started_at=iso(datetime.now(timezone.utc))
     root = destination_root(destination)
     groups = {}
     for asset in selection.assets:
@@ -313,10 +316,18 @@ def fetch_local_streaming(selection, destination, workers=None, backend="obstore
     executor = ThreadPoolExecutor if interactive else ProcessPoolExecutor
     options = {} if interactive else {"mp_context": multiprocessing.get_context("spawn")}
     outcomes = []
+    def reader_args(band):
+        profile = (read_profiles or {}).get(str(band), {})
+        profile = profile.get('profile', profile)
+        return (profile.get('workers', workers or default_workers()), backend,
+            decode_workers, profile.get('block_size', block_size), scratch,
+            profile.get('read_processes', read_processes), profile.get('prefetch_mib', prefetch_mib),
+            profile.get('read_mode', read_mode), profile.get('download_concurrency', download_concurrency),
+            profile.get('staging_mib', staging_mib))
     def collect(target, band, assets, future=None):
         try:
             result = (future.result() if future else _write_one(selection, assets, target,
-                band, workers or default_workers(), backend, decode_workers, block_size, scratch))
+                band, *reader_args(band)))
             result.update(month=utc(assets[0].time).strftime("%Y/%m"), band=band)
         except Exception as exc:
             result = {"path": target, "month": utc(assets[0].time).strftime("%Y/%m"),
@@ -331,9 +342,11 @@ def fetch_local_streaming(selection, destination, workers=None, backend="obstore
     else:
         with executor(max_workers=count, **options) as pool:
             futures = [(target, band, assets, pool.submit(_write_one, selection, assets, target,
-                band, workers or default_workers(), backend, decode_workers, block_size, scratch))
+                band, *reader_args(band)))
                 for (target, band), assets in tasks]
-            for target, band, assets, future in futures:
+            by_future = {f: (target,band,assets) for target,band,assets,f in futures}
+            for future in as_completed(by_future):
+                target, band, assets = by_future[future]
                 collect(target, band, assets, future)
     matches = {row["asset_id"]: row for row in selection.hourly_matches}
     records = []
@@ -347,7 +360,7 @@ def fetch_local_streaming(selection, destination, workers=None, backend="obstore
                 "band": result["band"], "subset_id": _identity(selection, result["band"]),
                 "slot_time": match.get("slot_time"), "offset_seconds": match.get("offset_seconds")})
     months = [row for _, row in outcomes]
-    report = {"source": selection.source, "selection_id": selection.id,
+    report = {"started_at":started_at,"source": selection.source, "selection_id": selection.id,
         "selection_summary": selection.summary(), "root": root,
         "records": records, "monthly_archives": months, "monthly_writers": count,
         "read_bytes": sum(row.get("read_bytes", 0) for row in months),
@@ -359,7 +372,8 @@ def fetch_local_streaming(selection, destination, workers=None, backend="obstore
         from .index import record_fetch
         record_fetch(report)
     if report_dir is not None:
-        write_json(Path(report_dir) / f"{selection.id}-monthly.json", report)
+        from .runlog import save
+        save(Path(report_dir) / f"{selection.id}-monthly.json", report)
     return report
 
 
@@ -411,15 +425,39 @@ def fetch_remote_streaming(selection, workers=None, backend="obstore", scratch=N
     if index_results:
         record_fetch(report)
     if report_dir is not None:
-        write_json(Path(report_dir) / f"{selection.id}-monthly.json", report)
+        from .runlog import save
+        save(Path(report_dir) / f"{selection.id}-monthly.json", report)
     return report
 
 
 def fetch(selection, destination="hf", workers=None, backend="s3fs", scratch=None,
           report_dir="artifacts/runs", progress=None, decode_workers=1,
           read_processes=0, block_size=1024*1024, monthly_writers=2,
-          index_results=True):
+          index_results=True, prefetch_mib=512, reuse_cmipf_root=None,
+          read_mode="range", download_concurrency=8, staging_mib=4096, read_profiles=None, shared_config=None):
     """Stage raw objects locally, compact to monthly archives, then clean staging."""
+    if shared_config is not None:
+        if read_profiles:
+            raise ValueError("Legacy per-band resource profiles cannot be used with global shared limits")
+        if selection.product != "ABI-L2-CMIPF" or str(destination).startswith("hf"):
+            raise ValueError("Shared pipeline requires local native CMIPF")
+        from .goes_shared import fetch as shared_fetch
+        return shared_fetch(selection, destination, shared_config, scratch, report_dir, index_results, progress)
+    if read_profiles:
+        if selection.source != 'goes' or selection.product != 'ABI-L2-CMIPF' or str(destination).startswith('hf'):
+            raise ValueError('Band read profiles require local native CMIPF')
+        from .jobs_policy import validate_profiles
+        validate_profiles(read_profiles)
+    if read_mode != "range" and (selection.source != "goes" or selection.product != "ABI-L2-CMIPF" or str(destination).startswith("hf")):
+        raise ValueError("Async whole-file staging requires native CMIPF and a local destination")
+    if selection.source == "goes" and selection.product == "ABI-L2-MCMIPF":
+        from . import goes_monthly
+        return goes_monthly.fetch(selection, destination,
+            workers=workers or 8, reader_processes=read_processes or 2,
+            prefetch_mib=prefetch_mib, block_size=block_size,
+            monthly_writers=monthly_writers, scratch=scratch,
+            report_dir=report_dir, progress=progress, index_results=index_results,
+            reuse_cmipf_root=reuse_cmipf_root)
     if str(destination) == "hf":
         return fetch_remote_streaming(selection, workers=workers, backend=backend,
             scratch=scratch, report_dir=report_dir, progress=progress,
@@ -429,7 +467,9 @@ def fetch(selection, destination="hf", workers=None, backend="s3fs", scratch=Non
         return fetch_local_streaming(selection, destination, workers=workers,
             backend=backend, scratch=scratch, report_dir=report_dir, progress=progress,
             decode_workers=decode_workers, block_size=block_size,
-            monthly_writers=monthly_writers, index_results=index_results)
+            monthly_writers=monthly_writers, index_results=index_results,
+            read_processes=read_processes or 2, prefetch_mib=prefetch_mib,
+            read_mode=read_mode, download_concurrency=download_concurrency, staging_mib=staging_mib, read_profiles=read_profiles)
     from . import storage
     final_root = destination_root(destination)
     remote = str(destination) == "hf"
@@ -512,5 +552,6 @@ def fetch(selection, destination="hf", workers=None, backend="s3fs", scratch=Non
             pass
         if report_dir is not None:
             from .common import write_json
-            write_json(Path(report_dir) / f"{selection.id}-monthly.json", report)
+            from .runlog import save
+        save(Path(report_dir) / f"{selection.id}-monthly.json", report)
         return report

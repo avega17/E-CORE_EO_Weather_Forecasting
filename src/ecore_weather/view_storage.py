@@ -8,7 +8,7 @@ from pathlib import Path
 from .storage import valid_raw_name
 
 
-def local_archives(location, source):
+def local_archives(location, source, strict=False):
     """Find completed monthly stores by their shallow layout, never walking chunks."""
     root = Path(location).expanduser()
     if root.name.endswith(('.zarr', '.zarr.zip')):
@@ -29,12 +29,14 @@ def local_archives(location, source):
             continue
         archive = path.parent / marker['raw_path']
         if not archive.is_file() and not archive.is_dir():
+            if strict: raise IOError(f"Verified archive is missing: {archive}")
             continue
         if archive.is_file():
             stored = archive.stat().st_size
         else:
             stored = marker.get('stored_bytes')
         if marker.get('stored_bytes') is not None and stored != marker['stored_bytes']:
+            if strict: raise IOError(f"Verified archive size differs from marker: {archive}")
             continue
         assets = marker.get('assets', [])
         listed_sizes = [asset.get('source_bytes') for asset in assets]

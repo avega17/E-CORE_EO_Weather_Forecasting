@@ -2,7 +2,7 @@
 
 import json
 
-from scripts.fetch_goes_staged import _verify_month
+from ecore_weather.jobs_goes import _verify_month
 
 
 def test_verify_month_finds_product_nested_goes_report(tmp_path):
@@ -32,3 +32,14 @@ def test_verify_month_finds_product_nested_goes_report(tmp_path):
     assert len(archives) == 1
     assert archives[0]["path"] == str(archive)
     assert bands == [1]
+
+
+def test_operational_handoff_keeps_satellite_stores_separate():
+    from ecore_weather.jobs_goes import satellite_segments
+    month={'start':'2025-04-01','end_excluded':'2025-05-01','report_dir':'results/april',
+        'command':['python','02_goes.py','--start','2025-04-01','--end','2025-05-01','--output','results/april','--satellite','auto']}
+    segments=satellite_segments(month)
+    assert len(segments)==2 and segments[0]['end_excluded']==segments[1]['start']=='2025-04-07T15:00:00Z'
+    assert segments[0]['command'][-1]=='16' and segments[1]['command'][-1]=='19'
+    assert segments[0]['report_dir']!=segments[1]['report_dir']
+    assert month['command'][-1]=='auto'

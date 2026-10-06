@@ -36,13 +36,23 @@ def observation(folder, marker):
     if marker.get('assets'):
         band = marker.get('band')
         dataset = str(folder).split('/roi-')[0]
-        return [{'path':str(folder)+'/'+name,'time':iso(asset['time']),
-            'source':marker.get('source'),'band':band,'product':marker.get('product'),
-            'dataset':dataset,'asset_id':asset.get('asset_id'),
-            'source_url':asset.get('source_url',''),'etag':asset.get('etag',''),
-            'slot_time':asset.get('slot_time') or None,
-            'offset_seconds':asset.get('offset_seconds'),
-            'subset_id':str(folder).split('/roi-')[-1].split('/')[0]} for asset in marker['assets']]
+        rows = []
+        for asset in marker['assets']:
+            bands = (asset.get('available_bands') if marker.get('product') in
+                     {'ABI-L2-MCMIPF', 'ABI-L2-CMI-2KM-HYBRID'} else [band])
+            for selected_band in bands or []:
+                rows.append({'path':str(folder)+'/'+name,'time':iso(asset['time']),
+                    'source':marker.get('source'),'band':selected_band,'product':marker.get('product'),
+                    'dataset':dataset,'asset_id':asset.get('asset_id'),
+                    'source_url':asset.get('source_url',''),'etag':asset.get('etag',''),
+                    'pixel_origin': asset.get('pixel_origins',{}).get(f'C{selected_band:02d}')
+                        if selected_band else None,
+                    'slot_time':asset.get('slot_time') or None,
+                    'offset_seconds':asset.get('offset_seconds'),
+                    'subset_id':str(folder).split('/roi-')[-1].split('/')[0]
+                        + (f'-C{selected_band:02d}' if selected_band else '')
+                        + ('-HYBRID' if marker.get('product')=='ABI-L2-CMI-2KM-HYBRID' else '')})
+        return rows
     source_url = marker.get('source_url','')
     source = 'goes' if 'noaa-goes' in source_url or '/goes/' in folder else 'mrms' if 'noaa-mrms' in source_url or '/mrms/' in folder else None
     stamp = marker.get('time')
@@ -131,6 +141,10 @@ def inventory(location, source=None, start=None, end=None, band=None, limit=5000
             if (not source or row['source']==source) and (not start or stamp>=start) and (not end or stamp<end) and (band is None or row['band'] in (None,band)):
                 records.append(row)
     if location.endswith(('.zarr','.zarr.zip')):
+        marker_path = Path(location).parent / 'complete.json'
+        if not location.startswith('hf://') and marker_path.is_file():
+            add(str(marker_path.parent), json.loads(marker_path.read_text()))
+            return sorted(records,key=lambda r:(r['time'],r.get('band') or 0))
         with open_raw(location) as ds:
             actual='mrms' if 'measurement' in ds else 'goes'
             marker={'raw_path':location.rsplit('/',1)[-1],'source_url':ds.attrs.get('source_url',''),
@@ -202,7 +216,8 @@ def inventory(location, source=None, start=None, end=None, band=None, limit=5000
     # During migration two locations may describe the same source. Prefer the shared path.
     unique={}
     for row in sorted(records,key=lambda r: '/roi-' in r['path']):
-        key=(row['asset_id'] or row['path'],row['dataset'].split('/roi-')[-1] if '/roi-' in row['dataset'] else row['dataset'])
+        key=(row['asset_id'] or row['path'],row.get('band'),
+             row['dataset'].split('/roi-')[-1] if '/roi-' in row['dataset'] else row['dataset'])
         unique[key]=row
     return sorted(unique.values(),key=lambda r:(r['time'],r['path']))
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import tempfile
 import time
@@ -20,6 +21,19 @@ from .common import (Asset, PR_BBOX, Selection, Transport, digest, hours, iso,
 
 PRODUCTS = ("ABI-L2-CMIPF", "ABI-L2-CMIPC", "ABI-L2-MCMIPF", "ABI-L2-MCMIPC")
 STORMSCOPE_BANDS = (1, 2, 3, 7, 8, 9, 10, 13)
+
+
+def hdf_integrity_error(exc):
+    return any(message in str(exc).lower() for message in (
+        'incorrect metadata checksum', 'filter returned failure', 'data error detected by fletcher32'))
+
+
+class ConfirmedCorruptSourceError(OSError):
+    """An exact, checksum-verified NOAA object cannot supply the requested pixels."""
+
+    def __init__(self, error, evidence):
+        super().__init__(str(error))
+        self.evidence = evidence
 
 
 def east_satellite(start, end):
@@ -82,6 +96,7 @@ def discover(start, end, bbox=PR_BBOX, bands=STORMSCOPE_BANDS, satellite="auto",
         return list(list_objects(bucket, f"{product}/{hour:%Y/%j/%H}/", client))
 
     candidates = {}
+    duplicates = []
     with ThreadPoolExecutor(max_workers=4) as pool:
         for objects in pool.map(listing, hours(start, end)):
             for obj in objects:
@@ -98,13 +113,32 @@ def discover(start, end, bbox=PR_BBOX, bands=STORMSCOPE_BANDS, satellite="auto",
                     # Keep the newest processing of a scan if duplicates are listed.
                     identity = (when, band)
                     asset = Asset(bucket, key, obj["Size"], obj["ETag"].strip('"'), iso(when), iso(until))
+                    if identity in candidates:
+                        previous = candidates[identity]
+                        duplicates.append({"time": iso(when), "band": band,
+                            "kept_key": max(previous.key, key),
+                            "discarded_key": min(previous.key, key)})
                     if identity not in candidates or key > candidates[identity].key:
                         candidates[identity] = asset
     assets = sorted(candidates.values(), key=lambda a: (a.time, a.key))
     if scans_per_hour is not None:
         assets = hourly_scans(assets, int(scans_per_hour))
-    return Selection("goes", product, iso(start), iso(end), bbox, assets,
-                     bands=bands, satellite=satellite, scans_per_hour=scans_per_hour)
+    selection = Selection("goes", product, iso(start), iso(end), bbox, assets,
+                          bands=bands, satellite=satellite, scans_per_hour=scans_per_hour)
+    coverage = acquisition_coverage(selection)
+    selection.discovery_facts = {
+        "duplicate_processing_versions": duplicates,
+        "hours_without_files": [iso(row.hour) for row in coverage.itertuples()
+                                if row.observed_files == 0],
+        "undersubscribed_hours": [{"hour": iso(row.hour),
+            "observed_files": int(row.observed_files),
+            "expected_files": int(row.expected_files)} for row in coverage.itertuples()
+            if pd.notna(row.expected_files) and row.observed_files < row.expected_files],
+        "scan_mode_changes": [{"time": assets[i].time, "from": modes[i-1],
+            "to": modes[i]} for i in range(1, len(assets)) if modes[i] != modes[i-1]]
+            if (modes := [re.search(r"-M(\d)", asset.key)[1] for asset in assets]) else [],
+    }
+    return selection
 def acquisition_coverage(selection):
     """Expected versus observed slots for the supported full-disk/CONUS modes.
 
@@ -173,7 +207,7 @@ def native_window(ds, bbox, halo=0):
             "y": slice(max(0, yi.min()-halo), min(len(y), yi.max()+1+halo))}
 
 
-def selected_variables(ds, bands):
+def selected_variables(ds, bands, allow_missing=False):
     if "CMI" in ds:
         band = int(ds.band_id.values.item())
         if band not in bands:
@@ -182,8 +216,11 @@ def selected_variables(ds, bands):
     else:
         names = [f"{prefix}_C{b:02d}" for b in bands for prefix in ("CMI", "DQF")]
         missing = [name for name in names if name not in ds]
-        if missing:
+        if missing and not allow_missing:
             raise ValueError(f"The file is missing requested variables: {missing}")
+        names = [name for name in names if name in ds]
+        if allow_missing and not any(name.startswith("CMI_C") for name in names):
+            raise ValueError("The multiband file has none of the requested CMI channels")
         names += [name for name in ds.variables if any(name.endswith(f"_C{b:02d}") for b in bands) and ds[name].ndim == 0]
     names += ["goes_imager_projection", "t"]
     for name in names:
@@ -193,15 +230,16 @@ def selected_variables(ds, bands):
     return list(dict.fromkeys(n for n in names if n in ds))
 
 
-def subset_dataset(ds, bbox, bands):
+def subset_dataset(ds, bbox, bands, allow_missing=False):
     window = native_window(ds, bbox)
-    return ds[selected_variables(ds, bands)].isel(window).load()
+    return ds[selected_variables(ds, bands, allow_missing=allow_missing)].isel(window).load()
 
 
-def read(asset, bbox=PR_BBOX, bands=(8, 13), transport=None, full_file=False, block_size=1024 * 1024):
+def read(asset, bbox=PR_BBOX, bands=(8, 13), transport=None, full_file=False,
+         block_size=1024 * 1024, allow_missing=False):
     if transport is None:
         with Transport() as owned:
-            return read(asset, bbox, bands, owned, full_file, block_size)
+            return read(asset, bbox, bands, owned, full_file, block_size, allow_missing)
     before = time.perf_counter()
     if full_file:
         with tempfile.TemporaryDirectory(prefix="ecore-goes-") as temp:
@@ -209,12 +247,28 @@ def read(asset, bbox=PR_BBOX, bands=(8, 13), transport=None, full_file=False, bl
             path.write_bytes(transport.read(asset))
             if path.stat().st_size != asset.size:
                 raise IOError("Incomplete source download.")
-            with xr.open_dataset(path, engine="h5netcdf", decode_cf=False, mask_and_scale=False) as ds:
-                subset = subset_dataset(ds, bbox, bands)
+            try:
+                with xr.open_dataset(path, engine="h5netcdf", decode_cf=False, mask_and_scale=False) as ds:
+                    subset = subset_dataset(ds, bbox, bands, allow_missing)
+            except Exception as exc:
+                # Only classify HDF corruption after verifying the complete
+                # object's content, not a failed range request or partial download.
+                if hdf_integrity_error(exc):
+                    checksum = hashlib.md5()
+                    with path.open('rb') as stream:
+                        for block in iter(lambda: stream.read(4 * 1024**2), b''):
+                            checksum.update(block)
+                    if checksum.hexdigest() == asset.etag.strip('"').lower():
+                        raise ConfirmedCorruptSourceError(exc, {
+                            'verification': 'full-object-size-and-single-part-etag-md5',
+                            'download_bytes': path.stat().st_size,
+                            'md5': checksum.hexdigest(),
+                            'error': f'{type(exc).__name__}: {exc}'}) from exc
+                raise
     else:
         with remote_file(asset, transport, block_size=block_size) as source:
             with xr.open_dataset(source, engine="h5netcdf", decode_cf=False, mask_and_scale=False) as ds:
-                subset = subset_dataset(ds, bbox, bands)
+                subset = subset_dataset(ds, bbox, bands, allow_missing)
     elapsed = time.perf_counter() - before
     subset.attrs.update(source_url=asset.url, source_etag=asset.etag,
                         observation_time=asset.time, scan_end=asset.end_time, requested_bbox=list(bbox))

@@ -81,9 +81,11 @@ def selection_controls(source):
         "period": widgets.Dropdown(options=list(BENCHMARK_PERIODS), description="Example period"),
         "start": widgets.DatePicker(value=date.fromisoformat(start), description="Start (UTC)"),
         "end": widgets.DatePicker(value=date.fromisoformat(end), description="End, excluded"),
-        "destination": widgets.Text(value="hf", description="Save to", placeholder="hf or a local directory"),
-        "workers": widgets.IntText(value=default_workers(), description="Source reads", tooltip="Concurrent NOAA source-file reads per monthly archive (maximum 16). This controls network I/O threads, not monthly writers. It does not increase Hugging Face writer concurrency; HF publication stays at one writer. Decode concurrency is limited separately."),
-        "read_processes": widgets.IntText(value=0, description="Readers", tooltip="Optional separate Python processes for reading source files. 0 uses threads; separate processes can use more memory."),
+        "destination": widgets.Text(value="/mnt/p/ecore_eo_datasets" if source == "goes" else "hf", description="Save to", placeholder="hf or a local directory"),
+        "workers": widgets.IntText(value=8 if source == "goes" else default_workers(), description="Read threads", tooltip="GOES: source threads and scan batch limit per reader; HDF5 calls serialize in that process. Increase Readers for parallel HDF5; 1 source thread gives one scan per task. MRMS: source reads per monthly archive. Hugging Face writes are controlled separately."),
+        "read_processes": widgets.IntText(value=2 if source == "goes" else 0, description="Readers", tooltip=(
+            "GOES: independent HDF5 reader processes per band-month; each uses the source-read threads. "
+            "MRMS: 0 uses threads in the monthly writer, or choose separate file-reader processes.")),
         "monthly_writers": widgets.BoundedIntText(value=2, min=1, max=8, description="Monthly writers",
             tooltip="Number of separate local monthly Zarr archives to build at once. HF publishing stays at one writer to limit gateway requests."),
         "scratch": widgets.Text(value="", description="Local scratch", placeholder="Optional fast staging folder"),
@@ -100,8 +102,8 @@ def selection_controls(source):
                         value=mrms.DEFAULT_PRODUCTS, description="Products", rows=4,
                         tooltip="Default research set: precipitation rate, composite reflectivity, low-level shear, and hourly multisensor Pass2 QPE. Other products can be named with --product in script runs.",
                         layout=widgets.Layout(width="600px")) if source == "mrms" else
-                    widgets.Dropdown(options=[("CMIPF, one file per band", "ABI-L2-CMIPF"),
-                        ("MCMIPF, all bands per scan", "ABI-L2-MCMIPF")],
+                    widgets.Dropdown(options=[("MCMIPF, all bands at 2 km", "ABI-L2-MCMIPF"),
+                        ("CMIPF, each band at natural resolution", "ABI-L2-CMIPF")],
                         value="ABI-L2-CMIPF", description="Product", layout=widgets.Layout(width="600px"))),
     }
     for name, value in zip(("west", "south", "east", "north"), PR_BBOX):
@@ -116,6 +118,29 @@ def selection_controls(source):
             widgets.HBox([controls["west"], controls["south"]]),
             widgets.HBox([controls["east"], controls["north"]]), controls["product"]]
     if source == "goes":
+        controls['read_mode'] = widgets.Dropdown(options=[('Regional range reads','range'),
+            ('Shared bands (mixed)','shared'), ('Async full-file staging','async_full'), ('Overlapped staging','async_pipeline')],value='shared',description='Read mode',
+            tooltip='Async mode downloads whole CMIPF objects concurrently before local HDF5 reads; uses extra network and scratch space.')
+        controls['read_profiles'] = widgets.Text(description='Profiles JSON', tooltip='Optional validated per-band settings file. Overrides reader settings for each band, never the number of writers.', layout=widgets.Layout(width='650px'))
+        controls['download_concurrency'] = widgets.BoundedIntText(value=32,min=1,max=128,
+            description='Async GETs',tooltip='Global full-object downloads shared by all active months and seven async bands.')
+        controls['staging_mib'] = widgets.BoundedIntText(value=16384,min=1,max=65536,
+            description='Stage MiB',tooltip='Global full-object scratch capacity. An eight-scan batch reserves space before download.')
+        controls["prefetch_mib"] = widgets.BoundedIntText(value=2048, min=8, max=8192,
+            description="Queue MiB", tooltip="Global ROI and IPC memory reservations across all active months and bands.")
+        controls["block_size_kib"] = widgets.Dropdown(options=[256,1024,4096], value=1024,
+            description="Range KiB", tooltip="Size of one cached NOAA S3 range-read block.")
+        from .goes_shared import default_config
+        defaults=default_config()
+        controls['monthly_writers'].value=defaults.month_writers
+        controls['local_readers'] = widgets.BoundedIntText(value=defaults.local_readers,min=1,max=32,description='Local readers',tooltip='Global independent processes crop locally downloaded HDF5 files.')
+        controls['range_readers'] = widgets.BoundedIntText(value=defaults.range_readers,min=1,max=32,description='C02 readers',tooltip='Global independent processes range-read C02 source files.')
+        controls['tail_months'] = widgets.BoundedIntText(value=defaults.tail_months,min=0,max=8,description='C02 tails',tooltip='Additional C02-only month owners; share the same reader and memory limits.')
+        controls['monthly_writers'].description='Month writers'
+        controls['monthly_writers'].tooltip='Normal monthly store-owner processes. Each owns separate band archives; C02 tails are additional owners.'
+        controls['workers'].layout.display='none'
+        controls['read_processes'].layout.display='none'
+        controls['read_profiles'].disabled=True
         controls["satellite"] = widgets.Dropdown(options=[("GOES-East for dates", "auto")]+[(f"GOES-{s}",s) for s in (16,17,18,19)], value="auto", description="GOES")
         wavelengths = (0.47, 0.64, 0.86, 1.37, 1.6, 2.2, 3.9, 6.2,
                        6.9, 7.3, 8.4, 9.6, 10.3, 11.2, 12.3, 13.3)
@@ -131,7 +156,40 @@ def selection_controls(source):
             tooltip="Choose native ABI channels. StormScope example defaults are C01, C02, C03, C07, C08, C09, C10, and C13.")
         controls["scans_per_hour"] = widgets.Dropdown(options=[("All available (~10-minute scans)", 0)]+[(f"{n} per hour", n) for n in range(1, 7)],
             value=0, description="Scan frequency", tooltip="Keep every available scan by default. Choose a smaller count only to make an exploratory selection shorter.")
-        rows += [widgets.HBox([controls["satellite"], controls["bands"]]), controls["scans_per_hour"]]
+        controls["reuse_cmipf"] = widgets.Checkbox(value=False,
+            description="Reuse verified 2 km CMIPF bands (hybrid archive)",
+            tooltip="Optional for existing CMIPF months. Reuse exact-time C07/C08/C09/C10/C13 pixels; fetch C01/C02/C03 and any missing band from NOAA MCMIPF. The archive is labeled hybrid with per-band origin.")
+        controls["reuse_cmipf_root"] = widgets.Text(value="/mnt/p/ecore_eo_datasets",
+            description="CMIPF root", disabled=True,
+            tooltip="Local root containing verified CMIPF monthly ZIPs. Used only when hybrid reuse is checked.")
+        def change_reuse(change):
+            controls["reuse_cmipf_root"].disabled = not change["new"]
+        controls["reuse_cmipf"].observe(change_reuse, names="value")
+        def change_product(change):
+            if change['new'] != 'ABI-L2-CMIPF':
+                controls['read_mode'].value = 'range'
+            controls['read_mode'].disabled = change['new'] != 'ABI-L2-CMIPF'
+            if change["new"] != "ABI-L2-MCMIPF":
+                controls["reuse_cmipf"].value = False
+            controls["reuse_cmipf"].disabled = change["new"] != "ABI-L2-MCMIPF"
+        def change_read_mode(change):
+            shared=change['new']=='shared'
+            controls['workers'].layout.display='none' if shared else ''
+            controls['read_processes'].layout.display='none' if shared else ''
+            controls['read_profiles'].disabled=shared
+            for key in ('local_readers','range_readers','tail_months'):
+                controls[key].layout.display='' if shared else 'none'
+            controls['monthly_writers'].description='Month writers' if shared else 'Band writers'
+            controls['download_concurrency'].tooltip=('Global whole-object downloads across all bands and months.' if shared else 'Whole-object downloads per active band-month in legacy mode.')
+            controls['prefetch_mib'].tooltip=('Global ROI and IPC reservations across all months and bands.' if shared else 'ROI queue budget per active legacy band-month.')
+        controls['read_mode'].observe(change_read_mode,names='value')
+        change_read_mode({'new':controls['read_mode'].value})
+        controls["product"].observe(change_product, names="value")
+        change_product({"new": controls["product"].value})
+        rows += [widgets.HBox([controls["satellite"], controls["bands"]]), controls["scans_per_hour"],
+                 controls['read_mode'], widgets.HBox([controls['local_readers'],controls['range_readers'],controls['tail_months']]), controls['read_profiles'],widgets.HBox([controls['download_concurrency'],controls['staging_mib']]),
+                 widgets.HBox([controls["prefetch_mib"], controls["block_size_kib"]]),
+                 controls["reuse_cmipf"], controls["reuse_cmipf_root"]]
     else:
         controls["tolerance_minutes"] = widgets.BoundedFloatText(value=5, min=0, max=5, description="Margin (min)")
         controls["time_match"] = widgets.Dropdown(options=[("Latest at/before slot", "previous"), ("Nearest, either side", "nearest"), ("Exact clock hour", "exact")], description="Hour match")
@@ -147,7 +205,14 @@ def selection_controls(source):
                 "output": "Small selections, diagnostics and timing reports; separate from raw data.",
                 "time_match": "Previous avoids selecting an observation from the future.",
                 "tolerance_minutes": "Maximum difference between the hourly slot and actual observation time."}.get(name, getattr(control, "description", "Product and variable guide"))
-    rows.insert(-4, widgets.HTML("<small>Tasks bound concurrent file work. Readers select separate decoding processes (0 uses threads); increase cautiously because each uses RAM.</small>"))
+    note=("GOES shared limits apply across every active month and band. C02 tails add store owners, not download or reader capacity. RAM also includes HDF5 caches and Python processes." if source=='goes' else "MRMS downloads and GRIB decoding have separate limits per product-month writer.")
+    rows.insert(-4, widgets.HTML("<small>"+note+"</small>"))
+    if source=='goes':
+        for name in ('monthly_writers','local_readers','range_readers','tail_months','download_concurrency','staging_mib','prefetch_mib'):
+            controls[name].style.description_width='110px'
+            controls[name].layout.width='250px'
+        for row in rows:
+            if isinstance(row,widgets.HBox):row.layout.flex_flow='row wrap'
     controls["panel"] = widgets.VBox(rows)
     controls["view_panel"] = widgets.VBox([controls["image_index"], controls["save_figures"], controls["figure_dir"]])
     return controls
@@ -204,8 +269,11 @@ class FetchProgress:
         return self
 
     def __call__(self, done, total, row):
-        self.counts[row['status']] += 1
-        self.bar.set_postfix(dict(self.counts), refresh=False)
+        if row.get('progress_kind')=='aggregate':
+            self.bar.set_postfix({'checkpointed':done,'remaining':max(0,total-done)},refresh=False)
+        else:
+            self.counts[row['status']] += 1
+            self.bar.set_postfix(dict(self.counts), refresh=False)
         self.bar.update(max(0, done-self.bar.n))
 
     def __exit__(self, *args):

@@ -53,7 +53,7 @@ def test_single_preview_re_resolves_current_dataset_after_stale_selection():
           patch.object(view_index, 'inventory', return_value=rows),
           patch('IPython.display.display'),
           patch.object(view_frames, 'prepare', return_value=[{'time': '2022-07-01T00:00:00Z'}]) as prepare,
-          patch.object(view_frames, 'leaflet', return_value='map'),
+          patch.object(view_frames, 'portable_map', return_value='map'),
           redirect_stdout(io.StringIO())):
         panel = viewer.controls()
         controls = panel._ecore_controls
@@ -62,6 +62,26 @@ def test_single_preview_re_resolves_current_dataset_after_stale_selection():
         assert not controls['single'].disabled
         controls['single'].click()
         assert prepare.call_args.args[0] == rows
+        assert not controls['export'].disabled
+
+
+def test_all_preview_tabs_use_portable_renderer_without_leaflet():
+    rows = [{'dataset': '/data/mrms/PrecipRate_00.00/roi-abc',
+             'time': '2022-10-01T00:00:00Z', 'path': '/fake/raw.zarr.zip',
+             'source': 'mrms', 'band': None}]
+    with (patch.object(view_index, 'months_available', return_value=[]),
+          patch.object(view_index, 'inventory', return_value=rows),
+          patch('IPython.display.display'),
+          patch.object(view_frames, 'prepare', return_value=[{'time': rows[0]['time']}]),
+          patch.object(view_frames, 'portable_map', return_value='portable map') as portable,
+          patch.object(view_frames, 'leaflet', side_effect=AssertionError('Leaflet should not load')),
+          redirect_stdout(io.StringIO())):
+        controls = viewer.controls()._ecore_controls
+        controls['search'].click()
+        controls['single'].click()
+        controls['day'].click()
+        controls['multi'].click()
+        assert portable.call_count == 3
         assert not controls['export'].disabled
 
 
@@ -148,8 +168,10 @@ def test_prepare_opens_each_monthly_store_once_and_preserves_requested_order():
     opens = []
 
     @contextmanager
-    def fake_open(path):
+    def fake_open(record, select_time=True):
+        path = record['path']
         opens.append(path)
+        assert not select_time
         yield datasets[path]
 
     records = [
@@ -255,6 +277,30 @@ def test_leaflet_play_updates_preloaded_mrms_overlay(monkeypatch):
     assert overlays[0].url == initial_url
 
 
+def test_portable_map_plays_without_leaflet_frontend(monkeypatch):
+    import numpy as np
+    from ecore_weather import maps
+
+    monkeypatch.setattr(maps, '_land_polygons', lambda: [])
+    frames = [
+        {'values': np.array([[float(i), np.nan], [0., 1.]], dtype='float32'),
+         'bbox': (-68., 17., -65., 20.), 'extent': (-7.6e6, -7.2e6, 1.9e6, 2.3e6),
+         'time': f'2023-08-01T00:0{i}:00Z', 'label': 'measurement', 'units': 'dBZ'}
+        for i in range(2)
+    ]
+    panel = view_frames.portable_map(frames)
+    picture = panel.children[1]
+    assert 'data:image/png;base64,' in picture.value
+    assert 'jupyter-leaflet' not in picture.value
+    initial = picture.value
+    zoom, play, slider = panel.children[2].children
+    play.value = 1
+    assert slider.value == 1 and picture.value != initial
+    assert '00:01:00Z' in panel.children[0].value
+    zoom.value = 150
+    assert 'width:3px' in picture.value
+
+
 def test_earth2_monthly_view_selection_is_source_specific(tmp_path):
     """Current product/region/month archives remain selectable without legacy IDs."""
     import numpy as np
@@ -281,6 +327,50 @@ def test_earth2_monthly_view_selection_is_source_specific(tmp_path):
     assert viewer.resolve_dataset_rows(rows, 'PrecipRate_00.00', 'mrms') == rows
     # A same-named selection from the other source must never collide.
     assert viewer.resolve_dataset_rows(rows, 'PrecipRate_00.00', 'goes') == []
+
+
+def test_local_find_uses_read_only_index_and_falls_back_during_write(tmp_path, monkeypatch):
+    from ecore_weather import index
+
+    folder = tmp_path / 'mrms' / 'PrecipRate_00.00' / 'roi-test' / '2022' / '10'
+    folder.mkdir(parents=True)
+    archive = folder / 'raw.zarr.zip'
+    archive.write_bytes(b'archive')
+    (folder / 'complete.json').write_text(json.dumps({
+        'source': 'mrms', 'product': 'PrecipRate_00.00', 'raw_path': archive.name,
+        'assets': [{'asset_id': 'scan-a', 'time': '2022-10-01T00:00:00Z'}],
+    }))
+    database = tmp_path / 'archive-index.duckdb'
+    monkeypatch.setenv('ECORE_INDEX_PATH', str(database))
+    with index.connect(database) as db:
+        db.execute('INSERT INTO archives VALUES (?,?,?,?,?,?,?,?,?,?,?)', index._archive_row(archive))
+        # DuckDB cannot open a read-only connection while this process holds a
+        # read-write one. The viewer must still find the completed manifest.
+        assert len(view_index.inventory(tmp_path, 'mrms', '2022-10-01', '2022-10-02')) == 1
+    indexed = index.search(tmp_path, 'mrms', '2022-10-01', '2022-10-02')
+    assert len(indexed) == 1 and indexed[0]['asset_id'] == 'scan-a'
+
+
+def test_local_find_refreshes_after_a_fetch_completes():
+    earlier = {'dataset': '/data/mrms/PrecipRate_00.00/roi-a',
+               'time': '2022-10-01T00:00:00Z', 'path': '/data/first.zarr.zip',
+               'source': 'mrms', 'band': None}
+    later = {**earlier, 'time': '2022-10-01T00:10:00Z', 'path': '/data/second.zarr.zip'}
+    calls = []
+
+    def inventory(*args):
+        calls.append(args)
+        return [earlier] if len(calls) == 1 else [earlier, later]
+
+    with (patch.object(view_index, 'months_available', return_value=[]),
+          patch.object(view_index, 'inventory', side_effect=inventory),
+          redirect_stdout(io.StringIO())):
+        controls = viewer.controls()._ecore_controls
+        controls['search'].click()
+        assert len(controls['state']['records']) == 1
+        controls['search'].click()
+        assert len(controls['state']['records']) == 2
+    assert len(calls) == 2
 
 
 def test_storage_explorer_inspects_selected_hf_year_and_reports_ratio(monkeypatch):

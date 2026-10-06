@@ -118,11 +118,11 @@ class MRMSCaribbeanSource(DataSource):
 
 
 class GOESCaribbeanSource(DataSource):
-    """Read one native ABI band through the Earth2Studio DataSource API.
+    """Read one ABI band through the Earth2Studio DataSource API.
 
-    GOES bands have different native resolutions. This adapter therefore serves
-    one band per DataArray call; :meth:`read_dataset` remains available when a
-    caller needs multiple bands with their distinct native grids intact.
+    MCMIPF serves all bands on NOAA's shared 2 km grid. CMIPF, when selected,
+    retains a separate native grid for each band. The DataSource call serves
+    one band; ``read_dataset`` can return multiple raw bands from MCMIPF.
     """
 
     def __init__(self, satellite="auto", band=13, bbox=PR_BBOX,
@@ -210,7 +210,10 @@ class MonthlyZarrSource(DataSource):
 
         from .storage import open_raw
         slices = []
-        with open_raw(self.path) as dataset:
+        group = (f"C{self.band:02d}" if self.source == "goes" and
+                 self.product in {"ABI-L2-MCMIPF", "ABI-L2-CMI-2KM-HYBRID"}
+                 and self.band is not None else None)
+        with (open_raw(self.path, group=group) if group else open_raw(self.path)) as dataset:
             if native not in dataset:
                 raise KeyError(f"Archive {self.path} does not contain {native!r}.")
             source_times = np.asarray(dataset.time.values).astype("datetime64[ns]")

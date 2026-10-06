@@ -55,12 +55,13 @@ def test_record_selection_hashes_large_selection_once(tmp_path):
 
     assert selection.id_calls == 1
     with index.connect(database) as db:
-        rows = db.execute("SELECT count(*), count(DISTINCT selection_id) FROM observations").fetchone()
-        assert rows == (3, 1)
+        rows = db.execute("SELECT count(*) FROM selections").fetchone()
+        assert rows == (1,)
+        assert "observations" not in {r[0] for r in db.execute("SHOW TABLES").fetchall()}
 
 
 def test_mrms_study_records_empty_catalog_objects_but_does_not_fetch_them():
-    from scripts.fetch_mrms_study import partition_empty_sources
+    from ecore_weather.jobs_mrms import partition_empty_sources
 
     readable = Asset("noaa-mrms-pds", "CARIB/a.grib2.gz", 120, "abc",
                      "2023-05-24T06:48:57Z")
@@ -127,7 +128,7 @@ def test_mrms_study_defaults_are_the_four_requested_fields():
 def test_yearly_mrms_bundle_keeps_month_zip_bytes_and_manifest(tmp_path):
     import hashlib
     import zipfile
-    from scripts.mirror_mrms_year_bundle import _build_bundle
+    from ecore_weather.jobs_backup import _build_bundle
 
     product = mrms.DEFAULT_PRODUCTS[0]
     archive = tmp_path / "local" / "mrms" / product / "2021" / "01" / "raw.zarr.zip"
@@ -158,8 +159,8 @@ def test_mrms_final_study_year_bundle_records_h1_period(tmp_path):
     import json
     import hashlib
     import zipfile
-    from scripts.mirror_mrms_year_bundle import _build_bundle
-    from scripts.mirror_mrms_study_background import _year_months
+    from ecore_weather.jobs_backup import _build_bundle
+    from ecore_weather.jobs_backup import _year_months
 
     product = mrms.DEFAULT_PRODUCTS[0]
     archive = tmp_path / "local" / "raw.zarr.zip"
@@ -185,7 +186,7 @@ def test_mrms_final_study_year_bundle_records_h1_period(tmp_path):
 def test_yearly_bundle_retains_zero_byte_noaa_source_as_coverage_metadata(tmp_path):
     import hashlib
     import json
-    from scripts.mirror_mrms_year_bundle import _collect_year
+    from ecore_weather.jobs_backup import _collect_year
 
     product = mrms.DEFAULT_PRODUCTS[1]
     study = tmp_path / "study"
@@ -229,31 +230,10 @@ def test_yearly_bundle_retains_zero_byte_noaa_source_as_coverage_metadata(tmp_pa
         "selections", "coverage"}
 
 
-def test_legacy_cleanup_plan_never_targets_goes(tmp_path):
-    from scripts.cleanup_legacy_archives import mrms_deletion_plan
-
-    product = mrms.DEFAULT_PRODUCTS[0]
-    v2_root = tmp_path / "ecore_eo_datasets_zarrV2"
-    roi = v2_root / product / "roi-legacy"
-    marker_dir = roi / "2022" / "01" / "01" / "20220101T000000"
-    marker_dir.mkdir(parents=True)
-    (roi / "subset.json").write_text(json.dumps({"source": "mrms",
-        "product": product, "subset_id": "legacy"}))
-    (marker_dir / "complete.json").write_text(json.dumps({"asset_id": "old-asset",
-        "subset_id": "legacy", "selection_id": "old-selection",
-        "source_url": f"https://example.invalid/{product}/old.grib2"}))
-    goes_roi = v2_root / "GOES-16" / "roi-legacy"
-    goes_roi.mkdir(parents=True)
-    (goes_roi / "keep.txt").write_text("legacy GOES stays until replacement")
-
-    legacy, _, _, v2_legacy, _, _ = mrms_deletion_plan(tmp_path / "dataset", v2_root)
-    assert [row["directory"] for row in v2_legacy] == [str(roi.resolve())]
-    assert [row["directory"] for row in legacy] == [str(roi.resolve())]
-    assert (goes_roi / "keep.txt").is_file()
 
 
 def test_run_config_history_preserves_previous_product_selection(tmp_path):
-    from scripts.fetch_mrms_study import _record_run_config
+    from ecore_weather.jobs_mrms import _record_run_config
 
     old = {"products": ["PrecipRate_00.00", "MultiSensor_QPE_01H_Pass1_00.00"]}
     new = {"products": list(mrms.DEFAULT_PRODUCTS)}
@@ -266,36 +246,10 @@ def test_run_config_history_preserves_previous_product_selection(tmp_path):
     assert json.loads(history[0].read_text()) == old
 
 
-def test_handoff_waits_for_each_requested_product_month(tmp_path):
-    from types import SimpleNamespace
-    from scripts.handoff_mrms_supervisor import _month_is_complete, _watch_command
-
-    month = tmp_path / "months" / "2021-08"
-    products = ["PrecipRate_00.00", "MultiSensor_QPE_01H_Pass2_00.00"]
-    assert not _month_is_complete(tmp_path, "2021-08", products)
-    month.mkdir(parents=True)
-    for product in products:
-        archive = tmp_path / product / "raw.zarr.zip"
-        archive.parent.mkdir(parents=True)
-        archive.write_bytes(b"archive")
-        (archive.parent / "complete.json").write_text(json.dumps({
-            "product": product, "raw_path": archive.name,
-            "stored_bytes": archive.stat().st_size, "archive_sha256": "verified"}))
-        (month / f"{product}.json").write_text(json.dumps({
-            "month": "2021-08", "product": product, "status": "complete",
-            "archives": [str(archive)]}))
-    assert _month_is_complete(tmp_path, "2021-08", products)
-    args = SimpleNamespace(old_parent=1, old_child=2, old_snapshot="old",
-        new_snapshot="new", destination="das", output="out", scratch="scratch",
-        status="status.json", log="handoff.log", stop_after_month="2021-08",
-        stop_products=products)
-    command = _watch_command(args)
-    assert command[command.index("--stop-after-month") + 1] == "2021-08"
-    assert command[command.index("--stop-products") + 1:command.index("--watch")] == products
 
 
 def test_goes_stager_reuses_only_matching_saved_selection(tmp_path):
-    from scripts.fetch_goes_staged import _reusable_selection
+    from ecore_weather.jobs_goes import _reusable_selection
 
     start, end = "2026-01-01", "2026-02-01"
     asset = Asset("noaa-goes19", "ABI-L2-CMIPF/2026/001/00/OR_ABI-L2-CMIPF-M6C01_G19_s20260010000200.nc",
@@ -304,10 +258,10 @@ def test_goes_stager_reuses_only_matching_saved_selection(tmp_path):
         (-70.24, 14.36, -62.56, 22.04), [asset], bands=(1, 2, 3, 7, 8, 9, 10, 13),
         satellite=19)
     saved = tmp_path / "ABI-L2-CMIPF"
-    save_selection(selection, saved)
+    save_selection(selection, saved, index_results=False)
 
-    assert _reusable_selection(tmp_path, start, end) == saved / "items.json"
-    assert _reusable_selection(tmp_path, start, "2026-03-01") is None
+    assert _reusable_selection(tmp_path, start, end, "ABI-L2-CMIPF") == saved / "collection.json"
+    assert _reusable_selection(tmp_path, start, "2026-03-01", "ABI-L2-CMIPF") is None
 
 
 def radar(values, product=mrms.DEFAULT_PRODUCT):
@@ -405,7 +359,7 @@ def test_stac_selection_roundtrip_and_half_open_interval(tmp_path):
     actual = load_selection(path)
     assert actual.id == selection.id
     assert actual.assets == selection.assets
-    assert load_selection(tmp_path / "catalog/items.json").id == selection.id
+    assert load_selection(tmp_path / "catalog/items.json.gz").id == selection.id
     with pytest.raises(ValueError):
         validate_request("2022-09-19", "2022-09-18", selection.bbox)
 
@@ -711,7 +665,7 @@ def test_compact_catalog_retains_hour_matches(tmp_path):
     from ecore_weather.common import utc
     collection = pystac.Collection.from_file(str(tmp_path / "collection.json"))
     assert collection.extent.temporal.intervals[0][0] == utc(asset.time)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["collection.json", "items.json"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["collection.json", "items.json.gz"]
 
 
 def test_cli_and_satellite_defaults():
@@ -891,38 +845,6 @@ def test_hf_scoped_writer_allows_disjoint_months_but_locks_same_month():
     assert peak == 1
 
 
-def test_hf_month_mirror_batches_are_bounded_and_checkpoint_per_archive(tmp_path, monkeypatch):
-    from threading import Lock
-    import time
-    from scripts import mirror_mrms_year
-
-    active = peak = 0
-    guard = Lock()
-    def fake_mirror(archive, marker, remote_root, relative, progress=None):
-        nonlocal active, peak
-        with guard:
-            active += 1
-            peak = max(peak, active)
-        time.sleep(.02)
-        with guard:
-            active -= 1
-        if relative.endswith("2021/02"):
-            raise OSError("synthetic upload failure")
-        return {"status": "saved", "path": remote_root+"/"+relative,
-            "observations": 12, "stored_bytes": 4096}
-    monkeypatch.setattr(mirror_mrms_year, "mirror_local_month", fake_mirror)
-    archives = {f"mrms/p/roi/2021/{month:02d}": {
-        "archive": tmp_path/f"{month:02d}.zip", "marker": {}, "selected_by": []}
-        for month in (1, 2, 3)}
-
-    summary, errors, pending = mirror_mrms_year._publish_batches(
-        archives, "hf://buckets/u/b/data", tmp_path/"reports", 2)
-
-    assert peak == 2
-    assert len(summary) == 1 and summary[0]["archive"].endswith("2021/01")
-    assert errors and errors[0]["product_month"].endswith("2021/02")
-    assert pending == ["mrms/p/roi/2021/03"]
-    assert (tmp_path/"reports"/"archives"/"mrms/p/roi/2021/01.json").is_file()
 
 
 def test_zip_container_preserves_arrays_metadata_and_removes_directory(tmp_path):
@@ -1085,8 +1007,7 @@ def test_merge_duplicate_archive_retains_unrelated_files(tmp_path):
     import importlib.util
     from pathlib import Path
     from ecore_weather import storage
-    spec = importlib.util.spec_from_file_location('archive_merge', Path(__file__).parents[1]/'scripts/merge_local_archive.py')
-    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    from ecore_weather import archive_maintenance as module
     asset = Asset('b','good',1,'e','2024-09-15T00:00:00Z')
     selection = Selection('mrms',mrms.DEFAULT_PRODUCT,asset.time,'2024-09-16',(-69,16,-64,20),[asset])
     ds=radar([[0,-1],[-3,2]]);ds.attrs['requested_bbox']=list(selection.bbox)
@@ -1145,9 +1066,10 @@ def test_interrupt_cancels_queued_fetches_and_records_progress(tmp_path, monkeyp
     report=json.loads(next((tmp_path/'reports').glob('*.json')).read_text())
     assert report['interrupted'] and report['not_started']>0
     assert 1 <= len(calls) < len(assets)
-    assert len(report['records'])==len(calls)
+    assert report['records_count']==len(calls)
     assert not list((tmp_path/'scratch').iterdir())
-    assert all(r['status']=='saved' for r in report['records'])
+    assert 'records' not in report
+    assert len(list((tmp_path/'data').rglob('complete.json')))==len(calls)
 
 
 def _scan(key_time, minute, band=None):

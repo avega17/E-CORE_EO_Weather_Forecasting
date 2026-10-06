@@ -9,7 +9,23 @@ import numpy as np
 from .storage import open_raw
 
 
-def open_observation(record):
+def _scan_attrs(dataset):
+    """Restore scan-specific calibration on a selected multiband observation."""
+    if 'source_metadata_json' not in dataset.coords or dataset.source_metadata_json.size != 1:
+        return dataset
+    import json
+    value = np.asarray(dataset.source_metadata_json.values)
+    metadata = json.loads(str(value.item()))
+    dataset = dataset.copy(deep=False)
+    for name, info in metadata.get('variables', {}).items():
+        targets = [name] if name in dataset else [n for n in dataset.data_vars
+            if name in ('CMI','DQF') and n.startswith(name+'_C')]
+        for target in targets:
+            dataset[target].attrs = info.get('attrs', {})
+    return dataset
+
+
+def open_observation(record, select_time=True):
     """Open a legacy single-file store or one timestamp from a monthly archive."""
     from contextlib import contextmanager
 
@@ -18,12 +34,16 @@ def open_observation(record):
         path = (record.get("path") or record.get("url")) if isinstance(record, dict) else str(record)
         if not path:
             raise ValueError("Observation record has no archive path or URL")
-        dataset = open_raw(path)
+        band = record.get('band') if isinstance(record, dict) else None
+        grouped = isinstance(record, dict) and record.get('product') in {
+            'ABI-L2-MCMIPF', 'ABI-L2-CMI-2KM-HYBRID'} and band is not None
+        dataset = open_raw(path, group=f'C{band:02d}') if grouped else open_raw(path)
         try:
-            if isinstance(record, dict) and "time" in dataset.dims:
+            if select_time and isinstance(record, dict) and "time" in dataset.dims:
                 stamp = np.datetime64(record["time"].replace("Z", ""))
-                dataset = dataset.sel(time=stamp, drop=False)
-            yield dataset
+                yield _scan_attrs(dataset.sel(time=stamp, drop=False))
+            else:
+                yield dataset
         finally:
             dataset.close()
     return opened()
@@ -100,18 +120,20 @@ def prepare(records, variable=None, quality=True, hide_zero=False, pixels=384, p
     grouped=defaultdict(list)
     for index,row in enumerate(records):
         path=(row.get('path') or row.get('url')) if isinstance(row,dict) else str(row)
-        grouped[path].append((index,row))
+        group_band=(row.get('band') if isinstance(row,dict) and row.get('product') in
+                    {'ABI-L2-MCMIPF','ABI-L2-CMI-2KM-HYBRID'} else None)
+        grouped[(path,group_band)].append((index,row))
     frames=[None]*len(records)
     completed=0
-    for path,items in grouped.items():
+    for (path,_),items in grouped.items():
         # The record-aware helper narrows to that record's timestamp. Here we
         # need the whole monthly store so each requested observation can be
         # selected independently below.
-        with open_observation(path) as ds:
+        with open_observation(items[0][1],select_time=False) as ds:
             for index,row in items:
                 if isinstance(row,dict) and 'time' in row and 'time' in ds.dims:
                     stamp=np.datetime64(row['time'].replace('Z',''))
-                    selected=ds.sel(time=stamp,drop=False)
+                    selected=_scan_attrs(ds.sel(time=stamp,drop=False))
                 else:
                     selected=ds
                 f=_frame_dataset(selected,row,path,variable,quality,hide_zero,pixels)
@@ -171,6 +193,101 @@ def leaflet(frames):
                   "<div style='width:240px;height:10px;background:linear-gradient(to right,#440154,#3b528b,#21918c,#5ec962,#fde725)'></div>")
     panel=w.VBox([title,m,w.HBox([play,slider]),legend])
     # Keep the controls and preloaded frames reachable while this panel is displayed.
+    panel._ecore_play=play
+    panel._ecore_slider=slider
+    panel._ecore_frames=frames
+    return panel
+
+
+def portable_map(frames):
+    """Pan, zoom, and play frames using core widgets and embedded PNGs.
+
+    VS Code's notebook webview may not register the jupyter-leaflet JavaScript
+    module even when ipyleaflet imports in Python. This renderer has no custom
+    frontend widget dependency and never rereads Zarr during playback.
+    """
+    import html
+    from functools import lru_cache
+    import ipywidgets as w
+    from PIL import Image, ImageDraw
+    from pyproj import Transformer
+
+    scale=limits(frames)
+    urls=[png(f,scale) for f in frames]
+    first=frames[0]
+    height,width=first['values'].shape
+    left,right,bottom,top=first['extent']
+
+    @lru_cache(maxsize=1)
+    def background():
+        from .maps import _land_polygons
+        west,south,east,north=first['bbox']
+        canvas=Image.new('RGB',(width,height),'#cfe7ee')
+        draw=ImageDraw.Draw(canvas)
+        projector=Transformer.from_crs('EPSG:4326','EPSG:3857',always_xy=True)
+        try:
+            polygons=_land_polygons()
+        except (OSError,RuntimeError):
+            polygons=[]
+        for poly in polygons:
+            if (poly[:,0].max()<west or poly[:,0].min()>east or
+                    poly[:,1].max()<south or poly[:,1].min()>north):
+                continue
+            x,y=projector.transform(poly[:,0],poly[:,1])
+            points=[((px-left)/(right-left)*width,(top-py)/(top-bottom)*height)
+                    for px,py in zip(x,y)]
+            if len(points)>=3:
+                draw.polygon(points,fill='#e9e2d0',outline='#748381')
+        for label,lon,lat in [('Puerto Rico',-66.45,18.23),
+                              ('Hispaniola',-70.1,19.0),('Virgin Islands',-64.7,18.4)]:
+            if west<lon<east and south<lat<north:
+                x,y=projector.transform(lon,lat)
+                draw.text(((x-left)/(right-left)*width,(top-y)/(top-bottom)*height),
+                          label,fill='#27393a',stroke_width=1,stroke_fill='white')
+        output=io.BytesIO()
+        canvas.save(output,format='PNG')
+        return 'data:image/png;base64,'+base64.b64encode(output.getvalue()).decode()
+
+    base=background()
+    title=w.HTML()
+    picture=w.HTML()
+    zoom=w.IntSlider(value=100,min=50,max=300,step=25,description='Zoom %',
+                     tooltip='Enlarge the image, then scroll within the viewport to pan.')
+    slider=w.IntSlider(min=0,max=len(frames)-1,value=0,description='Frame',continuous_update=True)
+    play=w.Play(min=0,max=len(frames)-1,value=0,interval=500,disabled=len(frames)==1)
+    last={'frame':None,'zoom':None}
+    def update(i=None):
+        i=slider.value if i is None else int(i)
+        if (i,zoom.value)==(last['frame'],last['zoom']):
+            return
+        last.update(frame=i,zoom=zoom.value)
+        display_width=round(width*zoom.value/100)
+        display_height=round(height*zoom.value/100)
+        picture.value=(
+            '<div style="height:500px;max-width:100%;overflow:auto;background:#cfe7ee">'
+            f'<div style="position:relative;width:{display_width}px;height:{display_height}px">'
+            f'<img alt="geographic basemap" src="{base}" '
+            'style="position:absolute;inset:0;width:100%;height:100%">'
+            f'<img alt="{html.escape(frames[i]["label"])}" src="{urls[i]}" '
+            'style="position:absolute;inset:0;width:100%;height:100%"></div></div>')
+        title.value=(f'<b>{html.escape(frames[i]["label"])}</b> · '
+                     f'{html.escape(str(frames[i]["time"]))} UTC · {i+1}/{len(frames)}')
+    def from_play(change):
+        if slider.value!=change['new']:
+            slider.value=change['new']
+        update(change['new'])
+    def from_slider(change):
+        if play.value!=change['new']:
+            play.value=change['new']
+        update(change['new'])
+    play.observe(from_play,names='value')
+    slider.observe(from_slider,names='value')
+    zoom.observe(lambda change:update(),names='value')
+    update(0)
+    legend=w.HTML(f'<small>Fixed scale: {scale[0]:.3g}–{scale[1]:.3g} '
+                  f'{html.escape(str(first["units"]))}. Transparent pixels are hidden '
+                  'for display. Geographic context: Natural Earth.</small>')
+    panel=w.VBox([title,picture,w.HBox([zoom,play,slider]),legend])
     panel._ecore_play=play
     panel._ecore_slider=slider
     panel._ecore_frames=frames

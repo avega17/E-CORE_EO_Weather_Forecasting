@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import os
+import time
 from pathlib import Path
 import zipfile
 
@@ -20,11 +21,12 @@ from .hf_storage import BucketWriter
 class S3RangeFile(io.RawIOBase):
     """Small seekable read-ahead stream for a single immutable S3 object."""
 
-    def __init__(self, client, bucket, key, block_size=4 * 1024 * 1024):
+    def __init__(self, client, bucket, key, block_size=4 * 1024 * 1024, metrics=None):
         self.client, self.bucket, self.key = client, bucket, key
         self.size = client.head_object(Bucket=bucket, Key=key)['ContentLength']
         self.block_size = block_size
         self.position = 0
+        self.metrics = metrics if metrics is not None else {}
         self.cached_start = -1
         self.cached = b''
 
@@ -53,6 +55,7 @@ class S3RangeFile(io.RawIOBase):
             if not self.cached_start <= self.position < self.cached_start + len(self.cached):
                 self.cached_start = (self.position // self.block_size) * self.block_size
                 end = min(self.size, self.cached_start + self.block_size) - 1
+                started = time.perf_counter()
                 response = self.client.get_object(Bucket=self.bucket, Key=self.key,
                     Range=f'bytes={self.cached_start}-{end}')
                 try:
@@ -60,6 +63,9 @@ class S3RangeFile(io.RawIOBase):
                     self.cached = response['Body'].read(expected + 1)
                 finally:
                     response['Body'].close()
+                self.metrics['returned_bytes'] = self.metrics.get('returned_bytes',0)+len(self.cached)
+                self.metrics['get_requests'] = self.metrics.get('get_requests',0)+1
+                self.metrics['transfer_seconds'] = self.metrics.get('transfer_seconds',0)+time.perf_counter()-started
                 if len(self.cached) != expected:
                     raise IOError('HF did not honor the requested byte range')
             offset = self.position - self.cached_start
@@ -138,7 +144,7 @@ def inspect_bundle(bundle):
     return rows
 
 
-def restore_month(bundle, archive_row, cache_root, progress=None):
+def restore_month(bundle, archive_row, cache_root, progress=None, metrics=None):
     """Extract and SHA-check one monthly member into a local analysis cache."""
     relative = Path(archive_row['local_path'])
     if relative.is_absolute() or '..' in relative.parts or relative.parts[0] != bundle['source']:
@@ -155,7 +161,7 @@ def restore_month(bundle, archive_row, cache_root, progress=None):
     if target.exists() or marker_path.exists():
         raise FileExistsError(f'Cache path already holds different data: {target}. Choose another cache directory.')
     writer = BucketWriter(bundle['remote_root'])
-    stream = S3RangeFile(writer.client, bundle['bucket'], bundle['key'])
+    stream = S3RangeFile(writer.client, bundle['bucket'], bundle['key'], metrics=metrics)
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.with_name('.' + target.name + '.part')
     try:
@@ -167,8 +173,12 @@ def restore_month(bundle, archive_row, cache_root, progress=None):
             count = 0
             with archive.open(info) as source, staging.open('wb') as output:
                 while block := source.read(4 * 1024 * 1024):
+                    started = time.perf_counter()
                     output.write(block)
+                    if metrics is not None: metrics['write_seconds'] = metrics.get('write_seconds',0)+time.perf_counter()-started
+                    started = time.perf_counter()
                     digest.update(block)
+                    if metrics is not None: metrics['hash_seconds'] = metrics.get('hash_seconds',0)+time.perf_counter()-started
                     count += len(block)
                     if progress:
                         progress(count, info.file_size)

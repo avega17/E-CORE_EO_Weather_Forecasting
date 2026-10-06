@@ -132,6 +132,12 @@ def controls():
     state={'records':[],'selected':[],'all_selected':[],'frames':None,'name':None,'mode':None,'inv_key':None,'inventory':{},'bands':{},'months':{}}
     quality=w.Checkbox(value=True,description='Hide invalid pixels',tooltip='Apply documented quality masks to display copies only.')
     zero=w.Checkbox(value=True,description='Hide zero values',tooltip='Make valid zero rainfall transparent for display. Stored zeros remain unchanged.')
+    renderer=w.Dropdown(options=[('Portable map (VS Code)','portable'),
+                                 ('Leaflet map (JupyterLab)','leaflet')],
+                        value='portable',description='Map display',
+                        tooltip='Portable uses core widgets and embedded images. Leaflet needs the jupyter-leaflet frontend module.')
+    renderer_note=w.HTML('The portable map works in VS Code without a separate Leaflet widget. '
+        'Use Zoom and scroll within the map to pan; Play and the frame slider update animations.')
     index=w.IntSlider(min=0,max=0,value=0,description='Observation',continuous_update=False)
     stamp=w.HTML('Find observations to select an image.')
     export_path=w.Text(value='figures/dataset-view.png',description='Export path',layout=w.Layout(width='70%'),
@@ -531,7 +537,7 @@ def controls():
                 from . import goes
                 collected=set()
                 for r in state['all_selected'][:1]:
-                    with open_raw(r['path']) as ds:
+                    with open_raw(r['path'],group=f"C{r['band']:02d}" if r.get('product') in {'ABI-L2-MCMIPF','ABI-L2-CMI-2KM-HYBRID'} and r.get('band') else None) as ds:
                         collected |= {int(v.rsplit('_C',1)[-1]) for v in goes.science_variables(ds)}
                     if collected and len(collected) >= 16:
                         break
@@ -563,7 +569,10 @@ def controls():
             try:
                 start,end=bounds()
                 key=(location.value,source.value,start.isoformat(),end.isoformat())
-                if key not in state['inventory']:
+                # A running study fetch can publish a new completed month after
+                # the previous Find. Refresh local searches on each click;
+                # remote bucket listings remain cached until controls change.
+                if storage_kind.value=='Local' or key not in state['inventory']:
                     state['inventory'][key]=view_index.inventory(location.value,source.value,start,end,None)
                 rows=state['inventory'][key]
                 state['records']=rows;state['bands']={}
@@ -611,7 +620,7 @@ def controls():
         # CMIP uses CMI; multiband stores use CMI_Cnn.
         name=variable()
         if source.value=='goes':
-            with open_raw(rows[0]['path']) as ds:name='CMI' if 'CMI' in ds else f'CMI_C{band.value:02d}'
+            with open_raw(rows[0]['path'],group=f"C{band.value:02d}" if rows[0].get('product') in {'ABI-L2-MCMIPF','ABI-L2-CMI-2KM-HYBRID'} else None) as ds:name='CMI' if 'CMI' in ds else f'CMI_C{band.value:02d}'
         with ui.FetchProgress(len(rows),'Display frames') as progress:
             return view_frames.prepare(rows,name,quality.value,zero.value,pixels,progress=progress,
                 max_frames=MAX_VIEW_FRAMES),name
@@ -627,7 +636,8 @@ def controls():
             try:
                 rows=current_selection();chosen=[rows[index.value]] if rows else []
                 frames,name=prepare(chosen,768)
-                display(view_frames.leaflet(frames));show_export(frames,name,'single')
+                display(view_frames.leaflet(frames) if renderer.value=='leaflet'
+                        else view_frames.portable_map(frames));show_export(frames,name,'single')
             except Exception as error:print(f'{type(error).__name__}: {error}')
             finally:single_button.disabled=False
     single_button.on_click(render_single)
@@ -642,7 +652,10 @@ def controls():
                     if day.value is None:raise ValueError('Choose a day.')
                     rows=[r for r in rows if r['time'][:10]==day.value.isoformat()]
                 else:rows=view_index.daily_sample(rows,per_day.value)
-                frames,name=prepare(rows,384);display(view_frames.leaflet(frames));show_export(frames,name,mode)
+                frames,name=prepare(rows,384)
+                display(view_frames.leaflet(frames) if renderer.value=='leaflet'
+                        else view_frames.portable_map(frames))
+                show_export(frames,name,mode)
                 print(f'{len(frames)} frames prepared. Playback reads no additional Zarr data. Display limit: {MAX_VIEW_FRAMES} frames.')
             except Exception as error:print(f'{type(error).__name__}: {error}')
             finally:button.disabled=False
@@ -673,9 +686,11 @@ def controls():
     band.observe(band_changed,names='value')
     panel=w.VBox([source,storage_kind,location,help_text,backup_panel,
                   w.HBox([start_day,start_time]),w.HBox([end_day,end_time]),
-                  month,month_note,w.HBox([find,find_bar]),status,dataset,band,w.HBox([quality,zero]),errors,tabs,export_row,size_panel])
+                  month,month_note,w.HBox([find,find_bar]),status,dataset,band,
+                  w.HBox([quality,zero,renderer]),renderer_note,errors,tabs,export_row,size_panel])
     panel._ecore_controls={'source':source,'location':location,'start':start_day,'end':end_day,'start_time':start_time,
-                          'end_time':end_time,'tabs':tabs,'search':find,'dataset':dataset,'band':band,'single':single_button,
+                          'end_time':end_time,'tabs':tabs,'search':find,'dataset':dataset,'band':band,
+                          'renderer':renderer,'single':single_button,
                           'day':daily_button,'multi':multi_button,'state':state,'index':index,'export':export_button,
                           'export_row':export_row,'export_path':export_path,'month':month,
                           'backup_panel':backup_panel,'backup_list':backup_list,'backup_product':backup_product,

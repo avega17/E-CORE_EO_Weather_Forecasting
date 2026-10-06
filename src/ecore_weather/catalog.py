@@ -2,6 +2,8 @@
 
 from dataclasses import asdict
 import json
+import gzip
+import os
 from pathlib import Path
 
 import pystac
@@ -9,7 +11,7 @@ import pystac
 from .common import Asset, Selection, utc, write_json
 
 
-def save_selection(selection: Selection, directory):
+def save_selection(selection: Selection, directory, index_results=True, compressed=True):
     directory = Path(directory)
     request = asdict(selection)
     request.pop("assets")
@@ -20,13 +22,16 @@ def save_selection(selection: Selection, directory):
     latest = max([utc(selection.end), *(utc(a.end_time or a.time) for a in selection.assets)])
     extent = pystac.Extent(pystac.SpatialExtent([[-180, -90, 180, 90]]),
                           pystac.TemporalExtent([[earliest, latest]]))
+    discovery_facts = getattr(selection, "discovery_facts", None)
     collection = pystac.Collection(selection.id,
         f"Selected NOAA {selection.source.upper()} files; requested crop and times are explicit metadata.",
-        extent=extent, license="other", extra_fields={"ecore:request": request})
+        extent=extent, license="other", extra_fields={"ecore:request": request,
+            **({"ecore:discovery_facts": discovery_facts} if discovery_facts is not None else {})})
     collection.add_link(pystac.Link("license", "https://registry.opendata.aws/noaa-mrms-pds/"
                                    if selection.source == "mrms" else "https://registry.opendata.aws/noaa-goes/"))
-    collection.add_link(pystac.Link("items", "./items.json", media_type="application/geo+json"))
-    collection.add_link(pystac.Link("via", "./items.json", media_type="application/geo+json",
+    filename = 'items.json.gz' if compressed else 'items.json'
+    collection.add_link(pystac.Link("items", './'+filename, media_type="application/geo+json"))
+    collection.add_link(pystac.Link("via", './'+filename, media_type="application/geo+json",
                                    title="Executable selection manifest"))
     items = []
     for asset in selection.assets:
@@ -36,17 +41,25 @@ def save_selection(selection: Selection, directory):
             media_type="application/gzip" if asset.key.endswith(".gz") else "application/x-netcdf",
             roles=["data"], extra_fields={"file:size": asset.size, "ecore:etag": asset.etag}))
         items.append(item)
-    manifest = pystac.ItemCollection(items, extra_fields={"ecore:request": request})
-    write_json(directory / "items.json", manifest.to_dict())
+    manifest = pystac.ItemCollection(items, extra_fields={"ecore:request": request,
+        **({"ecore:discovery_facts": discovery_facts} if discovery_facts is not None else {})})
+    directory.mkdir(parents=True, exist_ok=True)
+    if compressed:
+        temporary = directory/(filename+'.partial')
+        with gzip.open(temporary, 'wt', encoding='utf-8') as stream:
+            json.dump(manifest.to_dict(), stream, separators=(',', ':'))
+        os.replace(temporary, directory/filename)
+    else:
+        write_json(directory / filename, manifest.to_dict())
     write_json(directory / "collection.json", collection.to_dict())
     collection_path = directory / "collection.json"
-    try:
-        from .index import record_selection
-        record_selection(selection, collection_path)
-    except ImportError:
-        # Catalog creation remains usable in lightweight environments; install
-        # the project's declared DuckDB dependency to enable local indexing.
-        pass
+    if index_results:
+        try:
+            from .index import record_selection
+            record_selection(selection, collection_path)
+        except ImportError:
+            # Catalog creation remains usable in lightweight environments.
+            pass
     return collection_path
 
 
@@ -60,10 +73,14 @@ def _selection(request, assets):
 
 def load_selection(path):
     path = Path(path)
-    document = json.loads(path.read_text())
+    with (gzip.open(path, 'rt', encoding='utf-8') if path.suffix == '.gz' else path.open()) as stream:
+        document = json.load(stream)
     if document.get("type") == "FeatureCollection":
-        return _selection(document["ecore:request"],
+        selection = _selection(document["ecore:request"],
             [Asset(**item["properties"]["ecore:source"]) for item in document["features"]])
+        if "ecore:discovery_facts" in document:
+            selection.discovery_facts = document["ecore:discovery_facts"]
+        return selection
     if document.get("type") != "Collection":
         request = dict(document)
         return _selection({k: v for k, v in request.items() if k != "assets"},

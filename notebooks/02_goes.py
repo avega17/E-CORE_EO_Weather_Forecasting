@@ -1,7 +1,8 @@
 # %% [markdown]
 # # GOES: raw subsets, quality flags, and virtual references
 # Start with full-disk StormScope bands C01, C02, C03, C07, C08, C09, C10, and C13.
-# Files are selected one band at a time from CMIPF by default. Choose a UTC
+# The default CMIPF source keeps each band on its native grid: C02 at nominal
+# 0.5 km, C01/C03 at 1 km, and the selected infrared bands at 2 km. Choose a UTC
 # period and satellite below; GOES-East uses GOES-16 before the April 2025
 # operational handoff and GOES-19 afterwards. Raw storage keeps packed integers, coordinates, calibration, and
 # quality flags. Decoding and interpolation happen only in memory.
@@ -15,8 +16,12 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
     from IPython import get_ipython
     if __name__ == "__main__" and get_ipython() is None:
         import os
+        import sys
         from pathlib import Path
-        os.environ.setdefault("ECORE_REPO_ROOT", str(Path(__file__).resolve().parents[1]))
+        root = Path(__file__).resolve().parents[1]
+        sys.path.insert(0, str(root / "src"))
+        os.environ["ECORE_REPO_ROOT"] = str(root)
+        os.environ["PYTHONPATH"] = str(root / "src") + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
         from ecore_weather.cli import main
         raise SystemExit(main(SOURCE))
 
@@ -72,14 +77,14 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
     READER = goes
 # %% [markdown]
 # ## Choose files and save the selection
-# Dates, region, products, storage, and worker count come from these controls.
-# End dates are excluded. Workers default to half the detected CPUs; decoding
-# is bounded separately. Creating controls does not start network work.
+# Dates, region, products, storage, and reader limits come from these controls.
+# End dates are excluded. Creating controls does not start network work.
 #
-# The default durable destination is the HF bucket configured in `.env` or session
-# environment variables. Enter a local path to choose local storage explicitly.
+# Native-band monthly ZIPs are written to a local destination; the workstation default is
+# the mounted P: drive. Choose a different local directory when needed.
 # STAC describes the full selection in a small pair of JSON files. Archived
-# samples are grouped by satellite, native band grid, ROI, and month.
+# samples are grouped by satellite, band, native ROI/grid and month.
+# Different-resolution bands remain separate datasets.
 #
 # The product list offers full-disk imagery only. The CONUS sector (roughly
 # 20°N–50°N, 125°W–65°W) does not cover Puerto Rico, and this project works in
@@ -112,12 +117,25 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
 # Source values, coordinates, and missing-value information stay unchanged.
 # Lossless Zarr storage replaces temporary source containers. Completed subsets
 # are verified and reused; failures are reported without changing destinations.
-# The run report keeps per-file outcomes and timings. Publishing includes the
-# remote read-back check and is measured separately from source reads and writing.
+# Compact run reports track band-month counts, bytes and timings. Source IDs
+# and metadata remain in the selection and archive. HF backup transfer time
+# is measured separately from source reads and local archive writing.
 #
-# Each requested band file is read for the chosen native-grid window. One
-# compressed monthly Zarr archive per band avoids duplicates when later requests
-# overlap earlier dates. GOES reads only requested file sections. The optional
+# Each CMIPF object is cropped before loading its packed image and quality flags.
+# One process owns each active month's separate band stores. Global download,
+# local-reader and C02 range-reader pools serve every active month. Verified
+# eight-scan scratch batches survive interruption.
+# MCMIPF and hybrid remain separate historical products; their pixels are not
+# reused in a CMIPF study. Future 1 km interpolation and cloud-top parallax
+# correction belong to a separate training-preparation sprint.
+# Shared CMIPF fetching downloads seven bands asynchronously and range-reads C02.
+# Month writers own separate native-band stores. A C02-only tail can free
+# normal month slots; global reader and byte limits do not multiply per band.
+# Shared monthly scheduling is the selected default: two normal month owners,
+# one extra C02 tail, 32 global downloads, two local and eight range readers.
+# jobs/goes_workstation.json records the measured configuration and limitations.
+# Change these controls for another machine; more workers are not always faster.
+# Range-only experiments read requested file sections. The optional
 # virtual bundle points back to NOAA files and remains dependent on their access.
 
 # %%
@@ -129,6 +147,21 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
                 workers=controls["workers"].value, report_dir=controls["output"].value,
                 read_processes=controls["read_processes"].value,
                 monthly_writers=controls["monthly_writers"].value,
+                prefetch_mib=controls["prefetch_mib"].value,
+                read_mode='range' if controls['read_mode'].value=='shared' else controls['read_mode'].value,
+                read_profiles=__import__('json').loads(Path(controls['read_profiles'].value).read_text()) if controls['read_profiles'].value else None,
+                download_concurrency=controls['download_concurrency'].value,
+                staging_mib=controls['staging_mib'].value,
+                shared_config=(__import__('ecore_weather.goes_shared',fromlist=['SharedConfig']).SharedConfig(
+                    month_writers=controls['monthly_writers'].value,tail_months=controls['tail_months'].value,
+                    download_concurrency=controls['download_concurrency'].value,local_readers=controls['local_readers'].value,
+                    range_readers=controls['range_readers'].value,roi_budget_mib=controls['prefetch_mib'].value,
+                    staging_mib=controls['staging_mib'].value,block_size=controls['block_size_kib'].value*1024)
+                    if controls['read_mode'].value=='shared' and chosen['value'].product=='ABI-L2-CMIPF' and not str(controls['destination'].value).startswith('hf') else None),
+                block_size=controls["block_size_kib"].value*1024,
+                reuse_cmipf_root=(controls["reuse_cmipf_root"].value
+                    if controls["reuse_cmipf"].value else None),
+                backend="obstore",
                 scratch=controls["scratch"].value or None, progress=progress)
         successful = [r for r in report["records"] if r["status"] in ("archived", "reused")]
         controls["image_index"].max = max(0, len(successful)-1)
@@ -229,4 +262,4 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
 
 # %% [markdown]
 # [Notebook guide](../docs/notebooks.md) · [Developer guide](../docs/developer_guide.md)
-# · [Validation results](../docs/validation.md)
+# · [Validation results](../docs/storage_and_data_management.md)
