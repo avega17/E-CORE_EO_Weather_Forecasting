@@ -109,9 +109,16 @@ def test_month_summary_readback_and_plot_labels(tmp_path, monkeypatch):
     assert '#e69f00' in regional and '#9c179e' in regional
 
 
-def test_annual_summary_resumes_after_only_completed_months(tmp_path, monkeypatch):
-    selection = {"months": {f"2022-{m:02d}": [] for m in range(1, 13)}}
-    monkeypatch.setattr(figures, "build_selection", lambda *args: (selection, "selection-hash"))
+@pytest.mark.parametrize("year,period,label,month_count", [
+    (2022, {}, "2022", 12),
+    (2026, {"start": "2026-01-01", "end": "2026-07-01"}, "2026-h1", 6),
+])
+def test_annual_summary_resumes_after_only_completed_months(tmp_path, monkeypatch, year, period, label, month_count):
+    selection = {"months": {f"{year}-{m:02d}": [] for m in range(1, month_count+1)}}
+    def selected(location, requested_year, *args):
+        assert requested_year == year
+        return selection, "selection-hash"
+    monkeypatch.setattr(figures, "build_selection", selected)
 
     class FakeTransport:
         bytes = requests = retries = 0
@@ -132,7 +139,7 @@ def test_annual_summary_resumes_after_only_completed_months(tmp_path, monkeypatc
     def accumulate(slots, counts, transport, workers, month):
         nonlocal fail_once
         calls.append(month)
-        if month == "2022-02" and fail_once:
+        if month == f"{year}-02" and fail_once:
             fail_once = False
             raise IOError("temporary source failure")
         if counts is None:
@@ -145,13 +152,14 @@ def test_annual_summary_resumes_after_only_completed_months(tmp_path, monkeypatc
 
     monkeypatch.setattr(figures, "_accumulate_month", accumulate)
     with pytest.raises(IOError, match="temporary"):
-        figures.summarize_year(tmp_path, output=tmp_path, workers=1)
-    summary = tmp_path / "mrms-radar-2022" / "annual-summary.npz"
+        figures.summarize_year(tmp_path, output=tmp_path, workers=1, **period)
+    summary = tmp_path / f"mrms-radar-{label}" / "annual-summary.npz"
     _, first = figures.load_summary(summary)
-    assert first["months_completed"] == ["2022-01"]
-    _, _, final = figures.summarize_year(tmp_path, output=tmp_path, workers=1)
-    assert len(final["months_completed"]) == 12
-    assert calls.count("2022-01") == 1
+    assert first["months_completed"] == [f"{year}-01"]
+    _, _, final = figures.summarize_year(tmp_path, output=tmp_path, workers=1, **period)
+    assert final["year"] == year
+    assert len(final["months_completed"]) == month_count
+    assert calls.count(f"{year}-01") == 1
 
 
 def test_explicit_period_and_leap_year():

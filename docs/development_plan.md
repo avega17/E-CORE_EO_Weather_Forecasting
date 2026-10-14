@@ -39,7 +39,7 @@ the actual tested revision; they are separate from local operation.
 
 The revised 2022 overview/regional maps render from the cached summary under
 figures/. MRMS machine profiles, bounded ROI queues, independent source-month
-scheduling and a Polaris PBS wrapper are being validated locally. The Polaris
+scheduling and a Polaris PBS wrapper passed local checks and a live PBS pilot. The Polaris
 profile (8 writers × 8 downloads × 1 decoder) is an initial candidate.
 
 Commit/push tested code, then clone the exact revision on Polaris and prepare
@@ -49,8 +49,8 @@ measured profile changes before production. Completed months are durable on
 Eagle; unfinished node-local months may be refetched after a job ends.
 
 Generate the remaining annual workstation maps only after the pilot and first
-production month verify for both composite and base reflectivity. Remote setup,
-tuning and production are not yet claimed complete.
+production month verify for both composite and base reflectivity. Remote CPU setup and two pilots passed on revision `4db62f1`; bounded tuning
+and production verification remain outstanding.
 
 Future training preparation: decode and inspect native observations, validate
 cloud-height-dependent parallax correction, map onto an explicit 1 km training

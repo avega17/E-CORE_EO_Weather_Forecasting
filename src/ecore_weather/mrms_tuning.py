@@ -46,6 +46,19 @@ def choose(rows):
                              r['roi_queue_mib']*r['monthly_writers'],r['max_inflight']))
 
 
+def finalists(rows):
+    """Repeat the resource-preferred candidate and its fastest alternative."""
+    preferred = choose(rows)
+    unique = {resource_key(r['resources']): r['resources'] for r in rows
+              if r.get('status') == 'complete' and r.get('equal')}
+    alternatives = [r for r in unique.values() if r != preferred]
+    if not alternatives:
+        return [preferred]
+    fastest = min(alternatives, key=lambda resources: statistics.median(
+        r['wall_seconds'] for r in rows if r['resources'] == resources))
+    return [preferred, fastest]
+
+
 def selections(output, frames):
     cache=Path(output)/'selection.json.gz'
     if cache.exists():
@@ -185,8 +198,7 @@ def main(argv=None):
         if waits>.1*sum(r['wall_seconds']*best['monthly_writers'] for r in rows if r['resources']==best):
             for depth,queue in ((8,128),(32,512)):
                 case({**best,'max_inflight':depth,'roi_queue_mib':queue},'queue')
-        unique={resource_key(r['resources']):r['resources'] for r in rows}
-        ranked=sorted(unique.values(),key=lambda res:statistics.median(r['wall_seconds'] for r in rows if r['resources']==res))[:2]
+        ranked=finalists(rows)
         for repeat in (1,2,3):
             for resources in ranked if repeat%2 else list(reversed(ranked)):
                 case(resources,'final',repeat)

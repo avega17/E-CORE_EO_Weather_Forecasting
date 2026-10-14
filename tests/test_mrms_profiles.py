@@ -180,3 +180,13 @@ def test_hard_deadline_terminates_unfinished_process(tmp_path,monkeypatch):
     assert code==75 and time.monotonic()-started<8
     receipt=json.loads((tmp_path/'run/paused.json').read_text())
     assert receipt['hard_deadline_reached'] and receipt['unfinished_product_months']
+
+
+def test_tuning_repeats_the_lower_resource_screening_candidate():
+    from ecore_weather.mrms_tuning import finalists
+    base = dict(monthly_writers=12, workers=4, decode_workers=1,
+                max_inflight=16, roi_queue_mib=256, memory_gib=64)
+    rows = [dict(status="complete", equal=True, resources={**base, "workers": n},
+                 wall_seconds=t) for n, t in [(4, 76.4), (8, 75.8), (16, 75.7)]]
+    chosen = finalists(rows)
+    assert [r["workers"] for r in chosen] == [4, 16]

@@ -1,8 +1,8 @@
 # NOAA radar and satellite subsets for Puerto Rico
 
-> GOES uses two normal month writers plus one C02-only tail, C02 range readers and async
-> downloads for the other seven bands after the admitted October 2021–January 2022
-> months drain. See [current operating settings](docs/goes_parallel_pipeline.md).
+> GOES is paused after verified December 2022 archives. Its next chronological
+> continuation uses two normal month owners plus one C02-only tail. See
+> [current operating settings](docs/goes_parallel_pipeline.md).
 
 
 This project prepares reproducible raw subsets from NOAA MRMS radar and GOES
@@ -73,8 +73,9 @@ python notebooks/02_goes.py --operation estimate --output results/study-goes-est
 python scripts/dataset_jobs.py fetch mrms --destination /mnt/p/ecore_eo_datasets
 ```
 
-MRMS notebook download pools default to half the detected CPU count; long
-study runs use explicit limits. GOES uses the global profile in jobs/goes_workstation.json. Decoding can be bounded separately. See [notebook usage and outputs](docs/notebooks.md) and the
+MRMS notebook and CLI resource settings use the workstation profile by default
+(four product-month writers, eight downloads and one decoder per writer).
+Polaris settings are selected separately through `--profile`. GOES uses the global profile in jobs/goes_workstation.json. Decoding can be bounded separately. See [notebook usage and outputs](docs/notebooks.md) and the
 [developer guide](docs/developer_guide.md) for more examples.
 
 ## Colab

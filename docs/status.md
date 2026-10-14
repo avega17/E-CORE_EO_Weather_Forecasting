@@ -10,8 +10,10 @@ The eight-writer Polaris profile is an unmeasured starting candidate.
 
 Polaris authentication succeeded. The checkout is under
 `/eagle/lighthouse-upr/ecore-weather/repo`; allocation `lighthouse-upr` and the
-project quota were confirmed. CPU environment setup is in progress; PBS pilot,
-tuning and production launch remain pending. Remaining annual maps are gated on successful
+project quota were confirmed. CPU setup job `7743696` passed imports and dependency checks. Pilot `7743706`
+verified eight observations (four per product) and Eagle publication; fresh-job
+reuse pilot `7743711` also exited 0 without source downloads. Both tested revision
+`4db62f1`. Tuning job `7743717` is submitted; production remains gated. Remaining annual maps are gated on successful
 Polaris validation. See [study jobs](study_jobs.md#polaris-pbs).
 
 # Current operation — October 9, 2026

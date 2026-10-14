@@ -113,10 +113,12 @@ Keep explanations readable for researchers inheriting the work.
   findings in guides rather than proliferating test result folders. Do not claim
   live HF, Colab or long-run checks without exact-revision evidence.
 - Polaris PBS uses one node, the documented outbound proxy, local scratch/index
-  and verified monthly publication to Eagle. Use debug for a bounded pilot and
+  and verified monthly publication to Eagle. Use debug for bounded environment setup, pilot and tuning, then
   capacity for the full study, after account/queue/quota checks. Completed months
   are durable; unfinished local stores may be lost between jobs. Commit/push
   tested changes and pin that exact revision before remote setup/submission.
-  Use only documented PBS commands. Re-measure settings on the target machine.
+  Use only documented PBS commands. Bound installer bytecode workers with
+  MAMBA_EXTRACT_THREADS=4; do not run heavy installation on a login node.
+  Re-measure settings on the target machine.
   Generate remaining annual radar figures only after the Polaris pilot and first
   production month verify for both reflectivity products.

@@ -140,6 +140,7 @@ def build_selection(location: str | Path, year: int, output: str | Path, start=N
     """Keep one compressed source selection; reuse it on interrupted runs."""
     output = Path(output)
     begin, stop, label = _interval(year, start, end)
+    year = begin.year
     periods = list(_period_months(begin, stop))
     source_root, markers, marker_rows = _marker_roots(location, year, begin, stop)
     marker_hashes = {key: hashlib.sha256(path.read_bytes()).hexdigest()
@@ -355,6 +356,7 @@ def summarize_year(location: str | Path, year: int = 2022,
     if workers < 1 or workers > 8:
         raise ValueError("Choose one to eight bounded source readers")
     begin, stop, label = _interval(year, start, end)
+    year = begin.year
     folder = Path(output) / f"mrms-radar-{label}"
     selection, selection_hash = (build_selection(location, year, folder) if start is None else
                                  build_selection(location, year, folder, begin, stop))
@@ -508,6 +510,7 @@ def run(location: str | Path, year: int = 2022, output: str | Path = "results/da
         training_side_km: float = 512, future_side_km: float = 1024,
         start=None, end=None, figures_dir="figures", view="both", render_only=False):
     begin, stop, label = _interval(year, start, end)
+    year = begin.year
     target = Path(output) / f"mrms-radar-{label}"
     if render_only:
         summary = target / "annual-summary.npz"
