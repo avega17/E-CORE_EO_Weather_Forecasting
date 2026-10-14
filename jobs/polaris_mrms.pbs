@@ -46,7 +46,7 @@ if test "$ECORE_PBS_MODE" = setup; then
     export CONDA_PKGS_DIRS="$ECORE_PROJECT_ROOT/ecore-weather/conda-cache"
     export CONDA_ENVS_PATH="$ECORE_PROJECT_ROOT/ecore-weather/envs"
     export CONDA_DEFAULT_THREADS=4 CONDA_EXECUTE_THREADS=2 CONDA_VERIFY_THREADS=2
-    export RAYON_NUM_THREADS=4
+    export RAYON_NUM_THREADS=4 MAMBA_EXTRACT_THREADS=4 MAMBA_DOWNLOAD_THREADS=8
     environment_root="${ECORE_PYTHON%/bin/python}"
     if test "$environment_root" = "$ECORE_PYTHON"; then
         printf 'ECORE_PYTHON must end with /bin/python\n' >&2
