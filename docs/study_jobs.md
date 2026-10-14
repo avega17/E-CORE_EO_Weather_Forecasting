@@ -238,7 +238,7 @@ storage directory name.
 export ECORE_PROJECT_ROOT=/lus/eagle/lighthouse-upr
 export ECORE_REVISION=<tested-pushed-commit>
 mkdir -p "$ECORE_PROJECT_ROOT/ecore-weather"
-git clone https://github.com/avega17/E-CORE_EO_Radar_GFMs.git \
+git clone https://github.com/avega17/E-CORE_EO_Weather_Forecasting.git \
   "$ECORE_PROJECT_ROOT/ecore-weather/repo"
 cd "$ECORE_PROJECT_ROOT/ecore-weather/repo"
 git checkout --detach "$ECORE_REVISION"

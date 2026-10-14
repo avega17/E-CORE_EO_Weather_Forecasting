@@ -28,7 +28,7 @@ if __name__ != '__mp_main__':
     IN_COLAB='google.colab' in sys.modules or bool(os.getenv('COLAB_RELEASE_TAG'))
     if IN_COLAB:
         root=Path('/content/E-CORE_EO_Radar_GFMs')
-        if not root.exists(): subprocess.run(['git','clone','https://github.com/avega17/E-CORE_EO_Radar_GFMs.git',str(root)],check=True)
+        if not root.exists(): subprocess.run(['git','clone','https://github.com/avega17/E-CORE_EO_Weather_Forecasting.git',str(root)],check=True)
         revision=os.getenv('ECORE_REVISION','main')
         subprocess.run(['git','fetch','origin',revision],cwd=root,check=True)
         subprocess.run(['git','checkout','--detach','FETCH_HEAD'],cwd=root,check=True)

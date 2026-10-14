@@ -39,7 +39,7 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
     import subprocess
     import sys
     from pathlib import Path
-    REPOSITORY = "https://github.com/avega17/E-CORE_EO_Radar_GFMs.git"
+    REPOSITORY = "https://github.com/avega17/E-CORE_EO_Weather_Forecasting.git"
     REVISION = os.getenv("ECORE_REVISION", "main")
     IN_COLAB = "google.colab" in sys.modules or bool(os.getenv("COLAB_RELEASE_TAG"))
     if IN_COLAB:
