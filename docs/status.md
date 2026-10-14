@@ -8,8 +8,10 @@ checks. An isolated DAS pilot verified four scans per reflectivity product,
 then reused both archives on a second run without source downloads.
 The eight-writer Polaris profile is an unmeasured starting candidate.
 
-Polaris authentication, remote environment installation, PBS pilot, tuning and
-production launch remain pending. Remaining annual maps are gated on successful
+Polaris authentication succeeded. The checkout is under
+`/eagle/lighthouse-upr/ecore-weather/repo`; allocation `lighthouse-upr` and the
+project quota were confirmed. CPU environment setup is in progress; PBS pilot,
+tuning and production launch remain pending. Remaining annual maps are gated on successful
 Polaris validation. See [study jobs](study_jobs.md#polaris-pbs).
 
 # Current operation — October 9, 2026
