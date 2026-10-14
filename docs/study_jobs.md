@@ -189,23 +189,28 @@ values and then explicit CLI overrides. Widgets have a Load profile button;
 changing a control afterwards overrides that value. Runs record resolved
 limits, the profile hash, actual CPU affinity, memory and package versions.
 
-| Setting | Workstation | Polaris initial candidate |
-|---|---:|---:|
-| Product-month writer processes | 4 | 8 |
-| Download threads per writer | 8 | 8 |
-| Decode slots per writer | 1 | 1 |
-| Active plus queued observations per writer | 8 | 16 |
-| Reserved ROI payload per writer | 128 MiB | 256 MiB |
-| Total process RSS ceiling | 32 GiB | 64 GiB |
+| Setting | Workstation | Polaris starting candidate | Polaris selected |
+|---|---:|---:|---:|
+| Product-month writer processes | 4 | 8 | 12 |
+| Download threads per writer | 8 | 8 | 4 |
+| Decode slots per writer | 1 | 1 | 1 |
+| Active plus queued observations per writer | 8 | 16 | 16 |
+| Reserved ROI payload per writer | 128 MiB | 256 MiB | 256 MiB |
+| Total process RSS ceiling | 32 GiB | 64 GiB | 64 GiB |
 
-The Polaris candidate has 64 download threads in total, twice the workstation
-profile. Doubling both writers and per-writer downloads would produce 128.
-Decode slots are separate from download threads. Compressed gzip and expanded
-GRIB buffers, full-grid decoding and returned ROI arrays have different memory
-costs; the ROI queue limit is not a total-memory estimate. Conservative ROI
-reservations reduce effective admission when necessary, while the job RSS
-ceiling covers the whole process tree. Incidental numerical-library threads
-are capped to one so they do not multiply the intended process concurrency.
+The selected Polaris profile has 48 download threads in total and twelve
+independent GRIB decoders. The initial candidate had 64 download threads and
+eight decoders. In this experiment, more independent product-month processes
+helped, while increasing downloads per writer did not. These are different
+limits: download threads can wait on the network while each process permits
+only one GRIB decode at a time. Numerical-library threads are capped to one.
+
+Compressed gzip and expanded GRIB buffers, full-grid decoding and returned
+ROI arrays have different memory costs. The ROI queue limit is not a total
+memory estimate: it reserves room for ordered subset results, while the RSS
+ceiling covers all job processes. Temporary storage reported at packing counts
+the closed Zarr files, ZIP and checkpoint metadata. It is not a whole-job disk
+peak and excludes filesystem allocation overhead.
 
 The scheduler admits independent **source-month** stores across adjacent months.
 For example, a February 00:00 slot may use January 23:58 data. That observation
@@ -214,7 +219,7 @@ making a February worker contend for the same ZIP. Requested and actual times
 remain recorded, and unmatched slots are counted once. A study starting at
 midnight can therefore have a small preceding-month boundary archive.
 
-Polaris settings are starting candidates, not measured speedups. Screen 4/8/12
+For a new system or a new data workload, screen 4/8/12
 writers, then 4/8/16 download threads near the best result. Test a second decode
 slot only when decode waiting is material. Compare larger queues only when
 phase waiting indicates a benefit. The supported tuning command uses identical
@@ -224,6 +229,43 @@ worker startup through packing and destination verification; comparison hashing
 is timed separately. Prefer fewer resources when medians differ by at most 5%.
 Successful temporary stores are removed; failed stores retain a small failure
 record. Fresh application stores do not imply flushed filesystem caches.
+The suite reports archive-task completion and a separate content-comparison
+phase in the same compact summary. These additional comparisons can take time
+after all source downloads finish; they are not pending NOAA transfers. The
+resource-preferred screening candidate is always included among the finalists.
+
+### Measured Polaris comparison
+
+PBS job `7743767` completed with exit 0 on revision `1f017e0`. Each case
+fetched the same 6,144 observations: both reflectivity products, 512 scans each
+in January, March, May, July, September and November 2022. Source files totaled
+210.0 MB per case; verified regional ZIPs totaled 134.0 MB. The machine exposed
+32 physical cores, 64 hardware threads and about 504 GiB usable memory.
+
+| Writers × downloads per writer | Measurement | Archive time | Peak job RSS |
+|---|---|---:|---:|
+| 4 × 8 | One screening pass | 215.5 s | 3.40 GiB |
+| 8 × 8 | One screening pass | 129.0 s | 6.17 GiB |
+| 12 × 8 | One screening pass | 77.2 s | 9.14 GiB |
+| **12 × 4** | Three finalist repeats, median | **76.256 s** | **8.76 GiB maximum** |
+| 12 × 16 | Three finalist repeats, median | 77.043 s | 9.42 GiB maximum |
+
+The finalists performed essentially the same work in the same time; four
+downloads per writer used fewer resources. Every case preserved exact values,
+coordinates, bitmap information and source metadata. Timings include process
+startup, fetching, decoding, writing, packing and destination verification;
+initial inventory and the additional comparison-hash pass are separate. Fresh
+application stores do not mean cleared filesystem or proxy caches. The shared
+byte-budget instrumentation is part of these measurements; production does not
+use that benchmark ledger. These short selections establish a best tested
+profile, not a full-study runtime guarantee.
+
+The cumulative byte ledger retained the initial controlled-stop run and charged
+3.52 GiB against the 10 GiB limit, including its unfinished comparison case.
+The initial run was stopped to correct finalist selection, not because of a
+source-data failure. Remaining queues and decoder settings were not expanded
+because their measured waiting did not trigger those experiments. Review the
+first production months before extrapolating to the entire study.
 
 ### First setup
 
@@ -335,11 +377,17 @@ report that limitation instead of trying alternative access routes.
 ### Progress and recovery
 
 ```bash
-watch -n 30 -t "$ECORE_PYTHON scripts/dataset_jobs.py status mrms \
+export ECORE_PROJECT_ROOT=/eagle/lighthouse-upr
+watch -n 30 -t "$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu/bin/python \
+  $ECORE_PROJECT_ROOT/ecore-weather/repo/scripts/dataset_jobs.py status mrms \
   --progress $ECORE_PROJECT_ROOT/ecore-weather/state/study/progress.json"
 ```
 
 The compact shared progress file is updated approximately every 30 seconds.
+A checkpoint count can describe work still on node-local SSD; it does not mean
+that month is durable on Eagle. Only a verified completed product-month survives
+node loss. After resubmission, unfinished counts may restart from zero while
+completed months are reused.
 A closed DuckDB snapshot is published after each product-month and on normal
 shutdown. The live database stays node-local. Status distinguishes remote
 heartbeat evidence from a locally visible PID; a stale remote heartbeat is

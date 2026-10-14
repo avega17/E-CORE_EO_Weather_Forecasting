@@ -169,3 +169,16 @@ def test_explicit_period_and_leap_year():
     begin,end,_=figures._interval(2024)
     assert (end-begin).total_seconds()/3600==8784
     with pytest.raises(ValueError):figures._interval(2026,'2026-01-01',None)
+
+
+def test_pilot_does_not_require_unrequested_future_months(tmp_path, monkeypatch):
+    import json
+    folder = tmp_path / "mrms" / figures.REFLECTIVITY / "roi-test" / "2026" / "01"
+    folder.mkdir(parents=True)
+    (folder / "raw.zarr.zip").write_bytes(b"x")
+    (folder / "complete.json").write_text(json.dumps(dict(
+        source="mrms", product=figures.REFLECTIVITY, region=list(figures.PR_BBOX),
+        archive_sha256="test", stored_bytes=1, assets=[])))
+    monkeypatch.setattr(figures, "_month_rqi", lambda *args: {})
+    with pytest.raises(ValueError, match="Pilot day has no matching"):
+        figures.pilot_day(tmp_path, "2026-01-01", output=tmp_path)

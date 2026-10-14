@@ -13,7 +13,11 @@ Polaris authentication succeeded. The checkout is under
 project quota were confirmed. CPU setup job `7743696` passed imports and dependency checks. Pilot `7743706`
 verified eight observations (four per product) and Eagle publication; fresh-job
 reuse pilot `7743711` also exited 0 without source downloads. Both tested revision
-`4db62f1`. Tuning job `7743717` is submitted; production remains gated. Remaining annual maps are gated on successful
+`4db62f1`. Initial tuning job `7743717` retained six verified cases before a controlled
+stop to correct finalist selection. Corrected job `7743767` completed with exit 0 on revision `1f017e0`. Three
+rotated repeats selected twelve product-month writers, four downloads each and
+one decoder each: median 76.256 s, maximum 8.76 GiB job RSS. The cumulative
+byte ledger charged 3.52 GiB of 10 GiB. Production submission is next. Remaining annual maps are gated on successful
 Polaris validation. See [study jobs](study_jobs.md#polaris-pbs).
 
 # Current operation — October 9, 2026

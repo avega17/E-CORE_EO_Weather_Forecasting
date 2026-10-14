@@ -398,6 +398,11 @@ def _finalize_archive(directory, packed, checksums, dimensions, times, observed_
             if file.is_file():
                 archive.write(file, file.relative_to(directory).as_posix())
     metrics["pack_seconds"] = time.perf_counter()-pack_started
+    metrics["scratch_bytes_at_pack"] = (sum(info.file_size for info in archive.infolist())
+        + packed.stat().st_size + sum(p.stat().st_size for p in packed.parent.glob("*.json")))
+    metrics["scratch_measurement_scope"] = (
+        "Closed Zarr files, packed ZIP and checkpoint JSON at packing; logical file bytes, "
+        "excluding filesystem allocation overhead and external staging; not a whole-job peak")
     verify_started = time.perf_counter()
     with open_raw(packed) as verified:
         if not np.array_equal(verified.time.values, times):

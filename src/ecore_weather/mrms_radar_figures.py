@@ -305,8 +305,8 @@ def pilot_day(location: str | Path, day: str, output: str | Path = "results/data
     if start.time() != datetime.min.time():
         raise ValueError("Choose a UTC calendar date, YYYY-MM-DD")
     end = start + timedelta(days=1)
-    root, _, markers = _marker_roots(location, start.year)
-    marker = markers[start.month - 1]
+    root, _, markers = _marker_roots(location, start.year, start, end)
+    marker = markers[0]
     archived = _month_reflectivity(marker["assets"], start, end)
     quality = _month_rqi(start, end)
     slots = []

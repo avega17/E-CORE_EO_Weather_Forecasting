@@ -117,6 +117,8 @@ Keep explanations readable for researchers inheriting the work.
   capacity for the full study, after account/queue/quota checks. Completed months
   are durable; unfinished local stores may be lost between jobs. Commit/push
   tested changes and pin that exact revision before remote setup/submission.
+  The measured Polaris MRMS profile uses twelve product-month writers, four
+  downloads each and one decoder each; workstation settings remain four/eight/one.
   Use only documented PBS commands. Bound installer bytecode workers with
   MAMBA_EXTRACT_THREADS=4; do not run heavy installation on a login node.
   Re-measure settings on the target machine.
