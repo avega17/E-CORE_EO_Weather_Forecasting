@@ -10,7 +10,7 @@ from ecore_weather.common import PATCHES
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('operation',choices=['inventory','diagnose','benchmark','report'])
+    p.add_argument('operation',choices=['inventory','diagnose','benchmark','report','radar-figure'])
     p.add_argument('--location',default='/mnt/p/ecore_eo_datasets')
     p.add_argument('--output',default=report.DEFAULT_OUTPUT)
     p.add_argument('--source',choices=['goes','mrms'])
@@ -24,9 +24,30 @@ def main(argv=None):
     p.add_argument('--hf-root',help='HF bucket root, without credentials; restore verified backup members first')
     p.add_argument('--repeats',type=int,default=3)
     p.add_argument('--logs',nargs='*',default=[])
+    p.add_argument('--year',type=int,help='UTC year for the MRMS radar-quality figure; default 2022')
+    p.add_argument('--figures-dir',default='figures',help='Directory for generated figures')
+    p.add_argument('--view',choices=['macro','regional','both'],default='both')
+    p.add_argument('--render-only',action='store_true',help='Render an existing radar summary without any NOAA access')
+    p.add_argument('--pilot-day',help='UTC YYYY-MM-DD: check one day and source-to-archive equality before the annual read')
+    p.add_argument('--workers',type=int,default=4,help='Bounded full-grid MRMS source readers for radar-figure')
+    p.add_argument('--center-lon',type=float,default=-66.4)
+    p.add_argument('--center-lat',type=float,default=18.2)
+    p.add_argument('--training-side-km',type=float,default=512)
+    p.add_argument('--future-side-km',type=float,default=1024)
     args=p.parse_args(argv)
     filters={k:getattr(args,k) for k in ('source','product','band','start','end')}
-    if args.operation=='inventory':result=report.inventory(args.location,args.output,**filters)[0]
+    if args.operation=='radar-figure':
+        from . import mrms_radar_figures as radar
+        if args.year is not None and (args.start or args.end):p.error('Use --year or --start/--end, not both')
+        if args.pilot_day and args.render_only:p.error('A pilot reads sources; do not combine with --render-only')
+        if args.pilot_day:
+            result=radar.pilot_day(args.location,args.pilot_day,args.output,workers=args.workers)
+        else:
+            result=radar.run(args.location,args.year or (int(args.start[:4]) if args.start else 2022),args.output,workers=args.workers,
+                center=(args.center_lon,args.center_lat),training_side_km=args.training_side_km,
+                future_side_km=args.future_side_km,start=args.start,end=args.end,figures_dir=args.figures_dir,
+                view=args.view,render_only=args.render_only)
+    elif args.operation=='inventory':result=report.inventory(args.location,args.output,**filters)[0]
     elif args.operation=='diagnose':
         result=report.diagnose(args.location,args.output,full=args.full,batch_frames=args.batch_frames,
             memory_mib=args.memory_mib,patches=None if args.patch is None else {name:PATCHES[name] for name in args.patch if name!='Whole ROI'},

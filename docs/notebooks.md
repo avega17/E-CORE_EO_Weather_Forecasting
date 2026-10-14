@@ -9,7 +9,7 @@ excluded. Restart the kernel and rerun setup after editing imported modules.
 |---|---|---|
 | [01 MRMS](../notebooks/01_mrms.ipynb) | Choose products/time/ROI, inspect selection, fetch and diagnose radar | Listed count/bytes, saved selection, verified monthly ZIPs, raw quality summaries and previews |
 | [02 GOES](../notebooks/02_goes.ipynb) | Choose native bands and scans, inspect/fetch satellite subsets | Selection, scan/gap counts, separate native band ZIPs and calibrated session-only previews |
-| [03 Explore datasets](../notebooks/03_explore_datasets.ipynb) | Search local/HF archives, choose a band/time and visualize | Single map, bounded one-day/multi-day animations, storage summary |
+| [03 Explore datasets](../notebooks/03_explore_datasets.ipynb) | Search local/HF archives, choose a band/time and visualize | Single map, bounded one-day/multi-day animations, storage summary, and an optional cached 2022 radar-quality figure |
 | [04 Dataset report](../notebooks/04_dataset_report.ipynb) | Inspect diagnostics and measured performance, export a report | Cached report tables, interactive summaries, CSV/Markdown/HTML exports |
 
 ## Fetch notebooks
@@ -17,8 +17,9 @@ excluded. Restart the kernel and rerun setup after editing imported modules.
 Choose parameters, inspect the listed files, then explicitly fetch. Listing is
 not downloading. GOES defaults to all available CMIPF scans and eight bands;
 bands preserve separate native resolutions. The shared scheduler uses two total
-months with global download/reader/byte limits. MRMS study controls remain four
-product-month writers, eight downloads per writer and one decode slot. See
+months with global download/reader/byte limits. MRMS offers versioned workstation/Polaris profiles. Load a profile, then
+adjust download, decoder and queue limits independently. Workstation defaults
+are four product-month writers, eight downloads each and one decoder each. See
 [the pipeline guide](goes_parallel_pipeline.md).
 
 Hugging Face is the configured remote option; study acquisition uses the mounted
@@ -50,7 +51,7 @@ transfer and cache space are required. Local completed archives are directly rea
 ```bash
 python notebooks/03_explore_datasets.py /path/to/archives \
   --source goes --band 13 --start 2022-09-18 --end 2022-09-19 \
-  --mode single --output preview.png
+  --mode single --output figures/preview.png
 ```
 
 If Find is stale, press Find again; it refreshes the read-only index. During an
@@ -69,3 +70,15 @@ Use [report instructions](dataset_report.md) for interpretations and exports.
 Deleting old report outputs does not alter raw archives; rerun a selected report
 when needed. Colab requires cloning the actual intended revision and installing
 dependencies; push changed imported modules before testing through that clone.
+
+For the separate full-CARIB radar figure, use `dataset_report.py radar-figure`.
+Start with `--pilot-day 2022-09-18`, then run `--year 2022` after the GOES fetch
+has paused. It reads one reflectivity and one Radar Quality Index source image
+at the :10 UTC slot of each hour, updates a cumulative summary after each
+month, and exports separate overview/regional PNG/SVG maps. Use `--render-only`
+to redraw a saved summary without NOAA access.
+Notebook 03 opens the two finished local PNGs under
+`figures/mrms-2022/`; opening the notebook never starts the annual NOAA read.
+[The MRMS coverage guide](mrms_roi_and_radar_coverage.md)
+explains the acquisition box, native pixels, and illustrative 512/1,024 km
+regions.

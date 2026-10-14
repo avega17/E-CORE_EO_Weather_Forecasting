@@ -51,7 +51,7 @@ def observe(data, cache, now):
         state=task['status']
         if not complete and state!='queued' and run.get('status') in ('interrupted','paused','failed'):
             state=run['status']
-        elif state=='checkpointed':state='fetching' if run.get('process_alive') else 'checkpointed'
+        elif state=='checkpointed':state='fetching' if run.get('process_alive') or (run.get('process_alive') is None and run.get('status')=='running') else 'checkpointed'
         # Reused scratch retains the previous attempt's metrics until this band
         # is admitted. A new run heartbeat does not mean that band is reading.
         old_attempt=(not complete and run.get('status')=='running'
@@ -131,7 +131,9 @@ def completed_manifest_status(source=None, roots=None):
                 try:
                     receipt=json.loads(path.read_text())
                     if receipt.get('status')!='complete':continue
-                    for archive in receipt.get('archives',[]):
+                    for archive in receipt.get('monthly_archives',receipt.get('archives',[])):
+                        if isinstance(archive,str):
+                            archive={'path':archive,'observations':receipt.get('matched_slots',0)}
                         target=Path(archive['path'])
                         if not target.is_file() or not (target.parent/'complete.json').is_file():continue
                         count=archive.get('observations',0)
@@ -201,6 +203,7 @@ def main(argv=None, *, index_path=None, source=None):
     parser.add_argument('--band',type=int,help='GOES band number')
     parser.add_argument('--json',action='store_true',help='Machine-readable output instead of the default table')
     parser.add_argument('--cache',help='Small independent monitor cache; default beside the index')
+    parser.add_argument('--progress',help='Read a compact durable progress JSON published by a remote PBS job')
     args=parser.parse_args(argv)
     from .index import database_path
     from .jobs import status
@@ -210,7 +213,22 @@ def main(argv=None, *, index_path=None, source=None):
     except (OSError,ValueError):cache={}
     identity=hashlib.sha256(str(filename).encode()).hexdigest()
     if cache.get('index_identity')!=identity:cache={'index_identity':identity}
-    now=time.time();data=status(index_path)
+    now=time.time()
+    if args.progress:
+        try:
+            data=json.loads(Path(args.progress).read_text())
+        except (OSError,ValueError) as exc:
+            parser.error(f'Cannot read durable progress: {exc}')
+        age=now-data.get('snapshot_at',0)
+        if age>120:
+            data['fallback_scope']=f'Durable progress is {int(age)}s old; consult qstat before inferring current activity.'
+            for run in data.get('runs',[]):
+                if run.get('status')=='running':run['status']='unknown'
+        data=observe(data,cache,now)
+        data['tasks']=filter_tasks(data.get('tasks',[]),source,args.start,args.end,args.product,args.band)
+        print(json.dumps(data,indent=2,default=str) if args.json else render(data,now))
+        return 0
+    data=status(index_path)
     if data.get('status')=='index_unavailable':
         # Never write the fetch database or walk per-source inventories during a lock.
         if cache.get('snapshot'):

@@ -265,8 +265,8 @@ def coverage_map(location, output=DEFAULT_OUTPUT, **filters):
         bar.ax.set_yticklabels(['Good','Fill','No coverage','Bitmap gap','Nonfinite','Other/bad DQF',
             'Outside range','Ambiguous shear zero','Unknown quality','Conditional DQF','Invalid calibration'])
         ax.set_title(f"{row['product']} {stamp} UTC");ax.set_xlabel('Native column');ax.set_ylabel('Native row')
-        fig.tight_layout();Path(output).mkdir(parents=True,exist_ok=True)
-        fig.savefig(Path(output)/'coverage-example.png',dpi=120)
+        fig.tight_layout();figure_root=Path('figures/dataset-report');figure_root.mkdir(parents=True,exist_ok=True)
+        fig.savefig(figure_root/'coverage-example.png',dpi=120)
     return fig,stats
 
 
@@ -435,7 +435,8 @@ def export_report(output=DEFAULT_OUTPUT):
         for (product,band),group in aggregate[aggregate.patch=='Whole ROI'].groupby(['product','band'],dropna=False):
             ax.plot(pd.to_datetime(group.month),group.strict_good/group.pixels.replace(0,np.nan)*100,label=f'{product}'+(f' C{int(band):02d}' if pd.notna(band) else ''))
         ax.set_ylabel('Strict-good pixels (%)');ax.set_xlabel('Month UTC');ax.legend(fontsize=7);fig.tight_layout()
-        fig.savefig(out/'coverage-timeline.png',dpi=120);plt.close(fig)
+        figure_root=Path('figures/dataset-report');figure_root.mkdir(parents=True,exist_ok=True)
+        fig.savefig(figure_root/'coverage-timeline.png',dpi=120);plt.close(fig)
     from .report_views import export
     summary.update(export(out))
     return summary
@@ -481,5 +482,5 @@ def coverage_frequency(location,output=DEFAULT_OUTPUT,maximum_frames=24,**filter
     fig,ax=plt.subplots(figsize=(9,5));im=ax.imshow(frequency/totals*100,vmin=0,vmax=100,cmap='viridis')
     fig.colorbar(im,ax=ax,label='Strict-good observations (%)')
     ax.set(title=f"{row['product']}: {totals} sampled observations from one archive",xlabel='Sampled native columns',ylabel='Sampled native rows')
-    fig.tight_layout();Path(output).mkdir(parents=True,exist_ok=True);fig.savefig(Path(output)/'coverage-frequency.png',dpi=120)
+    fig.tight_layout();figure_root=Path('figures/dataset-report');figure_root.mkdir(parents=True,exist_ok=True);fig.savefig(figure_root/'coverage-frequency.png',dpi=120)
     return fig,{'observations':totals,'selected_observations':len(assets),'scope':'bounded one-archive temporal sample; native display pixels sampled, no reprojection'}

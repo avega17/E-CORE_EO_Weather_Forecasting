@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import json
 import multiprocessing
+import os
+import threading
 from pathlib import Path
 import shutil
 import subprocess
@@ -45,11 +47,13 @@ def partition_empty_sources(selection):
     return replace(selection, assets=readable), invalid
 
 
-def _fetch_selection(selection, destination, workers, scratch, decode_workers):
+def _fetch_selection(selection, destination, workers, scratch, decode_workers, max_inflight=8, roi_queue_mib=128):
     """A worker owns one product-month store; only the parent writes DuckDB."""
+    from .mrms_profile import cap_library_threads
+    cap_library_threads()
     return monthly.fetch(selection, destination=destination, workers=workers,
         backend="obstore", scratch=scratch, decode_workers=decode_workers,
-        monthly_writers=1, report_dir=None, index_results=False)
+        monthly_writers=1, report_dir=None, index_results=False, max_inflight=max_inflight, roi_queue_mib=roi_queue_mib)
 
 
 def preflight(destination):
@@ -102,10 +106,10 @@ def _checkpoint_ok(path):
         return False
 
 
-def _nominal_items(begin, end):
+def _nominal_items(begin, end, products=None):
     hours = (utc(end)-utc(begin)).total_seconds()/3600
     return int(hours*sum(1 if mrms.PRODUCTS[p]["frequency_minutes"] == 60 else 6
-                         for p in mrms.DEFAULT_PRODUCTS))
+                         for p in (products or mrms.DEFAULT_PRODUCTS)))
 
 
 def _year_metrics(output, year):
@@ -128,8 +132,8 @@ def _record_run_config(output, config):
     write_json(Path(output)/'run_config.json',current)
 
 
-def _continuation(output, measured_seconds, measured_items, measured_bytes, destination, scratch=None):
-    remaining = _nominal_items(datetime(2022,1,1,tzinfo=timezone.utc), STUDY_END)
+def _continuation(output, measured_seconds, measured_items, measured_bytes, destination, scratch=None, products=None):
+    remaining = _nominal_items(datetime(2022,1,1,tzinfo=timezone.utc), STUDY_END, products)
     if measured_items < 1:
         raise ValueError("No successful 2021 items; cannot estimate continuation")
     seconds = 1.3*measured_seconds/measured_items*remaining
@@ -150,178 +154,257 @@ def _continuation(output, measured_seconds, measured_items, measured_bytes, dest
     return result
 
 
+def _request_identity(begin, end, product, bbox):
+    return {"start": iso(begin), "end_excluded": iso(end), "product": product, "bbox": list(bbox)}
+
+
+def source_month_schedule(start,end,products):
+    """Partition by actual source month so no simultaneous tasks share a ZIP."""
+    first=(utc(start)-timedelta(minutes=5)).replace(day=1,hour=0,minute=0,second=0,microsecond=0)
+    return [(begin,stop,product) for begin,stop in months(first,end) for product in products]
+
+
+def discover_source_month(begin,stop,product,bbox,study_start,study_end):
+    """Retain causal request slots and assign boundary observations exactly once."""
+    cadence=60 if mrms.PRODUCTS[product]['frequency_minutes']==60 else 10
+    requested_start=max(begin,study_start)
+    requested_end=min(stop+timedelta(minutes=cadence),study_end)
+    original=mrms.discover(requested_start,requested_end,bbox=bbox,product=product,
+                           tolerance_minutes=5,time_match='previous')
+    assets=[a for a in original.assets if begin<=utc(a.time)<stop]
+    ids={a.id for a in assets}
+    matched={r['slot_time']:r for r in original.hourly_matches}
+    # Matched boundary slots belong to their source month. Unmatched slots
+    # belong to their requested month, preserving global gap accounting.
+    expected=tuple(t for t in original.expected_times
+        if (matched[t]['asset_id'] in ids if t in matched else begin<=utc(t)<stop))
+    matches=tuple(r for r in original.hourly_matches if r['asset_id'] in ids)
+    return replace(original,assets=assets,expected_times=expected,hourly_matches=matches)
+
+
+def _receipt_matches(path, request):
+    if not _checkpoint_ok(path):
+        return False
+    row = json.loads(path.read_text())
+    return row.get("request") == request
+
+
+def _terminate(pool):
+    """Do not let executor shutdown wait beyond PBS wall time."""
+    processes = list((getattr(pool, "_processes", None) or {}).values())
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+    for process in processes:
+        process.join(timeout=3)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=3)
+    pool.shutdown(wait=False, cancel_futures=True)
+
+
 def main(argv=None):
+    from .mrms_profile import add_arguments, resolve, hardware, code_identity, cap_library_threads
     p = argparse.ArgumentParser(description="Fetch native CARIB MRMS subsets to verified monthly archives")
     p.add_argument("--phase", choices=["auto", "first-year", "remaining", "all"], default="all")
-    p.add_argument("--start", help="UTC start override for a short validation run")
-    p.add_argument("--end", help="Excluded UTC end override for a short validation run")
+    p.add_argument("--start", help="UTC start override")
+    p.add_argument("--end", help="Excluded UTC end override")
     p.add_argument("--destination", default="/mnt/p/ecore_eo_datasets")
     p.add_argument("--output", default="results/study-mrms")
     p.add_argument("--scratch", help="Fast Linux-local monthly build directory")
-    p.add_argument("--bbox", nargs=4, type=float, default=PR_BBOX,
-                   metavar=("WEST", "SOUTH", "EAST", "NORTH"))
-    p.add_argument("--products", nargs="+", choices=mrms.DEFAULT_PRODUCTS,
-                   help="Limit a validation/resume run to selected default products")
-    p.add_argument("--workers", type=int, default=8,
-                   help="Concurrent NOAA source reads per monthly archive (bounded at 16); does not add writer processes")
-    p.add_argument("--decode-workers", type=int, default=1,
-                   help="Concurrent MRMS GRIB decode slots within each monthly writer process")
-    p.add_argument("--monthly-writers", type=int, default=4)
-    p.add_argument("--max-hours", type=float, default=12.)
-    p.add_argument("--dry-run", action="store_true", help="Show schedule without NOAA or DAS writes")
+    p.add_argument("--bbox", nargs=4, type=float, default=PR_BBOX, metavar=("WEST", "SOUTH", "EAST", "NORTH"))
+    p.add_argument("--products", nargs="+", type=mrms.parse_product_argument, help="NOAA product keys or readable aliases")
+    add_arguments(p)
+    p.add_argument("--max-hours", type=float, default=12., help="Hard application runtime; PBS should leave an additional minute")
+    p.add_argument("--drain-minutes", type=float, default=20., help="Minimum admission-stop margin before hard deadline")
+    p.add_argument("--durable-progress", help="Atomic aggregate status JSON on shared storage; no source-object rows")
+    p.add_argument("--dry-run", action="store_true", help="Show configuration and schedule without NOAA/storage writes")
     args = p.parse_args(argv)
-    if args.workers < 1 or args.decode_workers < 1 or args.monthly_writers < 1 or args.max_hours <= 0:
-        p.error("Worker counts and max-hours must be positive")
+    try:
+        resource_config = resolve(args)
+    except (OSError, ValueError) as exc:
+        p.error(str(exc))
+    if args.max_hours <= 0 or args.drain_minutes < 0:
+        p.error("Runtime must be positive and drain margin nonnegative")
     if bool(args.start) != bool(args.end):
-        p.error("Provide both --start and --end for a validation window")
-    selected_products = tuple(args.products or mrms.DEFAULT_PRODUCTS)
+        p.error("Provide both --start and --end")
+    selected_products = tuple(dict.fromkeys(args.products or mrms.DEFAULT_PRODUCTS))
     custom = bool(args.start)
-    start = utc(args.start) if custom else STUDY_START if args.phase != "remaining" else datetime(2022,1,1,tzinfo=timezone.utc)
-    end = utc(args.end) if custom else (datetime(2022,1,1,tzinfo=timezone.utc)
-        if args.phase == "first-year" else STUDY_END)
-    if not custom and args.phase == "remaining":
-        plan_file = Path(args.output) / "continuation_plan.json"
-        if plan_file.is_file() and json.loads(plan_file.read_text()).get("mode") == "annual":
-            for year in range(2022, 2027):
-                annual_start = datetime(year, 1, 1, tzinfo=timezone.utc)
-                annual_end = min(datetime(year+1, 1, 1, tzinfo=timezone.utc), STUDY_END)
-                complete = all(_checkpoint_ok(Path(args.output) / "months" /
-                    f"{month_start:%Y-%m}" / f"{product}.json")
-                    for month_start, _ in months(annual_start, annual_end)
-                    for product in mrms.DEFAULT_PRODUCTS)
-                if not complete:
-                    start, end = annual_start, annual_end
-                    break
-            else:
-                print("All remaining study months already have verified checkpoints.")
-                return 0
-    if start >= end or (not custom and (start < STUDY_START or end > STUDY_END)):
+    start = utc(args.start) if custom else (datetime(2022,1,1,tzinfo=timezone.utc) if args.phase == 'remaining' else STUDY_START)
+    end = utc(args.end) if custom else (datetime(2022,1,1,tzinfo=timezone.utc) if args.phase == 'first-year' else STUDY_END)
+    if start >= end:
         p.error("Invalid study interval")
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    snapshot_manifest = Path(__file__).resolve().parents[2] / "snapshot.json"
-    snapshot_sha256 = (json.loads(snapshot_manifest.read_text())["sha256"]
-                       if snapshot_manifest.is_file() else None)
-    config = {"phase": args.phase, "start": iso(start), "end_excluded": iso(end),
-        "bbox": args.bbox, "products": selected_products, "destination": args.destination,
-        "workers": args.workers, "decode_workers": args.decode_workers,
-        "monthly_writers": args.monthly_writers, "max_hours": args.max_hours,
-        "git_revision": revision, "code_snapshot_sha256": snapshot_sha256,
-        "python": sys.executable}
+    revision, snapshot_sha256 = code_identity()
+    config = {"phase": args.phase, "start": iso(start), "end_excluded": iso(end), "bbox": list(args.bbox),
+        "products": selected_products, "destination": args.destination, **resource_config['resources'],
+        "resource_profile": resource_config, "hardware": hardware(), "max_hours": args.max_hours,
+        "drain_minutes": args.drain_minutes, "git_revision": revision, "code_snapshot_sha256": snapshot_sha256,
+        "pbs_job_id": os.getenv('PBS_JOBID'), "python": sys.executable}
+    schedule = source_month_schedule(start,end,selected_products)
     if args.dry_run:
-        print(json.dumps({**config, "nominal_slots": _nominal_items(start, end)}, indent=2))
+        print(json.dumps({**config, "nominal_slots": _nominal_items(start,end,selected_products), "product_month_tasks":len(schedule)}, indent=2))
         return 0
-    output = Path(args.output)
+    output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    _record_run_config(output, config)
+    scratch = Path(args.scratch or tempfile.gettempdir()).resolve()
+    scratch.mkdir(parents=True,exist_ok=True)
+    args.scratch = str(scratch)
+    _record_run_config(output,config)
     try:
         preflight(args.destination)
+        if os.getenv('PBS_JOBID') and len(os.sched_getaffinity(0)) < 32:
+            raise RuntimeError('Polaris coordinator needs access to at least 32 CPUs; inspect mpiexec binding')
     except Exception as exc:
-        write_json(output / "failure.json", {"stage": "preflight", "error": str(exc)})
-        print(f"Preflight failed: {exc}", file=sys.stderr)
+        write_json(output/'failure.json', {'stage':'preflight','error':str(exc)})
+        print(f'Preflight failed: {exc}',file=sys.stderr)
         return 1
+    cap_library_threads()
     began = time.monotonic()
-    successful_items = 0
-    successful_seconds = 0.
-    stored_bytes = 0
+    deadline = began+args.max_hours*3600
+    pending = {}
     summary = []
+    task_times = []
+    progress_lock = threading.Lock()
+    progress_stop = threading.Event()
+    peak_rss = 0
+    def publish():
+        if not args.durable_progress:
+            return
+        from .jobs import status
+        from .runlog import compact
+        from .common import write_json as atomic_json
+        data = compact(status(os.getenv('ECORE_INDEX_PATH')))
+        if data.get('status')=='index_unavailable':
+            return
+        data.update(snapshot_at=time.time(), source='mrms', pbs_job_id=os.getenv('PBS_JOBID'))
+        atomic_json(Path(args.durable_progress),data)
+    def heartbeat():
+        while not progress_stop.wait(30):
+            try:
+                with progress_lock:
+                    publish()
+            except Exception as exc:
+                print(f'Durable progress update: {exc}',file=sys.stderr,flush=True)
+    progress_thread = threading.Thread(target=heartbeat,daemon=True)
+    progress_thread.start()
+    import psutil
+    process = psutil.Process()
+    pool = ProcessPoolExecutor(max_workers=args.monthly_writers, mp_context=multiprocessing.get_context('spawn'))
+    forced = False
+    paused = False
+    iterator = iter(schedule)
+    next_task = next(iterator,None)
+    def finish(future):
+        begin,stop,product,checkpoint,original,selection,invalid,started = pending.pop(future)
+        report = future.result()
+        failures = [r for r in report['monthly_archives'] if r['status']=='failed']
+        if failures:
+            raise IOError(f"{product} {begin:%Y-%m}: {failures}")
+        from .index import record_fetch
+        record_fetch(report)
+        wall = time.monotonic()-started
+        rows = report['monthly_archives']
+        row = dict(status='complete',month=f'{begin:%Y-%m}',product=product,
+            request={**_request_identity(begin,stop,product,args.bbox),
+                'study_start':iso(start),'study_end_excluded':iso(end),'partition':'source-month-v1'}, expected_slots=len(original.expected_times),
+            listed_slots=len(original.assets), matched_slots=len(selection.assets),
+            missing_slots=len(original.expected_times)-len(selection.assets), invalid_source_files=invalid,
+            source_listed_bytes=sum(a.size for a in original.assets),source_read_bytes=report['read_bytes'],
+            stored_bytes=report['stored_bytes'],wall_seconds=wall, archives=[r['path'] for r in rows],
+            monthly_archives=rows,selection_id=original.id,finished_at=time.time())
+        write_json(checkpoint,row)
+        selection_path=checkpoint.parent/f'{product}-selection'
+        if selection_path.is_dir():
+            shutil.rmtree(selection_path)
+        summary.append(row)
+        task_times.append(wall)
+        print(f"Saved {begin:%Y-%m} {product}: {len(selection.assets)} observations, {wall:.1f}s",flush=True)
+        if os.getenv('ECORE_DURABLE_STATE'):
+            from .runlog import closed_snapshot
+            closed_snapshot(Path(os.environ['ECORE_DURABLE_STATE'])/'archive_index.duckdb')
+        with progress_lock:
+            publish()
     try:
-        with ProcessPoolExecutor(max_workers=args.monthly_writers,
-                mp_context=multiprocessing.get_context("spawn")) as pool:
-          for month_start, month_end in months(start, end):
-            if (output/'pause.request').exists() or time.monotonic()-began > args.max_hours*3600:
-                write_json(output / "paused.json", {"reason": "max-hours reached at month boundary",
-                    "next_month": iso(month_start), "summary": summary})
-                print(f"Paused before {month_start:%Y-%m}; resume with the same command", flush=True)
-                return 75
-            # A partially specified month would violate canonical month layout.
-            if month_start.day != 1 or month_start.hour != 0 or month_start.minute != 0:
-                if not custom:
-                    raise ValueError("Study month boundary is not UTC midnight")
-            pending = []
-
-            def finish(task):
-                nonlocal successful_items, successful_seconds, stored_bytes
-                selection, original_selection, invalid_sources, checkpoint, product, started, future = task
-                report = future.result()
-                from ecore_weather.index import record_fetch
-                record_fetch(report)
-                failures = [archive for archive in report["monthly_archives"]
-                            if archive["status"] == "failed"]
-                if failures:
-                    raise IOError(f"{product} {month_start:%Y-%m}: {failures}")
-                archives = [archive["path"] for archive in report["monthly_archives"]]
-                row = {"status": "complete", "month": f"{month_start:%Y-%m}",
-                    "product": product, "expected_slots": len(original_selection.expected_times),
-                    "listed_slots": len(original_selection.assets),
-                    "matched_slots": len(selection.assets),
-                    "missing_slots": max(0, len(original_selection.expected_times)-len(selection.assets)),
-                    "invalid_source_files": invalid_sources,
-                    "source_listed_bytes": sum(asset.size for asset in original_selection.assets),
-                    "source_read_bytes": report["read_bytes"],
-                    "stored_bytes": report["stored_bytes"], "wall_seconds": time.perf_counter()-started,
-                    "archives": archives, "selection_id": original_selection.id}
-                write_json(checkpoint, row)
-                summary.append(row)
-                successful_items += len(selection.assets)
-                successful_seconds += row["wall_seconds"]
-                stored_bytes += report["stored_bytes"]
-                print(f"Saved {month_start:%Y-%m} {product}: {len(selection.assets)} observations, "
-                      f"{row['wall_seconds']:.1f}s", flush=True)
-
-            for product in selected_products:
-                checkpoint = output / "months" / f"{month_start:%Y-%m}" / f"{product}.json"
-                if _checkpoint_ok(checkpoint):
-                    print(f"Reused {month_start:%Y-%m} {product}", flush=True)
+        while next_task is not None or pending:
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                paused=True
+                forced=True
+                _terminate(pool)
+                break
+            rss = 0
+            for proc in [process,*process.children(recursive=True)]:
+                try:
+                    rss += proc.memory_info().rss
+                except psutil.Error:
+                    pass
+            peak_rss=max(peak_rss,rss)
+            if rss > args.memory_gib*1024**3:
+                forced=True
+                _terminate(pool)
+                raise MemoryError(f'Job RSS {rss} exceeds {args.memory_gib} GiB ceiling')
+            margin = max(args.drain_minutes*60,1.3*max(task_times,default=0))
+            paused = paused or (output/'pause.request').exists() or remaining <= margin
+            if next_task is not None and not paused and len(pending)<args.monthly_writers:
+                begin,stop,product = next_task
+                next_task=next(iterator,None)
+                checkpoint=output/'months'/f'{begin:%Y-%m}'/f'{product}.json'
+                request={**_request_identity(begin,stop,product,args.bbox),
+                         'study_start':iso(start),'study_end_excluded':iso(end),'partition':'source-month-v1'}
+                if _receipt_matches(checkpoint,request):
+                    print(f'Reused {begin:%Y-%m} {product}',flush=True)
                     continue
-                started = time.perf_counter()
-                original_selection = mrms.discover(month_start, month_end, bbox=args.bbox,
-                    product=product, tolerance_minutes=5, time_match="previous")
-                if not original_selection.assets:
-                    row = {"status": "unavailable", "month": f"{month_start:%Y-%m}",
-                        "product": product, "expected_slots": len(original_selection.expected_times),
-                        "matched_slots": 0, "reason": "No historical CARIB objects matched this product-month"}
-                    write_json(checkpoint, row)
+                started=time.monotonic()
+                selection_path=checkpoint.parent/f'{product}-selection'
+                saved=selection_path/'collection.json'
+                original=catalog.load_selection(saved) if saved.is_file() else discover_source_month(begin,stop,product,args.bbox,start,end)
+                requested_start=max(begin,start)
+                cadence=60 if mrms.PRODUCTS[product]['frequency_minutes']==60 else 10
+                requested_end=min(stop+timedelta(minutes=cadence),end)
+                if (original.start,original.end,original.product,tuple(original.bbox)) != (iso(requested_start),iso(requested_end),product,tuple(args.bbox)):
+                    raise ValueError(f'Saved selection differs for {product} {begin:%Y-%m}')
+                if not original.assets:
+                    row=dict(status='unavailable',month=f'{begin:%Y-%m}',product=product,request=request,
+                        expected_slots=len(original.expected_times),matched_slots=0,reason='No historical CARIB objects matched')
+                    write_json(checkpoint,row)
                     summary.append(row)
-                    print(f"Unavailable {month_start:%Y-%m} {product}", flush=True)
                     continue
-                # Keep the full catalog selection. Empty NOAA keys are unavailable
-                # files, not valid zero-rain observations or pixel sentinels.
-                catalog.save_selection(original_selection,
-                    checkpoint.parent / f"{product}-selection")
-                selection, invalid_sources = partition_empty_sources(original_selection)
+                if not saved.exists():
+                    catalog.save_selection(original,selection_path)
+                selection,invalid=partition_empty_sources(original)
                 if not selection.assets:
-                    raise IOError(f"{product} {month_start:%Y-%m}: all listed NOAA objects are empty")
-                # A real source read must succeed before starting the monthly build.
-                with Transport("obstore") as transport:
-                    sample, _ = mrms.read(selection.assets[0], args.bbox, product, transport)
-                    if "measurement" not in sample or "bitmap_valid" not in sample:
-                        raise IOError(f"Representative source lacks data or bitmap: {product}")
-                future = pool.submit(_fetch_selection, selection, args.destination,
-                    args.workers, args.scratch, args.decode_workers)
-                pending.append((selection, original_selection, invalid_sources,
-                                checkpoint, product, started, future))
-                if len(pending) >= args.monthly_writers:
-                    finish(pending.pop(0))
-            for task in pending:
-                finish(task)
-            if not custom and args.phase in {"auto", "first-year"} and month_end.year == 2022 and month_end.month == 1:
-                seconds_2021, items_2021, bytes_2021 = _year_metrics(output, 2021)
-                plan = _continuation(output, seconds_2021, items_2021,
-                                     bytes_2021, args.destination, args.scratch)
-                print(f"2021 complete; recommended continuation: {plan['mode']}", flush=True)
-                if args.phase == "auto" and plan["mode"] == "annual":
-                    print("Stopping after the first year; use the saved continuation command for later years.", flush=True)
-                    return 75
-        write_json(output / "summary.json", {"status": "complete", "config": config,
-            "new_successful_items": successful_items, "new_stored_bytes": stored_bytes,
-            "elapsed_seconds": time.monotonic()-began, "months": summary})
-        return 0
+                    raise IOError(f'{product} {begin:%Y-%m}: all listed NOAA objects are empty')
+                future=pool.submit(_fetch_selection,selection,args.destination,args.workers,args.scratch,
+                    args.decode_workers,args.max_inflight,args.roi_queue_mib)
+                pending[future]=(begin,stop,product,checkpoint,original,selection,invalid,started)
+                continue
+            if pending:
+                done,_=wait(pending,timeout=min(1,max(0,remaining)),return_when=FIRST_COMPLETED)
+                for future in done:
+                    finish(future)
+            elif paused:
+                break
+        elapsed=time.monotonic()-began
+        result=dict(status='paused' if paused else 'complete',config=config,elapsed_seconds=elapsed,
+            peak_job_rss_bytes=peak_rss,new_successful_items=sum(r.get('matched_slots',0) for r in summary),
+            new_stored_bytes=sum(r.get('stored_bytes',0) for r in summary),months=summary,
+            unfinished_product_months=[dict(month=f'{v[0]:%Y-%m}',product=v[2]) for v in pending.values()],
+            hard_deadline_reached=forced)
+        write_json(output/('paused.json' if paused else 'summary.json'),result)
+        return 75 if paused else 0
     except Exception as exc:
-        write_json(output / "failure.json", {"stage": "fetch", "error": f"{type(exc).__name__}: {exc}",
-            "completed_this_run": summary})
-        print(f"MRMS job stopped: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if not forced:
+            _terminate(pool)
+            forced=True
+        write_json(output/'failure.json',dict(stage='fetch',error=f'{type(exc).__name__}: {exc}',completed_this_run=summary))
+        print(f'MRMS job stopped: {type(exc).__name__}: {exc}',file=sys.stderr,flush=True)
         return 1
+    finally:
+        if not forced:
+            pool.shutdown(wait=True,cancel_futures=True)
+        progress_stop.set()
+        progress_thread.join(10)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

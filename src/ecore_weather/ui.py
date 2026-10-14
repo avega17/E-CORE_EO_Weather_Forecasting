@@ -13,6 +13,7 @@ _MRMS_ROWS = [
     ("PrecipRate_00.00", "Instantaneous radar precipitation rate, not an hourly total", "mm h−1", "−1 / −3", "~2 minutes"),
     ("MergedReflectivityQCComposite_00.50", "Quality-controlled composite (column-maximum) reflectivity", "dBZ", "−99 / −999", "~2 minutes"),
     ("MergedBaseReflectivityQC_00.50", "Quality-controlled lowest-tilt (base) reflectivity", "dBZ", "−99 / −999", "~2 minutes"),
+    ("RadarQualityIndex_00.00", "Radar quality context for precipitation estimates; zero is a valid low score", "0–1", "−1 / −3", "~2 minutes"),
     ("MergedAzShear_0-2kmAGL_00.50", "Low-level azimuthal shear, a radar rotation proxy", "0.001 s−1", "0 / 0; check bitmap", "~2 minutes"),
     ("MergedAzShear_3-6kmAGL_00.50", "Mid-level azimuthal shear, a radar rotation proxy", "0.001 s−1", "0 / 0; check bitmap", "~2 minutes"),
 ]
@@ -191,6 +192,28 @@ def selection_controls(source):
                  widgets.HBox([controls["prefetch_mib"], controls["block_size_kib"]]),
                  controls["reuse_cmipf"], controls["reuse_cmipf_root"]]
     else:
+        controls['profile'] = widgets.Text(value='jobs/mrms_workstation.json',description='Profile',
+            tooltip='MRMS machine JSON. Load it before adjusting individual controls.',layout=widgets.Layout(width='600px'))
+        controls['decode_workers'] = widgets.BoundedIntText(value=1,min=1,max=16,description='Decoders')
+        controls['max_inflight'] = widgets.BoundedIntText(value=8,min=1,max=128,description='In flight',
+            tooltip='Maximum active and queued observations per product-month writer.')
+        controls['roi_queue_mib'] = widgets.BoundedIntText(value=128,min=1,max=4096,description='ROI MiB',
+            tooltip='ROI payload capacity per writer; source and decoder buffers are separate.')
+        controls['memory_gib'] = widgets.BoundedIntText(value=32,min=1,max=512,description='Job GiB')
+        load_profile=widgets.Button(description='Load profile',tooltip='Apply resource settings; changing individual controls then overrides them.')
+        def apply_profile(_=None):
+            from argparse import Namespace
+            from .mrms_profile import resolve
+            resolved=resolve(Namespace(profile=controls['profile'].value or None))
+            for key,value in resolved['resources'].items():
+                controls[key].value=value
+        load_profile.on_click(apply_profile)
+        controls['monthly_writers'].max=32
+        apply_profile()
+        controls['read_processes'].layout.display='none'
+        rows += [widgets.HBox([controls['profile'],load_profile]),
+                 widgets.HBox([controls['decode_workers'],controls['max_inflight']]),
+                 widgets.HBox([controls['roi_queue_mib'],controls['memory_gib']])]
         controls["tolerance_minutes"] = widgets.BoundedFloatText(value=5, min=0, max=5, description="Margin (min)")
         controls["time_match"] = widgets.Dropdown(options=[("Latest at/before slot", "previous"), ("Nearest, either side", "nearest"), ("Exact clock hour", "exact")], description="Hour match")
         rows += [controls["tolerance_minutes"], controls["time_match"]]

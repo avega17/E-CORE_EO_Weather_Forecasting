@@ -1,13 +1,85 @@
-# MRMS ROI and radar coverage
+# MRMS study regions and radar quality
 
-Historical bounded coverage experiment. The scientific interpretation below remains
-useful; obsolete probe files were removed during results consolidation. Live
-coverage should be recomputed from the current archive with notebook 04, not from
-old result paths.
+Two static maps show the Caribbean source domain and the Puerto Rico study
+regions. The colored field is mean Radar Quality Index (RQI): a score describing
+potential uncertainty in radar precipitation estimates from beam blockage and
+beam height relative to the melting layer. Higher scores indicate more favorable
+sampling. RQI is not a direct measure of reflectivity error or accuracy.
+[NOAA RQI explanation](https://vlab.noaa.gov/web/wdtd/-/radar-quality-index-rqi-?selectedFolder=668045).
 
-Measured October 3, 2026. Reproduce with
-`python scripts/estimate_mrms_roi.py`; results are in
-`results/mrms-roi/coverage.json`. This diagnostic does not change raw archives.
+## The two maps
+
+The Caribbean overview shows the CARIB file-grid boundary, current acquisition
+box and approximate future region. The Puerto Rico map adds an illustrative
+training patch and a black contour around pixels with valid reflectivity in at
+least 1% of successfully read hourly samples. That contour depends on weather
+and data availability; it does not establish a fixed station range.
+
+Generated images live in `figures/`, which is intentionally ignored by Git.
+After rendering locally, open:
+
+- [Caribbean overview](../figures/mrms-2022/mrms-rqi-macro-2022.png)
+- [Puerto Rico region](../figures/mrms-2022/mrms-rqi-regional-2022.png)
+
+Each has an SVG partner. Numerical counts and the compressed source selection
+stay under `results/dataset-report/mrms-radar-2022/`; no generated assets are
+stored under `docs/`. Notebook 03 displays the two cached PNGs without fetching.
+
+Red outlines show the acquisition box: 70.24–62.56° W, 14.36–22.04° N.
+The orange dashed square is an illustrative 512 × 512 km training patch;
+the purple dash-dot square is an approximate 1,024 × 1,024 km future region.
+Both are centered at 66.4° W, 18.2° N. A planned 1 km training grid would have
+approximately 512 cells along the smaller square, but rendering does not
+interpolate the observations. The existing 512-native-pixel notebook crop is
+another view, with a different physical interpretation.
+
+## Render or calculate
+
+The completed 2022 summary can be rendered again without NOAA access:
+
+```bash
+python scripts/dataset_report.py radar-figure --year 2022 --render-only
+python scripts/dataset_report.py radar-figure --year 2022 --render-only --view regional
+```
+
+For a new period, run a source-to-archive pilot before aggregation. Keep long
+source reads separate from active fetch performance measurements:
+
+```bash
+python scripts/dataset_report.py radar-figure --pilot-day 2022-09-18 \
+  --location /mnt/p/ecore_eo_datasets
+python scripts/dataset_report.py radar-figure --start 2026-01-01 --end 2026-07-01 \
+  --location /mnt/p/ecore_eo_datasets --workers 4
+```
+
+The remaining annual calculations for 2021–2025 and H1 2026 are gated on a
+successful Polaris pilot and a verified production month for both reflectivity
+products. They will run on the workstation; 2022 reuses its saved summary.
+`--figures-dir` changes image output, while `--output` changes numerical report
+state. Other controls set the center and illustrative square sizes.
+
+The aggregation reads one full-CARIB reflectivity and RQI observation at each
+`:10` UTC hourly slot, selecting only a source at or before that slot within
+five minutes. This sampling keeps source-month archive boundaries unambiguous.
+It retains only cumulative counts/sums and one compressed source selection.
+Completed monthly aggregates are reusable; an interrupted month is reread.
+The requested interval determines completeness, including leap years and H1 2026.
+Raw GRIB files are discarded after decoding, and saved research archives remain
+unchanged.
+
+The completed 2022 pass read **8,757 reflectivity** and **8,752 RQI** images out
+of 8,760 hourly slots, returning **507.5 MB** in **976 seconds** of monthly
+read/aggregation time. Three reflectivity and eight RQI source hours were absent.
+No cell reached 50% valid-reflectivity frequency; the maximum was **26.4%**.
+Missing files and missing pixels remain separate in the report.
+
+Reflectivity -99/-999 and RQI -1/-3 are omitted from their respective aggregates.
+Valid zero RQI scores remain included. Observed RQI values outside 0–1, including
+-285.3, are counted separately rather than declared new official sentinels.
+In 2022, these anomalies accounted for 3.56% of full-grid pixel observations;
+77.0% encoded no coverage. The regional view helps interpret these source-grid
+statistics around Puerto Rico. The mean is calculated from valid RQI observations
+at each pixel, not by treating absent values as zero.
 
 ## Percentage retained
 
@@ -49,7 +121,7 @@ A densely sampled geodesic-circle intersection, measured in a TJUA-centred
 Lambert azimuthal equal-area projection, places **100% of the nominal 230 km
 disk** and **92.06% of the nominal 460 km disk** inside our ROI. The latter
 intersection is approximately 611,728 km² out of 664,471 km². Evidence is in
-`results/mrms-roi/geometric-range-overlap.json`. These percentages answer the
+the original geometric-range check. These percentages answer the
 single-radar geometric comparison; the 13.08% figure above answers the CARIB
 file-grid comparison. Neither measures reliable precipitation coverage.
 
@@ -60,7 +132,7 @@ That footprint still contains -99 missing measurements. Excluding that code
 too, the farthest measured reflectivity pixel was **421.99 km** away. The
 first number describes an encoded footprint; the second is weather-dependent,
 not a quality guarantee or study-period maximum. Evidence is in
-`results/mrms-roi/composite-snapshot.json`. Neither establishes single-site
+the archived source comparison. Neither establishes single-site
 attribution in a mosaic.
 
 ## Quality-dependent footprint
@@ -91,7 +163,8 @@ definitive single-radar boundary or study-period climatology. RQI zero is low
 quality, not zero rain. Audit more times/seasons before choosing a training
 mask or shrinking the acquisition ROI.
 
-The four archived MRMS defaults do **not** include RQI. GRIB bitmaps and
-sentinels establish missingness, not rainfall accuracy. Future diagnostics
-should align RQI and relevant accumulation-quality fields with QPE and source
-availability. Quality masking remains separate from persisted measurements.
+The four archived MRMS defaults do **not** include RQI. The 2022 figure aligns
+hourly RQI and reflectivity source times, but it does not validate QPE accuracy
+or define a training mask. GRIB bitmaps and sentinels establish missingness,
+not rainfall accuracy. Quality masking remains separate from persisted
+measurements.

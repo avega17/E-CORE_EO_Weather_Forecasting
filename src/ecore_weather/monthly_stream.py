@@ -95,7 +95,7 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                decode_workers=1, block_size=1024*1024, scratch=None,
                read_processes=2, prefetch_mib=512, read_mode="range",
                download_concurrency=8, staging_mib=4096, reader_factory=None,
-               checkpoint_callback=None, finalizer=None):
+               checkpoint_callback=None, finalizer=None, max_inflight=None, roi_queue_mib=128):
     """Build one archive; no source observation is held past its Zarr write."""
     from earth2studio.io import ZarrBackend
     from zarr.codecs import BloscCodec, BloscShuffle
@@ -191,6 +191,12 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                         read_processes, prefetch_mib, block_size, metrics, backend,
                         read_mode, download_concurrency, staging_mib, parent/"source-cache"))
                     stack.callback(native_reads.close)
+                if selection.source == 'mrms':
+                    from .mrms_pipeline import ordered_reads as mrms_ordered_reads
+                    new_rows = [r for i,r in enumerate(rows) if i not in saved and r['kind']=='new']
+                    mrms_reads = mrms_ordered_reads(new_rows, selection, transport, read_workers,
+                        max_inflight or read_workers, roi_queue_mib, metrics, reader=_read_new)
+                    stack.callback(mrms_reads.close)
                 # NOAA reads overlap the serial archive writer. Downloads and
                 # completed datasets in this queue are bounded independently
                 # from the per-process decode semaphore in Transport.
@@ -203,7 +209,7 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                     except StopIteration:
                         return False
                     future = (pool.submit(_read_new, row["asset"], selection, band,
-                        transport, block_size) if row["kind"] == "new" and not native and row["asset_id"] not in saved_asset_ids else None)
+                        transport, block_size) if row["kind"] == "new" and not native and selection.source != 'mrms' and row["asset_id"] not in saved_asset_ids else None)
                     queue.append((row, future))
                     return True
 
@@ -212,6 +218,9 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                 dimensions = None
                 arrays = None
                 for index in range(len(rows)):
+                    if selection.source == 'mrms':
+                        from .mrms_profile import check_memory_limit
+                        check_memory_limit()
                     row, future = queue.popleft()
                     enqueue()
                     if index in saved:
@@ -225,6 +234,12 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                         read_row, (ds, _) = next(native_reads)
                         if read_row["asset_id"] != row["asset_id"]:
                             raise IOError("Native read ordering changed")
+                        raw_meta = _source_metadata(ds)
+                        source = _science(ds, band)
+                    elif selection.source == 'mrms' and row['kind'] == 'new':
+                        read_row, (ds, _) = next(mrms_reads)
+                        if read_row['asset_id'] != row['asset_id']:
+                            raise IOError('MRMS read ordering changed')
                         raw_meta = _source_metadata(ds)
                         source = _science(ds, band)
                     elif future is None:

@@ -10,5 +10,8 @@ exec "$python_bin" "$script_root/scripts/dataset_jobs.py" fetch mrms \
   --phase all --start 2021-01-01 --end 2026-07-01 \
   --destination "$ECORE_DESTINATION" --scratch "$ECORE_SCRATCH" \
   --index-path "$ECORE_INDEX_PATH" --output "${ECORE_RUN_OUTPUT:-results/study-mrms}" \
+  --profile "${ECORE_PROFILE:-$script_root/jobs/mrms_workstation.json}" \
   --monthly-writers "${ECORE_MONTH_WRITERS:-4}" --workers "${ECORE_DOWNLOADS:-8}" \
-  --decode-workers "${ECORE_DECODERS:-1}" --max-hours "${ECORE_MAX_HOURS:-12}" "$@"
+  --decode-workers "${ECORE_DECODERS:-1}" --max-inflight "${ECORE_MAX_INFLIGHT:-8}" \
+  --roi-queue-mib "${ECORE_ROI_QUEUE_MIB:-128}" --memory-gib "${ECORE_MEMORY_GIB:-32}" \
+  --max-hours "${ECORE_MAX_HOURS:-12}" "$@"

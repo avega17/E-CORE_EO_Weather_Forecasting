@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "source": "mrms",
+  "name": "workstation",
+  "hardware_context": "16 physical cores, 32 hardware threads; actual affinity and memory recorded at runtime",
+  "resources": {
+    "monthly_writers": 4,
+    "workers": 8,
+    "decode_workers": 1,
+    "max_inflight": 8,
+    "roi_queue_mib": 128,
+    "memory_gib": 32
+  }
+}

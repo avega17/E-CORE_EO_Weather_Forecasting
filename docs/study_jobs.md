@@ -25,6 +25,24 @@ python scripts/dataset_jobs.py pause goes --output results/study-goes-native
 Do not start a second coordinator. A supported pause stops new month admissions
 and drains every already admitted month to verified completion. Exit 75 is an
 intentional pause. Resume reuses matching completed months and verified scan batches.
+
+To have a live GOES coordinator stop after a particular month, arm the
+month-checkpoint controller with that run's identifier:
+
+```bash
+python scripts/dataset_jobs.py stop-after goes --month 2022-12 \
+  --run-id <active-run-id> --output results/study-goes-native
+```
+
+The controller waits until the checkpoint says the month is complete and all
+eight native-band archives have their completion records and verified sizes.
+It then creates the same `pause.request` used by a manual safe pause. The
+coordinator finishes any months it had already admitted before exiting with
+status 75. As a result, the final completed month can be later than the target
+when other month writers were already working. The controller's
+`stop-after-YYYY-MM.json` record shows whether it is waiting, has requested the
+pause, or has observed the final paused receipt. This is useful when the
+coordinator was launched without its startup-only `--stop-after-month` option.
 Choose the same scratch path as the recorded run when recovering partial work.
 
 To change resource settings after a verified drain:
@@ -40,8 +58,9 @@ workspace edits cannot change it. After the pause receipt, mount, capacity and
 completed checkpoints verify, it launches the earliest unfinished chronological month.
 It does not rerun benchmarks. Half-year stages advance automatically, switching
 GOES-East satellites according to observed operational availability. The current
-four-month run October 2021–January 2022 is draining; its successor uses two normal
-month owners and one additional C02-only tail.
+active months and progress are shown by the status command above; do not infer
+the live run from an old launch description. The configured profile uses two
+normal month owners and one additional C02-only tail.
 
 ## MRMS and a portable batch wrapper
 
@@ -60,8 +79,8 @@ python scripts/dataset_jobs.py status mrms
 For a fresh compute environment, copy `jobs/mrms_study.env.example`, set its
 paths and source it; run `bash jobs/mrms_study.sh`. Set `ECORE_PYTHON` to the
 Conda interpreter if needed. `ECORE_MAX_HOURS` controls the application time budget;
-scheduler directives and submission are deferred until Argonne's node, network and
-wall-time policy are known. Keep the live index on node-local/Linux storage. A
+the [Polaris PBS procedure](#polaris-pbs) uses the same runner with a dedicated
+reflectivity collection and machine profile. Keep the live index on node-local/Linux storage. A
 `--durable-state` location can receive closed snapshots at supported checkpoints.
 Do not copy a live DuckDB WAL/database as a backup.
 
@@ -153,3 +172,174 @@ Completed archives are hash-checked as chronological admission reaches their
 months. The coordinator no longer scans every future completed ZIP before
 starting the earliest unfinished month; this removes unnecessary startup delay
 without changing verified reuse.
+
+## Polaris PBS
+
+The Polaris collection is deliberately limited to **composite and base
+reflectivity**, both sampled on ten-minute causal slots, for 2021-01-01 through
+2026-07-01 (end excluded). StormScope's “Max. Comp. Refl.” is composite
+reflectivity, not a third field. The workstation's four-product collection
+remains available through its normal defaults.
+
+### Profiles and actual concurrency
+
+`--profile jobs/mrms_workstation.json` or `--profile jobs/mrms_polaris.json`
+loads versioned resource settings. Built-in defaults are followed by profile
+values and then explicit CLI overrides. Widgets have a Load profile button;
+changing a control afterwards overrides that value. Runs record resolved
+limits, the profile hash, actual CPU affinity, memory and package versions.
+
+| Setting | Workstation | Polaris initial candidate |
+|---|---:|---:|
+| Product-month writer processes | 4 | 8 |
+| Download threads per writer | 8 | 8 |
+| Decode slots per writer | 1 | 1 |
+| Active plus queued observations per writer | 8 | 16 |
+| Reserved ROI payload per writer | 128 MiB | 256 MiB |
+| Total process RSS ceiling | 32 GiB | 64 GiB |
+
+The Polaris candidate has 64 download threads in total, twice the workstation
+profile. Doubling both writers and per-writer downloads would produce 128.
+Decode slots are separate from download threads. Compressed gzip and expanded
+GRIB buffers, full-grid decoding and returned ROI arrays have different memory
+costs; the ROI queue limit is not a total-memory estimate. Conservative ROI
+reservations reduce effective admission when necessary, while the job RSS
+ceiling covers the whole process tree. Incidental numerical-library threads
+are capped to one so they do not multiply the intended process concurrency.
+
+The scheduler admits independent **source-month** stores across adjacent months.
+For example, a February 00:00 slot may use January 23:58 data. That observation
+belongs to January's store, so it is assigned to the January owner rather than
+making a February worker contend for the same ZIP. Requested and actual times
+remain recorded, and unmatched slots are counted once. A study starting at
+midnight can therefore have a small preceding-month boundary archive.
+
+Polaris settings are starting candidates, not measured speedups. Screen 4/8/12
+writers, then 4/8/16 download threads near the best result. Test a second decode
+slot only when decode waiting is material. Compare larger queues only when
+phase waiting indicates a benefit. The supported tuning command uses identical
+CARIB objects for both variables in six 2022 monthly contexts, a cumulative
+10 GiB returned-byte budget and three rotated finalist repeats. It includes
+worker startup through packing and destination verification; comparison hashing
+is timed separately. Prefer fewer resources when medians differ by at most 5%.
+Successful temporary stores are removed; failed stores retain a small failure
+record. Fresh application stores do not imply flushed filesystem caches.
+
+### First setup
+
+There is no existing Polaris checkout/environment. After local tests, commit
+and push the reviewed implementation. Authenticate with `ssh
+asvnpr@polaris.alcf.anl.gov` using a fresh application passcode. Check the PBS
+allocation and queue eligibility, `myprojectquotas`, and the project path before
+using the example values below. Do not assume the PBS account equals the
+storage directory name.
+
+```bash
+export ECORE_PROJECT_ROOT=/lus/eagle/lighthouse-upr
+export ECORE_REVISION=<tested-pushed-commit>
+mkdir -p "$ECORE_PROJECT_ROOT/ecore-weather"
+git clone https://github.com/avega17/E-CORE_EO_Radar_GFMs.git \
+  "$ECORE_PROJECT_ROOT/ecore-weather/repo"
+cd "$ECORE_PROJECT_ROOT/ecore-weather/repo"
+git checkout --detach "$ECORE_REVISION"
+module use /soft/modulefiles
+module load conda
+export CONDA_PKGS_DIRS="$ECORE_PROJECT_ROOT/ecore-weather/conda-cache"
+conda env create -p "$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu" \
+  -f jobs/environment-polaris.yml
+export ECORE_PYTHON="$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu/bin/python"
+"$ECORE_PYTHON" -m pip install --no-deps -e .
+"$ECORE_PYTHON" -m pip check
+"$ECORE_PYTHON" -m pip freeze > "$ECORE_PROJECT_ROOT/ecore-weather/environment-resolved.txt"
+```
+
+Use the dedicated CPU environment rather than cloning the site's large GPU
+base. ALCF documents the [available Python environment approaches](https://docs.alcf.anl.gov/polaris/data-science/python/).
+Installation and heavy checks use compute allocations where required by site
+policy. Login nodes are used for normal setup, submission and monitoring.
+
+### Pilot, tuning, production
+
+The script uses the [documented Polaris proxy](https://docs.alcf.anl.gov/polaris/getting-started/#proxy)
+for anonymous NOAA listing and GET requests, with TLS verification enabled.
+It launches one coordinator with access to the node's CPUs. Verify that its
+recorded affinity is appropriate rather than assuming the MPI launch exposed
+all cores. GPUs are unused.
+
+Set `ECORE_QUOTA_FREE_GIB` from the current `myprojectquotas` result. The minimum
+32 GiB gate is provisional: increase it if pilot output projections plus safety
+margin require more. Global filesystem free space does not measure project
+quota. Keep output/state on Eagle and live stores/index under `/local/scratch`.
+[ALCF storage guidance](https://docs.alcf.anl.gov/data-management/filesystem-and-storage/)
+explains that local SSD is erased between jobs and Eagle is not automatically
+backed up.
+
+```bash
+export ECORE_PBS_ACCOUNT=<confirmed-allocation>
+export ECORE_QUOTA_FREE_GIB=<current-free-project-GiB>
+export ECORE_PBS_MODE=pilot
+qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
+  jobs/polaris_mrms.pbs
+```
+
+The pilot fetches four slots per variable at midday on September 18, 2022 into
+an isolated pilot destination. Confirm source reads, bitmap and exact-array
+read-back, Eagle publication, PBS exit status and reuse in a fresh pilot job.
+This proves correctness and proxy operation, not full-month throughput.
+
+```bash
+export ECORE_PBS_MODE=tune
+qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
+  jobs/polaris_mrms.pbs
+```
+
+Tuning writes one compact suite, one compressed scientific selection and a
+selected-profile JSON. Resume an incomplete tuning suite with the same revision
+and output; its cumulative byte budget is not reset. Review the results, commit
+and push any selected profile/code changes, and update the detached Polaris
+checkout before starting production. Do not alter a running checkout.
+
+```bash
+export ECORE_PBS_MODE=study
+qsub -A "$ECORE_PBS_ACCOUNT" \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
+  jobs/polaris_mrms.pbs
+```
+
+The default production request is one node in `capacity` for 24 hours. Confirm
+current [queue limits](https://docs.alcf.anl.gov/polaris/running-jobs/) first.
+Use normal `qstat -was1 JOBID`, `qstat -f JOBID` and `qstat -x -f JOBID` to inspect
+queue comments, current state and completed exit status. If access is denied,
+report that limitation instead of trying alternative access routes.
+
+### Progress and recovery
+
+```bash
+watch -n 30 -t "$ECORE_PYTHON scripts/dataset_jobs.py status mrms \
+  --progress $ECORE_PROJECT_ROOT/ecore-weather/state/study/progress.json"
+```
+
+The compact shared progress file is updated approximately every 30 seconds.
+A closed DuckDB snapshot is published after each product-month and on normal
+shutdown. The live database stays node-local. Status distinguishes remote
+heartbeat evidence from a locally visible PID; a stale remote heartbeat is
+unknown, not proof that the process failed. Completed receipts remain usable
+without scratch selections. Keep a stable progress path across resubmissions.
+
+Before wall time, the application stops new admissions using at least fifteen
+minutes or 130% of its longest measured task, whichever is greater. It drains
+active tasks when time permits and has a hard deadline before the scheduler
+limit. Exit 75 means an intentional resumable pause; real errors retain their
+failure status. A final shell timeout prevents a blocked library call from
+waiting indefinitely.
+
+Only verified completed product-months are durable on Eagle. An unfinished
+local month can be lost when PBS clears the SSD; that month is fetched again.
+Resubmit the same study command to reuse completed archives. Do not run two
+coordinators against the same state/destination. Retain compact receipts and
+bounded error logs rather than per-object operational histories.
+
+Annual workstation radar-map calculations remain gated on a successful pilot
+and a verified production month for both reflectivity products.

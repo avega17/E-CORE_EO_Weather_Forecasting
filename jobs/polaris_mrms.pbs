@@ -1,0 +1,93 @@
+#!/bin/bash -l
+#PBS -N ecore_mrms
+#PBS -l select=1:system=polaris:ncpus=64
+#PBS -l place=scatter
+#PBS -l walltime=24:00:00
+#PBS -l filesystems=home:eagle
+#PBS -q capacity
+#PBS -j oe
+
+set -euo pipefail
+: "${PBS_JOBID:?Submit this script with qsub}"
+: "${PBS_O_WORKDIR:?PBS must supply the submission directory}"
+: "${ECORE_PROJECT_ROOT:?Set the confirmed Eagle project directory}"
+: "${ECORE_PYTHON:?Set the absolute Python path of the prepared environment}"
+: "${ECORE_REVISION:?Set the tested and pushed commit SHA}"
+: "${ECORE_QUOTA_FREE_GIB:?Set available project quota from myprojectquotas}"
+code_root="${ECORE_CODE_ROOT:-$PBS_O_WORKDIR}"
+cd "$code_root"
+test "$(git rev-parse HEAD)" = "$ECORE_REVISION"
+test -z "$(git status --porcelain --untracked-files=no)"
+test -d "$ECORE_PROJECT_ROOT"
+test -x "$ECORE_PYTHON"
+
+export HTTP_PROXY=http://proxy.alcf.anl.gov:3128
+export HTTPS_PROXY="$HTTP_PROXY"
+export http_proxy="$HTTP_PROXY"
+export https_proxy="$HTTP_PROXY"
+export no_proxy='admin,polaris-adminvm-01,localhost,*.cm.polaris.alcf.anl.gov,polaris-*,*.polaris.alcf.anl.gov,*.alcf.anl.gov'
+export NO_PROXY="$no_proxy"
+export TMPDIR=/tmp
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+export PYTHONUNBUFFERED=1
+export ECORE_PBS_MODE="${ECORE_PBS_MODE:-pilot}"
+state_root="$ECORE_PROJECT_ROOT/ecore-weather/state/$ECORE_PBS_MODE"
+scratch_root="${ECORE_NODE_SCRATCH:-/local/scratch}/ecore-${USER}-${PBS_JOBID%%.*}"
+mkdir -p "$state_root" "$scratch_root"
+export ECORE_RUN_ROOT="$state_root/runs"
+export ECORE_INDEX_PATH="$scratch_root/archive_index.duckdb"
+if test -f "$state_root/archive_index.duckdb"; then
+    cp "$state_root/archive_index.duckdb" "$ECORE_INDEX_PATH"
+fi
+export ECORE_LOCAL_SCRATCH="$scratch_root"
+export ECORE_REQUIRED_GIB="${ECORE_REQUIRED_GIB:-32}"
+"$ECORE_PYTHON" - <<'PY'
+import os, shutil
+from pathlib import Path
+project=Path(os.environ['ECORE_PROJECT_ROOT'])
+required=float(os.environ['ECORE_REQUIRED_GIB'])
+if float(os.environ['ECORE_QUOTA_FREE_GIB']) < required:
+    raise SystemExit(f'Project quota needs at least {required:g} GiB; refresh myprojectquotas')
+if shutil.disk_usage(project).free < required*1024**3:
+    raise SystemExit('Eagle has insufficient free space')
+if shutil.disk_usage(os.environ['ECORE_LOCAL_SCRATCH']).free < 8*1024**3:
+    raise SystemExit('Node scratch needs at least 8 GiB free')
+PY
+
+walltime="$(qstat -f "$PBS_JOBID" | awk '$1 == "Resource_List.walltime" {print $3}')"
+test -n "$walltime"
+IFS=: read -r wall_hours wall_minutes wall_seconds <<< "$walltime"
+job_seconds=$((10#$wall_hours * 3600 + 10#$wall_minutes * 60 + 10#$wall_seconds))
+test "$job_seconds" -gt 180
+max_hours="$("$ECORE_PYTHON" -c 'import sys; print((int(sys.argv[1])-90)/3600)' "$job_seconds")"
+profile="${ECORE_PROFILE:-$code_root/jobs/mrms_polaris.json}"
+destination="${ECORE_DESTINATION:-$ECORE_PROJECT_ROOT/ecore_eo_datasets}"
+start_date=2021-01-01
+end_date=2026-07-01
+if test "$ECORE_PBS_MODE" = pilot; then
+    destination="$ECORE_PROJECT_ROOT/ecore-weather/pilot-archives"
+    start_date=2022-09-18T12:00:00Z
+    end_date=2022-09-18T12:40:00Z
+elif test "$ECORE_PBS_MODE" != study && test "$ECORE_PBS_MODE" != tune; then
+    printf 'Unknown ECORE_PBS_MODE: %s\n' "$ECORE_PBS_MODE" >&2
+    exit 2
+fi
+mkdir -p "$destination"
+if test "$ECORE_PBS_MODE" = tune; then
+    command=("$ECORE_PYTHON" "$code_root/scripts/dataset_jobs.py" benchmark mrms --tune-profile "$profile"
+        --output "$state_root/tuning" --destination "$ECORE_PROJECT_ROOT/ecore-weather/benchmark-archives"
+        --scratch "$scratch_root" --budget-gib 10 --max-minutes 45)
+else
+    command=("$ECORE_PYTHON" "$code_root/scripts/dataset_jobs.py" fetch mrms
+        --index-path "$ECORE_INDEX_PATH" --durable-state "$state_root"
+        --profile "$profile" --products composite-reflectivity base-reflectivity
+        --start "$start_date" --end "$end_date" --destination "$destination"
+        --scratch "$scratch_root" --output "$state_root/fetch"
+        --durable-progress "$state_root/progress.json" --max-hours "$max_hours" --drain-minutes 15)
+fi
+if test "${ECORE_DRY_RUN:-0}" = 1 && test "$ECORE_PBS_MODE" != tune; then
+    command+=(--dry-run)
+fi
+printf 'PBS job %s | mode %s | revision %s | walltime %s\n' "$PBS_JOBID" "$ECORE_PBS_MODE" "$ECORE_REVISION" "$walltime"
+timeout --signal=TERM --kill-after=30s "$((job_seconds-30))s" \
+    mpiexec -n 1 --ppn 1 --depth=64 --cpu-bind none "${command[@]}"

@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 
 
-def add_context(ax, bbox):
+def add_context(ax, bbox, labels=True):
     """Cached Natural Earth 1:50m land polygons, also suitable for ordinary axes."""
     from matplotlib.collections import PolyCollection, LineCollection
     west, south, east, north = bbox
@@ -20,7 +20,7 @@ def add_context(ax, bbox):
     ax.set(xlim=(west,east), ylim=(south,north), xlabel='Longitude (degrees)', ylabel='Latitude (degrees)')
     ax.set_aspect(1/max(.1, np.cos(np.deg2rad((south+north)/2))))
     ax.grid(alpha=.2)
-    for label, lon, lat in [('Puerto Rico',-66.45,18.23), ('Hispaniola',-70.1,19), ('Virgin Is.',-64.7,18.4)]:
+    for label, lon, lat in ([('Puerto Rico',-66.45,18.23), ('Hispaniola',-70.1,19), ('Virgin Is.',-64.7,18.4)] if labels else []):
         if west < lon < east and south < lat < north:
             ax.text(np.clip(lon, west+.08*(east-west), east-.08*(east-west)), lat, label, fontsize=7, zorder=6, ha='center', color='#202020',
                     bbox={'facecolor':'white','alpha':.65,'edgecolor':'none','pad':1})

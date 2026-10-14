@@ -44,6 +44,8 @@ PRODUCTS = {
                       "frequency_minutes": 2, "accumulation_minutes": 0, "interval_minutes": 0},
     "MergedBaseReflectivityQC_00.50": {"unit": "dBZ", "missing": -99, "no_coverage": -999,
                       "frequency_minutes": 2, "accumulation_minutes": 0, "interval_minutes": 0},
+    "RadarQualityIndex_00.00": {"unit": "1", "missing": -1, "no_coverage": -3,
+                      "frequency_minutes": 2, "accumulation_minutes": 0, "interval_minutes": 0},
     # NOAA encodes no coverage and missing for these fields as zero; retain the
     # bitmap and never infer coverage from a zero value alone.
     "MergedAzShear_0-2kmAGL_00.50": {"unit": "0.001 s-1", "missing": 0,
@@ -63,6 +65,7 @@ PRODUCT_ALIASES = {
     "radar-only-qpe-1h": "RadarOnly_QPE_01H_00.00",
     "low-level-azimuthal-shear": "MergedAzShear_0-2kmAGL_00.50",
     "mid-level-azimuthal-shear": "MergedAzShear_3-6kmAGL_00.50",
+    "radar-quality-index": "RadarQualityIndex_00.00",
     "multisensor-qpe-pass1": "MultiSensor_QPE_01H_Pass1_00.00",
     "multisensor-qpe-pass2": "MultiSensor_QPE_01H_Pass2_00.00",
 }
@@ -291,7 +294,9 @@ def read(asset: Asset, bbox=PR_BBOX, product=DEFAULT_PRODUCT, transport=None, ha
     if compressed is None:
         raise IOError(f"Source integrity check failed after 3 reads for {asset.key} "
                       f"(listed size {asset.size}, ETag {asset.etag}): {failure}") from failure
+    decode_wait_started = time.perf_counter()
     with transport.decode_slots:
+        decode_wait = time.perf_counter()-decode_wait_started
         before = time.perf_counter()
         try:
             raw = decode_grib(payload, product)
@@ -306,7 +311,10 @@ def read(asset: Asset, bbox=PR_BBOX, product=DEFAULT_PRODUCT, transport=None, ha
     if PRODUCTS[product]["interval_minutes"]:
         subset.attrs.update(accumulation_end=asset.time,
                             accumulation_start=iso(utc(asset.time)-timedelta(minutes=PRODUCTS[product]["interval_minutes"])))
-    return subset, {"download_s": transfer, "decode_crop_s": decoding}
+    return subset, {"download_s": transfer, "decode_crop_s": decoding,
+                    "decode_wait_s": decode_wait, "compressed_bytes":len(compressed),
+                    "inflated_grib_bytes":len(payload), "decoded_grid_bytes":raw.nbytes,
+                    "roi_bytes":subset.nbytes}
 
 
 def process(ds, recipe="quality_aware", bbox=PR_BBOX, shape=(768, 768)):

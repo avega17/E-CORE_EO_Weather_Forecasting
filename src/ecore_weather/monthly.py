@@ -293,7 +293,8 @@ def fetch_local_streaming(selection, destination, workers=None, backend="obstore
                           scratch=None, report_dir="artifacts/runs", progress=None,
                           decode_workers=1, block_size=1024*1024, monthly_writers=2,
                           index_results=True, read_processes=2, prefetch_mib=512,
-                          read_mode="range", download_concurrency=8, staging_mib=4096, read_profiles=None):
+                          read_mode="range", download_concurrency=8, staging_mib=4096, read_profiles=None,
+                          max_inflight=None, roi_queue_mib=128):
     """Read bounded source batches into independent Earth2Studio month stores."""
     from .common import default_workers
     from .monthly_stream import _write_one
@@ -316,6 +317,7 @@ def fetch_local_streaming(selection, destination, workers=None, backend="obstore
     executor = ThreadPoolExecutor if interactive else ProcessPoolExecutor
     options = {} if interactive else {"mp_context": multiprocessing.get_context("spawn")}
     outcomes = []
+    queue_options = {'max_inflight':max_inflight,'roi_queue_mib':roi_queue_mib} if selection.source=='mrms' else {}
     def reader_args(band):
         profile = (read_profiles or {}).get(str(band), {})
         profile = profile.get('profile', profile)
@@ -327,7 +329,7 @@ def fetch_local_streaming(selection, destination, workers=None, backend="obstore
     def collect(target, band, assets, future=None):
         try:
             result = (future.result() if future else _write_one(selection, assets, target,
-                band, *reader_args(band)))
+                band, *reader_args(band), **queue_options))
             result.update(month=utc(assets[0].time).strftime("%Y/%m"), band=band)
         except Exception as exc:
             result = {"path": target, "month": utc(assets[0].time).strftime("%Y/%m"),
@@ -342,7 +344,7 @@ def fetch_local_streaming(selection, destination, workers=None, backend="obstore
     else:
         with executor(max_workers=count, **options) as pool:
             futures = [(target, band, assets, pool.submit(_write_one, selection, assets, target,
-                band, *reader_args(band)))
+                band, *reader_args(band), **queue_options))
                 for (target, band), assets in tasks]
             by_future = {f: (target,band,assets) for target,band,assets,f in futures}
             for future in as_completed(by_future):
@@ -434,7 +436,8 @@ def fetch(selection, destination="hf", workers=None, backend="s3fs", scratch=Non
           report_dir="artifacts/runs", progress=None, decode_workers=1,
           read_processes=0, block_size=1024*1024, monthly_writers=2,
           index_results=True, prefetch_mib=512, reuse_cmipf_root=None,
-          read_mode="range", download_concurrency=8, staging_mib=4096, read_profiles=None, shared_config=None):
+          read_mode="range", download_concurrency=8, staging_mib=4096, read_profiles=None, shared_config=None,
+          max_inflight=None, roi_queue_mib=128):
     """Stage raw objects locally, compact to monthly archives, then clean staging."""
     if shared_config is not None:
         if read_profiles:
@@ -469,7 +472,8 @@ def fetch(selection, destination="hf", workers=None, backend="s3fs", scratch=Non
             decode_workers=decode_workers, block_size=block_size,
             monthly_writers=monthly_writers, index_results=index_results,
             read_processes=read_processes or 2, prefetch_mib=prefetch_mib,
-            read_mode=read_mode, download_concurrency=download_concurrency, staging_mib=staging_mib, read_profiles=read_profiles)
+            read_mode=read_mode, download_concurrency=download_concurrency, staging_mib=staging_mib, read_profiles=read_profiles,
+            max_inflight=max_inflight, roi_queue_mib=roi_queue_mib)
     from . import storage
     final_root = destination_root(destination)
     remote = str(destination) == "hf"

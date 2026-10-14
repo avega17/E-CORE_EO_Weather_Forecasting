@@ -143,4 +143,21 @@ if __name__ != "__mp_main__":
 # our small subset viewer becomes insufficient.
 
 # %% [markdown]
+# ## Cached 2022 radar-quality overview
+# The separate `radar-figure` report reads full CARIB MRMS source images. This
+# cell only displays its saved figure when that report has already finished; it
+# does not start a NOAA download. The colored field is mean Radar Quality Index,
+# and the regional black contour marks valid reflectivity in at least 1% of sampled hours.
+
+# %%
+if __name__ != "__mp_main__":
+    from IPython.display import Image, display
+    radar_figures = [Path(f"figures/mrms-2022/mrms-rqi-{view}-2022.png") for view in ("macro", "regional")]
+    for path in radar_figures:
+        if path.is_file():
+            display(Image(filename=str(path)))
+    if not any(path.is_file() for path in radar_figures):
+        print("No cached 2022 radar-quality maps. See docs/mrms_roi_and_radar_coverage.md to render them.")
+
+# %% [markdown]
 #

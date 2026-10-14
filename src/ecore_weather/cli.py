@@ -32,9 +32,9 @@ def parser(source):
     p.add_argument("--selection", help="Reuse a saved STAC collection or item manifest")
     p.add_argument("--skip-index", action="store_true",
                    help="Let a coordinating study runner record DuckDB rows after verification")
-    p.add_argument("--workers", type=int, default=8 if source == "goes" else default_workers(),
+    p.add_argument("--workers", type=int, default=8 if source == "goes" else None,
                    help="GOES: source threads and scan batch limit per reader; HDF5 serializes calls within a process (use --read-processes for parallel HDF5). MRMS: source reads per monthly archive")
-    p.add_argument("--decode-workers", type=int, default=1,
+    p.add_argument("--decode-workers", type=int, default=1 if source == "goes" else None,
                    help="MRMS GRIB decode slots; accepted but unused for GOES")
     if source == "goes": p.add_argument("--read-profiles", help="Validated JSON settings by native band; writer count stays separate")
     p.add_argument("--read-processes", type=int, default=2 if source == "goes" else 0,
@@ -43,8 +43,13 @@ def parser(source):
         from .goes_shared import add_arguments
         add_arguments(p)
     else:
-        p.add_argument("--monthly-writers", type=int, default=2,
+        p.add_argument("--monthly-writers", type=int, default=None,
                        help="Independent product-month writers; HF publication stays at one")
+    if source == "mrms":
+        p.add_argument('--profile',help='MRMS machine profile JSON; explicit resource arguments override it')
+        p.add_argument('--max-inflight',type=int,help='Maximum active and queued observations per writer')
+        p.add_argument('--roi-queue-mib',type=int,help='ROI payload reservations per writer, MiB')
+        p.add_argument('--memory-gib',type=int,help='Total job RSS ceiling, GiB')
     p.add_argument("--scratch", help="Fast local staging directory; cleaned after each subset")
     p.add_argument("--backend", choices=["s3fs", "obstore"], default="obstore" if source == "goes" else "s3fs")
     p.add_argument("--destination", default="/mnt/p/ecore_eo_datasets" if source == "goes" else "hf",
@@ -85,6 +90,11 @@ def main(source, argv=None):
     p = parser(source)
     args = p.parse_args(argv)
     shared_config = None
+    if source == 'mrms':
+        from .mrms_profile import resolve
+        try:
+            args.resource_profile = resolve(args)
+        except (OSError,ValueError) as exc:p.error(str(exc))
     if source == 'goes':
         from .goes_shared import config_from_args
         try:
@@ -165,19 +175,24 @@ def main(source, argv=None):
                     benchmark.run_goes(selection, report_dir=product_out, repeats=args.repeats)
                 continue
             from . import monthly
-            report = monthly.fetch(selection, destination=args.destination, workers=args.workers,
-                decode_workers=args.decode_workers, backend=args.backend, report_dir=product_out,
-                scratch=args.scratch, read_processes=args.read_processes,
-                monthly_writers=1 if args.destination == "hf" else args.monthly_writers,
-                prefetch_mib=args.prefetch_mib if source == "goes" else 512,
-                block_size=args.block_size_kib*1024 if source == "goes" else 1024*1024,
-                index_results=not args.skip_index,
-                read_mode=args.read_mode if source == 'goes' else 'range',
-                download_concurrency=args.download_concurrency if source == 'goes' else 8,
-                staging_mib=args.staging_mib if source == 'goes' else 4096,
-                reuse_cmipf_root=args.reuse_cmipf_2km_from if source == "goes" else None,
-                read_profiles=json.loads(Path(args.read_profiles).read_text()) if source == "goes" and args.read_profiles else None,
-                shared_config=shared_config if selection.product=='ABI-L2-CMIPF' else None)
+            from contextlib import nullcontext
+            from .mrms_profile import job_memory_limit
+            with job_memory_limit(args.memory_gib) if source=='mrms' else nullcontext():
+                report = monthly.fetch(selection, destination=args.destination, workers=args.workers,
+                    decode_workers=args.decode_workers, backend=args.backend, report_dir=product_out,
+                    scratch=args.scratch, read_processes=args.read_processes,
+                    monthly_writers=1 if args.destination == "hf" else args.monthly_writers,
+                    prefetch_mib=args.prefetch_mib if source == "goes" else 512,
+                    block_size=args.block_size_kib*1024 if source == "goes" else 1024*1024,
+                    index_results=not args.skip_index,
+                    read_mode=args.read_mode if source == 'goes' else 'range',
+                    download_concurrency=args.download_concurrency if source == 'goes' else 8,
+                    staging_mib=args.staging_mib if source == 'goes' else 4096,
+                    reuse_cmipf_root=args.reuse_cmipf_2km_from if source == "goes" else None,
+                    read_profiles=json.loads(Path(args.read_profiles).read_text()) if source == "goes" and args.read_profiles else None,
+                    shared_config=shared_config if selection.product=='ABI-L2-CMIPF' else None,
+                    max_inflight=args.max_inflight if source=='mrms' else None,
+                    roi_queue_mib=args.roi_queue_mib if source=='mrms' else 128)
             failed |= bool(report.get("interrupted")) or any(
                 r["status"] == "failed" for r in report["records"])
             if args.save_figures:

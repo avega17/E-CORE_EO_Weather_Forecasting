@@ -95,7 +95,7 @@ and installs the notebook dependencies. Never store credentials in a notebook.
 - [GOES/MRMS concurrency and verified archive runtime](docs/goes_parallel_pipeline.md)
 - [Diagnostics and report exports](docs/dataset_report.md)
 - [GOES acquisition ROI and future training context](docs/goes_roi_training_study.md)
-- [MRMS ROI and quality-aware radar coverage](docs/mrms_roi_and_radar_coverage.md)
+- [MRMS ROI and 2022 radar-quality figure](docs/mrms_roi_and_radar_coverage.md) — CARIB grid, measured reflectivity footprint, mean RQI, and illustrative training regions.
 - [Mentor implementation review](docs/original_code_review.md)
 - [StormScope](docs/StormScope-paper-notes.md) and [CorrDiff](docs/CorrDiff-paper-notes.md) research notes
 - [Current plan](docs/development_plan.md), [documentation consolidation](docs/documentation_review.md) and [agent instructions](AGENTS.md)
@@ -111,3 +111,7 @@ A brief MRMS comparison with installed NVIDIA readers is available through
 It reports the default CONUS workload separately from matched CARIB source reads.
 [Measured local backend results and comparison limits](docs/goes_parallel_pipeline.md#comparing-with-installed-nvidia-mrms)
 explain what has passed and what remains queued.
+
+For Polaris, follow the [PBS setup, profiles, pilot and production guide](docs/study_jobs.md#polaris-pbs).
+The cluster collection contains composite and base reflectivity; workstation
+four-product defaults remain available. Generated maps live under `figures/`.

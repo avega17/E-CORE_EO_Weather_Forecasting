@@ -54,8 +54,9 @@ def test_audit_resume_and_inventory_physical_dedup(tmp_path,monkeypatch):
     assert report.export_report(tmp_path/'out')['diagnostic_rows']==2
     for unit in ('days','weeks','months','years'):
         assert (tmp_path/'out'/f'diagnostic-{unit}.csv').is_file()
+    monkeypatch.chdir(tmp_path)
     fig,stats=report.coverage_map(tmp_path/'data',tmp_path/'out')
-    assert stats['pixels']==2 and (tmp_path/'out'/'coverage-example.png').is_file()
+    assert stats['pixels']==2 and (tmp_path/'figures/dataset-report/coverage-example.png').is_file()
     import matplotlib.pyplot as plt
     plt.close(fig)
     previous_provenance=report.provenance

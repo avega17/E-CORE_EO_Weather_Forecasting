@@ -19,6 +19,10 @@ Keep explanations readable for researchers inheriting the work.
   enter model windows. Preserve accumulation meaning and physical units.
 - Never overwrite raw archives from diagnostics, map rendering or derived processing.
   Released StormScope compatibility is not established by the Earth2Studio API.
+- The optional full-CARIB RQI figure is a derived report. NOAA documents -1/-3;
+  valid zero remains a low score. Count observed out-of-range values such as
+  -285.3 separately rather than declaring a new official sentinel or changing
+  saved source values.
 
 ## Selection and defaults
 
@@ -51,8 +55,12 @@ Keep explanations readable for researchers inheriting the work.
   async downloads for seven bands, two local HDF5 readers, eight C02 range readers,
   2,048 MiB global ROI budget and 16,384 MiB staging. Limits do not multiply by band
   or month. HDF5 concurrency requires independent processes, not more threads.
-- MRMS retains four product-month writers, eight downloads each, one decode slot
-  each. Whole gzip downloads precede decoding; radar ROI does not reduce transfers.
+- MRMS workstation defaults are four product-month writers, eight downloads each,
+  one decode slot, eight admitted observations and 128 MiB ROI queue per writer.
+  Polaris starts at eight writers, eight downloads, one decoder, sixteen admitted
+  observations and 256 MiB ROI queues; these are candidates until measured.
+  Versioned MRMS JSON profiles are overridden by explicit CLI resource arguments.
+  Source-month task partitioning prevents adjacent workers sharing a physical ZIP. Whole gzip downloads precede decoding; radar ROI does not reduce transfers.
 - Pin changed code/configuration only after supported pause drains every admitted
   month. Never edit active snapshots. Exit 75 means intentional resumable pause.
   Status must show actual PIDs, heartbeat and advancing counts before claiming active.
@@ -66,10 +74,11 @@ Keep explanations readable for researchers inheriting the work.
   viewers retry brief locks or use completed manifests; never require ephemeral paths.
   Keep index rebuildable from canonical archive metadata, not per-object logging.
 - Results keep only latest MRMS and ongoing native GOES configuration/checkpoints,
-  active scratch/snapshot/run, compact backup receipts and the local index. One
-  bounded live error log is useful; remove old tests, guards, probes and obsolete
-  launch folders. Completed selection copies may be removed when canonical archive
-  provenance and verified checkpoints remain. Never delete live scratch or research data.
+  active scratch/snapshot/run, compact backup receipts, derived report summaries
+  and the local index. Generated images/animations belong under figures/, never docs/assets/. One bounded live error log is useful; remove old tests,
+  guards, probes and obsolete launch folders. Completed selection copies may be
+  removed when canonical archive provenance and verified checkpoints remain.
+  Never delete live scratch or research data.
 - HF is backup storage: one MRMS product/year ZIP of verified monthly members.
   Verify remote SHA-256/read-back before relying on it. Annual ZIPs need selected
   verified monthly restoration for analysis. Keep compact receipts; remove redundant
@@ -103,6 +112,11 @@ Keep explanations readable for researchers inheriting the work.
 - Update README and canonical docs when interfaces change. Preserve useful compact
   findings in guides rather than proliferating test result folders. Do not claim
   live HF, Colab or long-run checks without exact-revision evidence.
-- Scheduler directives/submission remain deferred until the Argonne system/network
-  policy is known. Portable MRMS configuration/wrapper are in jobs/ and documented
-  in docs/study_jobs.md. Re-measure resource settings on the target machine.
+- Polaris PBS uses one node, the documented outbound proxy, local scratch/index
+  and verified monthly publication to Eagle. Use debug for a bounded pilot and
+  capacity for the full study, after account/queue/quota checks. Completed months
+  are durable; unfinished local stores may be lost between jobs. Commit/push
+  tested changes and pin that exact revision before remote setup/submission.
+  Use only documented PBS commands. Re-measure settings on the target machine.
+  Generate remaining annual radar figures only after the Polaris pilot and first
+  production month verify for both reflectivity products.

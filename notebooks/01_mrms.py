@@ -80,8 +80,8 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
 # %% [markdown]
 # ## Choose files and save the selection
 # Dates, region, products, storage, and worker count come from these controls.
-# End dates are excluded. Workers default to half the detected CPUs; decoding
-# is bounded separately. Creating controls does not start network work.
+# End dates are excluded. Load a machine profile, then adjust downloads, decoding
+# and queue limits independently. Creating controls does not start network work.
 #
 # The default durable destination is the HF bucket configured in `.env` or session
 # environment variables. Enter a local path to choose local storage explicitly.
@@ -112,7 +112,7 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
 # Source values, coordinates, and missing-value information stay unchanged.
 # Lossless Zarr storage replaces temporary source containers. Completed subsets
 # are verified and reused; failures are reported without changing destinations.
-# The run report keeps per-file outcomes and timings. Publishing includes the
+# The compact run report keeps archive totals and timings. Publishing includes the
 # remote read-back check and is measured separately from source reads and writing.
 #
 # Why Zarr: the mentor's scripts re-downloaded and re-decoded each hour on every
@@ -126,15 +126,18 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
 if __name__ != "__mp_main__":  # Spawned readers must not construct notebook widgets.
     def fetch_data():
         from ecore_weather import monthly
+        from ecore_weather.mrms_profile import job_memory_limit
         reports = []
         for selection in chosen["value"]:
             product_dir = Path(controls["output"].value) / selection.product
-            with ui.FetchProgress(len(selection.assets), selection.product) as progress:
+            with job_memory_limit(controls['memory_gib'].value), ui.FetchProgress(len(selection.assets), selection.product) as progress:
                 report = monthly.fetch(selection, destination=controls["destination"].value,
                     workers=controls["workers"].value, report_dir=product_dir,
                     read_processes=controls["read_processes"].value,
                     monthly_writers=controls["monthly_writers"].value,
-                    scratch=controls["scratch"].value or None, progress=progress)
+                    scratch=controls["scratch"].value or None, progress=progress,
+                    decode_workers=controls['decode_workers'].value,
+                    max_inflight=controls['max_inflight'].value, roi_queue_mib=controls['roi_queue_mib'].value)
             reports.append(report)
         report = {"records": [r for result in reports for r in result["records"]], "reports": reports}
         successful = [r for r in report["records"] if r["status"] in ("archived", "reused")]

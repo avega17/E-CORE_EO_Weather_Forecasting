@@ -232,7 +232,7 @@ def test_yearly_bundle_retains_zero_byte_noaa_source_as_coverage_metadata(tmp_pa
 
 
 
-def test_run_config_history_preserves_previous_product_selection(tmp_path):
+def test_run_config_keeps_only_current_request(tmp_path):
     from ecore_weather.jobs_mrms import _record_run_config
 
     old = {"products": ["PrecipRate_00.00", "MultiSensor_QPE_01H_Pass1_00.00"]}
@@ -242,8 +242,7 @@ def test_run_config_history_preserves_previous_product_selection(tmp_path):
 
     assert json.loads((tmp_path / "run_config.json").read_text()) == new
     history = list((tmp_path / "run-config-history").glob("*.json"))
-    assert len(history) == 1
-    assert json.loads(history[0].read_text()) == old
+    assert history == []
 
 
 
@@ -675,7 +674,9 @@ def test_cli_and_satellite_defaults():
     assert default_workers() == max(1, multiprocessing.cpu_count()//2)
     args = parser("mrms").parse_args(["--period", "2025", "--workers", "3", "--save-figures", "plots"])
     assert args.workers == 3 and args.save_figures == "plots"
-    assert args.monthly_writers == 2
+    from ecore_weather.mrms_profile import resolve
+    resolve(args)
+    assert args.monthly_writers == 4
     assert args.product is None
     assert parser("goes").parse_args([]).bands == [1, 2, 3, 7, 8, 9, 10, 13]
     assert parser("goes").parse_args([]).product is None

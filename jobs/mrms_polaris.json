@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "source": "mrms",
+  "name": "polaris-initial",
+  "hardware_context": "One AMD EPYC 7543P, 32 physical cores, 64 hardware threads, 512 GiB RAM",
+  "validation": "Initial tuning candidate; no Polaris speedup claimed",
+  "resources": {
+    "monthly_writers": 8,
+    "workers": 8,
+    "decode_workers": 1,
+    "max_inflight": 16,
+    "roi_queue_mib": 256,
+    "memory_gib": 64
+  }
+}

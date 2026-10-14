@@ -32,7 +32,8 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
     identity=json.loads(snapshot.read_text()) if snapshot.exists() else None
     import platform,importlib.metadata
     environment={'python':__import__('sys').version,'platform':platform.platform(),'packages':{name:importlib.metadata.version(name) for name in ('earth2studio','zarr','duckdb','obstore','h5py','xarray','numpy')}}
-    run=Run({'environment':environment,'code_snapshot':identity,'source':source,'arguments':arguments,'index':index_path,'scratch':str(scratch)},output='results/runs',index_path=index_path)
+    run=Run({'environment':environment,'code_snapshot':identity,'source':source,'arguments':arguments,'index':index_path,'scratch':str(scratch),
+        'pbs_job_id':os.getenv('PBS_JOBID')},output=os.getenv('ECORE_RUN_ROOT','results/runs'),index_path=index_path)
     os.environ['ECORE_RUN_ID']=run.id
     stop=threading.Event()
     def heartbeat():
@@ -52,13 +53,13 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
     stdout=BoundedStream(sys.stdout,run.output/'run.log');stderr=BoundedStream(sys.stderr,run.output/'run.log',handler=stdout.handler)
     try:
         with contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):code=module.main(arguments)
-        if code and code!=75 and pause.exists() and os.getenv('ECORE_SHARED_GOES')!='1':
+        if source=='goes' and code and code!=75 and pause.exists() and os.getenv('ECORE_SHARED_GOES')!='1':
             run.state['interrupted_exit_code']=code
             code=75
         return code
     except Exception as exc:
         run.state['error']=f'{type(exc).__name__}: {exc}'
-        if pause.exists() and os.getenv('ECORE_SHARED_GOES')!='1':
+        if source=='goes' and pause.exists() and os.getenv('ECORE_SHARED_GOES')!='1':
             code=75
             return code
         raise
@@ -71,6 +72,14 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
         except Exception as exc:run.state["progress_error"]=str(exc)
         run.finish(code)
         if durable_state:closed_snapshot(Path(durable_state)/'archive_index.duckdb',index_path)
+        progress=_option(arguments,'--durable-progress',None)
+        if source=='mrms' and progress:
+            from .common import write_json
+            from .runlog import compact
+            import time
+            data=compact(status(index_path))
+            data.update(snapshot_at=time.time(),source=source,pbs_job_id=os.getenv('PBS_JOBID'))
+            write_json(progress,data)
 
 
 def status(index_path=None):
@@ -94,12 +103,16 @@ def status(index_path=None):
     except Exception as exc:return {'status':'index_unavailable','reason':str(exc).splitlines()[0],'fallback':'completed manifests and saved STAC selections'}
     runs=[]
     for rid,state,pid,host,heartbeat,payload in rows:
-        alive=False
+        alive=None
         if host==socket.gethostname() and psutil.pid_exists(pid):
             try:
                 proc=psutil.Process(pid);alive=proc.create_time()<=json.loads(payload).get('started_at',0) and 'dataset_jobs' in ' '.join(proc.cmdline())
             except psutil.Error:pass
-        runs.append({'run_id':rid,'recorded_status':state,'status':state if state!='running' or alive else 'interrupted',
+        resolved=state
+        if state=='running':
+            if host==socket.gethostname():resolved='running' if alive else 'interrupted'
+            elif __import__('time').time()-heartbeat>120:resolved='unknown'
+        runs.append({'run_id':rid,'recorded_status':state,'status':resolved,'host':host,
                      'pid':pid,'process_alive':alive,'heartbeat':heartbeat,
                      'started_at':json.loads(payload).get('started_at'),
                      'ended_at':json.loads(payload).get('ended_at')})
@@ -108,7 +121,7 @@ def status(index_path=None):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('operation',choices=['fetch','resume','status','pause','estimate','benchmark','backup','cleanup','index','snapshot','handoff'])
+    p.add_argument('operation',choices=['fetch','resume','status','pause','stop-after','estimate','benchmark','backup','cleanup','index','snapshot','handoff'])
     p.add_argument('--index-path',help='Linux-local DuckDB path')
     p.add_argument('--durable-state',help='Destination for a closed index snapshot')
     import sys
@@ -126,8 +139,15 @@ def main(argv=None):
     if args.operation=='pause':
         output=Path(_option(remaining,'--output',f'results/study-{args.source}-native'))
         output.mkdir(parents=True,exist_ok=True);(output/'pause.request').write_text('Requested month-boundary pause\n');return 0
+    if args.operation=='stop-after':
+        if args.source!='goes':p.error('stop-after currently supports GOES only')
+        from .jobs_control import arm_stop_after
+        return arm_stop_after(remaining)
     if args.operation=='benchmark':
         if args.source=='mrms':
+            if '--tune-profile' in remaining:
+                from .mrms_tuning import main as handler
+                return handler(remaining)
             from .report_benchmarks import mrms_source_main
             return mrms_source_main(remaining)
         from .jobs_benchmarks import main as handler

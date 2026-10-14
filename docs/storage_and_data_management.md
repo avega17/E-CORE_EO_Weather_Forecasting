@@ -312,3 +312,18 @@ python scripts/dataset_jobs.py index /mnt/p/ecore_eo_datasets
 Rebuild the index only after pausing the coordinator. Do not replace a database
 that a job is writing. The viewer and monitor can use completed archive records
 when the live index is briefly unavailable.
+
+## Polaris publication and derived figures
+
+The Polaris reflectivity job uses the same compressed native monthly archives
+as the workstation. Fast node-local SSD holds active stores and the live index;
+verified ZIPs and completion records are published to Eagle immediately after
+each product-month. Only completed months survive between PBS jobs, as selected
+for this workflow. The current NOAA source month owns its ZIP, including a
+previous-month observation used by a midnight request. This prevents adjacent
+workers from competing for one store without changing causal matching.
+
+Machine profiles and PBS monitoring are explained in [study jobs](study_jobs.md#polaris-pbs).
+Generated maps and animations live under `figures/`; diagnostic tables and
+resumable aggregate counts stay under `results/dataset-report/`. Figure files
+are derived views and never replace the raw scientific archives.

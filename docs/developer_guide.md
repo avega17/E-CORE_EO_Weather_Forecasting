@@ -35,8 +35,7 @@ python notebooks/02_goes.py --operation fetch --start 2022-09-18T12:00:00Z \
 Dates are UTC; end is excluded. Tiny fetches still write verified monthly stores.
 Do not run another workstation fetch while the production study is active.
 [Study jobs](study_jobs.md) gives resumable full-period commands and an independent
-MRMS shell wrapper. Scheduler directives await the actual Argonne system/network
-policy. Reuse one command per source across wall-time-limited resumptions.
+MRMS shell wrapper. The Polaris PBS wrapper and authenticated pilot procedure are documented there. Reuse one command per source across wall-time-limited resumptions.
 
 ## Where changes belong
 
@@ -45,14 +44,18 @@ policy. Reuse one command per source across wall-time-limited resumptions.
 | NOAA discovery and native reads | `mrms`, `goes`, `goes_native`, `goes_staging` |
 | Earth2Studio-compatible source and storage | `earth2_sources`, `earth2_io`, `monthly`, `monthly_stream` |
 | Concurrent GOES scheduling | `goes_shared`, `goes_rollout`, `jobs_goes` |
-| MRMS jobs | `jobs_mrms` |
+| MRMS jobs | `jobs_mrms`, `mrms_profile`, `mrms_pipeline`, `mrms_tuning` |
 | Operational records and index | `runlog`, `index`, `job_status` |
 | Notebook controls and CLI | `ui`, `cli`, `viewer`, `report_ui`, `report_cli` |
-| Quality/reporting | `diagnostics`, `dataset_report`, `report_views` |
+| Quality/reporting | `diagnostics`, `dataset_report`, `report_views`, `mrms_radar_figures` |
 | HF backup/restore | `jobs_backup`, `hf_storage`, `view_backup` |
 
 Keep scripts thin: `scripts/dataset_jobs.py` for operations and
 `scripts/dataset_report.py` for diagnostics/exports. Avoid new one-off watchers.
+The report script also exposes `radar-figure`; its annual full-CARIB source
+read should follow the one-day pilot and run only while GOES is paused. It
+stores derived counts and figure files, never another raw GRIB archive. See
+[the MRMS coverage guide](mrms_roi_and_radar_coverage.md).
 Use the supported verified-pause handoff to change worker settings; never edit a
 running snapshot. GOES global limits do not multiply by band count. MRMS retains
 four product-month writers, eight downloads each and one decode slot each.
@@ -102,3 +105,16 @@ one-off script.
 After a crash, use the recovery sequence in [study jobs](study_jobs.md#recovering-after-a-workstation-restart).
 Keep partial native-band stores: scan-batch verification can replay a damaged
 tail while retaining the verified prefix. A stale launcher PID is not live work.
+
+## Polaris implementation and publication
+
+Use `jobs/environment-polaris.yml` for CPU ingestion and the versioned MRMS
+profiles in `jobs/`. Profile values are defaults; explicit CLI resource options
+override them. A profile is not part of scientific archive identity. Test exact
+values, bitmap preservation, queue bounds and source-month boundary matching.
+
+Commit and push the reviewed implementation before cloning on Polaris. Check
+out the exact pushed commit, build the environment once, and keep that checkout
+unchanged throughout a PBS job. Later tuning changes need another commit/push
+and a new pinned checkout. See the setup and submission commands in
+[study jobs](study_jobs.md#polaris-pbs).

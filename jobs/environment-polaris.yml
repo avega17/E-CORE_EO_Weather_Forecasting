@@ -1,0 +1,35 @@
+name: ecore-weather-polaris
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - numpy>=2,<3
+  - pandas>=2.2,<3
+  - xarray==2026.7.0
+  - dask
+  - duckdb>=1.4,<2
+  - eccodes
+  - pygrib
+  - cfgrib
+  - rasterio
+  - rioxarray
+  - pyproj
+  - h5py
+  - h5netcdf
+  - netcdf4>=1.6.4,<1.7.3
+  - pytorch-cpu=2.14
+  - boto3
+  - s3fs==2026.7.0
+  - gcsfs==2026.7.0
+  - zarr==3.3.0
+  - pystac>=1.12,<2
+  - psutil
+  - python-dotenv
+  - loguru
+  - requests
+  - tqdm
+  - pytest
+  - pip:
+      - obstore==0.11.1
+      - earth2studio==0.18.0

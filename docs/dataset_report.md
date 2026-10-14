@@ -7,7 +7,8 @@ previously retained in that serialization. These bounded measurements are
 separate from completed monthly fetch throughput and future model skill.
 
 See [MRMS ROI and radar coverage](mrms_roi_and_radar_coverage.md) for the
-13.1% grid subset, an actual archived footprint, and the bounded RQI probe.
+13.1% grid subset, the 2022 full-CARIB RQI/reflectivity figure, and the
+distinction between physical-distance outlines and native pixels.
 Bitmap/sentinel diagnostics alone do not establish quality-adjusted radar range.
 
 Notebook 04 separates diagnostics, performance and model preparation. Raw
@@ -52,7 +53,20 @@ python scripts/dataset_report.py diagnose --source mrms --product MultiSensor_QP
 python scripts/dataset_report.py diagnose --source mrms --full
 python scripts/dataset_report.py benchmark --benchmark-kind local --source goes --product ABI-L2-CMIPF --band 13 --start 2026-01-01 --end 2026-02-01
 python scripts/dataset_report.py report --logs results/study-mrms/backups
+python scripts/dataset_report.py radar-figure --pilot-day 2022-09-18
+python scripts/dataset_report.py radar-figure --year 2022 --workers 4
 ```
+
+The `radar-figure` operation reads public NOAA full-grid reflectivity and RQI
+sources identified by the verified 2022 reflectivity archives. It stores one
+compressed source selection and one cumulative aggregate checkpointed by month, then exports
+a static PNG/SVG map. The one-day command verifies a NOAA image against saved
+ROI pixels, bitmap, and coordinates before the annual read. Run the annual
+network task only while the GOES fetch is paused. The raw Zarr archives are
+never altered.
+The fixed sample is the :10 UTC slot of each hour; source times must be at or
+before that slot within five minutes. This avoids a month-boundary mismatch
+when a :00 slot's source belongs to the previous month.
 
 Use the project's Conda interpreter. CLI and notebook diagnostics share the
 same functions. The separate `report.duckdb` stores audit hashes, per-observation
@@ -183,3 +197,12 @@ and can be regenerated. Keep their separate database off the live fetch index.
 The October 6 local radar backend comparison and the completed bounded NVIDIA
 MRMS source comparison are described in [the pipeline guide](goes_parallel_pipeline.md#comparing-with-installed-nvidia-mrms).
 Cached-tensor IO measurements are separate from source-download comparisons.
+
+## Radar map outputs
+
+`radar-figure --year 2022 --render-only` redraws the cached summary without
+NOAA reads. Use `--view macro`, `--view regional`, or the default `both`. All
+map PNG/SVG files go under `figures/mrms-<period>/`; selections, counts and
+resume state stay under `results/dataset-report/`. An explicit `--start` and
+`--end` support partial years such as January–June 2026. See the
+[radar guide](mrms_roi_and_radar_coverage.md) before starting new source reads.

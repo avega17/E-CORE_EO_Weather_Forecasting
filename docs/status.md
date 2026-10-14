@@ -1,4 +1,29 @@
-# Current operation — October 6, 2026
+# October 13, 2026 — Polaris preparation
+
+The 2022 radar figure now renders as separate Caribbean and Puerto Rico maps
+under figures/mrms-2022/, using the completed numerical summary without NOAA
+reads. Machine-specific MRMS profiles, bounded queues, source-month scheduling,
+Polaris PBS setup/tuning and shared progress monitoring passed 134 focused local
+checks. An isolated DAS pilot verified four scans per reflectivity product,
+then reused both archives on a second run without source downloads.
+The eight-writer Polaris profile is an unmeasured starting candidate.
+
+Polaris authentication, remote environment installation, PBS pilot, tuning and
+production launch remain pending. Remaining annual maps are gated on successful
+Polaris validation. See [study jobs](study_jobs.md#polaris-pbs).
+
+# Current operation — October 9, 2026
+
+GOES has finished the verified December 2022 month and exited with the planned
+resumable pause (status 75); no NOAA fetch coordinator is active. The next
+chronological stage can resume from completed CMIPF archives and checkpoints.
+The 2022 full-CARIB MRMS [radar-quality figure](mrms_roi_and_radar_coverage.md)
+is complete: 8,757 reflectivity and 8,752 RQI hourly samples, with three and
+eight absent source hours. Its one-day exact source-to-archive check passed;
+the annual report and PNG/SVG are linked in the coverage guide. Raw archives
+were not modified.
+
+## Earlier workstation-recovery notes — October 6
 
 The workstation restart interrupted the previous GOES attempt. No fetch process
 or tmux session survived. July–September 2021 retain eight-band completed

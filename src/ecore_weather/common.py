@@ -194,7 +194,10 @@ class Transport:
                     from obstore.store import S3Store
                     with self._lock:
                         if asset.bucket not in self._stores:
-                            self._stores[asset.bucket] = S3Store(asset.bucket, region="us-east-1", skip_signature=True)
+                            import os
+                            proxy=os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+                            options={'client_options':{'proxy_url':proxy}} if proxy else {}
+                            self._stores[asset.bucket] = S3Store(asset.bucket, region="us-east-1", skip_signature=True, **options)
                         store = self._stores[asset.bucket]
                     options = {"if_match": f'"{asset.etag}"'}
                     if start is not None:
