@@ -248,13 +248,21 @@ git checkout --detach "$ECORE_REVISION"
 module use /soft/modulefiles
 module load conda
 export CONDA_PKGS_DIRS="$ECORE_PROJECT_ROOT/ecore-weather/conda-cache"
-conda env create -p "$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu" \
-  -f jobs/environment-polaris.yml
+export CONDA_ENVS_PATH="$ECORE_PROJECT_ROOT/ecore-weather/envs"
+mamba create -y -p "$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu" \
+  --file jobs/environment-polaris-linux-64.lock
 export ECORE_PYTHON="$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu/bin/python"
+"$ECORE_PYTHON" -m pip install obstore==0.11.1 earth2studio==0.18.0
 "$ECORE_PYTHON" -m pip install --no-deps -e .
 "$ECORE_PYTHON" -m pip check
 "$ECORE_PYTHON" -m pip freeze > "$ECORE_PROJECT_ROOT/ecore-weather/environment-resolved.txt"
 ```
+
+The explicit Linux package list avoids repeating the Conda dependency solve.
+It was generated from `jobs/environment-polaris.yml`; keep both files together
+when updating dependencies. GCSFS 2026.8.1 and S3FS 2026.7.0 share the required
+FSSPEC version, despite their different release numbers. The final pip check
+and resolved package export cover the pip-only dependencies too.
 
 Use the dedicated CPU environment rather than cloning the site's large GPU
 base. ALCF documents the [available Python environment approaches](https://docs.alcf.anl.gov/polaris/data-science/python/).
