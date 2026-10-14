@@ -90,7 +90,7 @@ def selections(output, frames):
     return result
 
 
-def run_case(selected,resources,destination,scratch,reference):
+def run_case(selected,resources,destination,scratch,reference,progress=None):
     """Fresh application stores; includes worker startup, packing and destination verification."""
     from .storage import open_raw,fingerprint_streaming,metadata_fingerprint
     target=Path(tempfile.mkdtemp(prefix='mrms-tune-',dir=destination))
@@ -104,17 +104,21 @@ def run_case(selected,resources,destination,scratch,reference):
                 futures={pool.submit(_fetch_selection,s,target,resources['workers'],working,
                     resources['decode_workers'],resources['max_inflight'],resources['roi_queue_mib']):s
                     for s in selected}
-                reports=[(futures[f],f.result()) for f in as_completed(futures)]
+                reports=[]
+                for f in as_completed(futures):
+                    reports.append((futures[f],f.result()))
+                    if progress:progress('archives_verified',len(reports),len(futures))
             elapsed=time.perf_counter()-began
         signatures={}
         metrics=[]
-        for selection,report in reports:
+        for task_number,(selection,report) in enumerate(reports,1):
             for row in report['monthly_archives']:
                 if row['status']!='saved':
                     raise IOError(f'Unverified tuning archive: {row}')
                 with open_raw(row['path']) as ds:
                     signatures[selection.id+'|'+row['month']]=(fingerprint_streaming(ds),metadata_fingerprint(ds))
                 metrics.append({k:v for k,v in row.items() if k not in {'assets','path'}})
+            if progress:progress('content_compared',task_number,len(reports))
         if reference and signatures!=reference:
             raise AssertionError('Tuning changed source values, coordinates, quality or metadata')
         row={'status':'complete','equal':True,'resources':resources,'wall_seconds':elapsed,
@@ -179,7 +183,14 @@ def main(argv=None):
         if time.monotonic()>=deadline or budget.summary()['charged']+sum(a.size for s in selected for a in s.assets)>budget.summary()['limit']:
             raise TimeoutError('Tuning limit reached; resume the same suite without resetting its byte budget')
         print(f'MRMS tuning {stage} {repeat}: {resources}',flush=True)
-        row,signatures=run_case(selected,resources,destination,scratch,reference)
+        def progress(phase,completed,total):
+            summary['active_case']={'resources':resources,'stage':stage,'repeat':repeat,
+                                    'phase':phase,'completed_tasks':completed,'total_tasks':total}
+            save()
+            print(f'MRMS tuning {phase}: {completed}/{total} product-month tasks',flush=True)
+        progress('starting',0,len(selected))
+        row,signatures=run_case(selected,resources,destination,scratch,reference,progress)
+        summary.pop('active_case',None)
         reference=reference or signatures
         rows.append({**row,'stage':stage,'repeat':repeat})
         save()
