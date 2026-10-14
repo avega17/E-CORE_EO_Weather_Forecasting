@@ -227,15 +227,18 @@ record. Fresh application stores do not imply flushed filesystem caches.
 
 ### First setup
 
-There is no existing Polaris checkout/environment. After local tests, commit
+For a fresh Polaris checkout/environment, first commit
 and push the reviewed implementation. Authenticate with `ssh
 asvnpr@polaris.alcf.anl.gov` using a fresh application passcode. Check the PBS
 allocation and queue eligibility, `myprojectquotas`, and the project path before
 using the example values below. Do not assume the PBS account equals the
-storage directory name.
+storage directory name. The authenticated check on October 13, 2026 confirmed
+`lighthouse-upr` as the allocation and `/eagle/lighthouse-upr` (also
+`/lus/eagle/projects/lighthouse-upr`) as the project directory. At that check,
+149.4 GB of the 1 TB quota was used; refresh this value before submission.
 
 ```bash
-export ECORE_PROJECT_ROOT=/lus/eagle/lighthouse-upr
+export ECORE_PROJECT_ROOT=/eagle/lighthouse-upr
 export ECORE_REVISION=<tested-pushed-commit>
 mkdir -p "$ECORE_PROJECT_ROOT/ecore-weather"
 git clone https://github.com/avega17/E-CORE_EO_Weather_Forecasting.git \
