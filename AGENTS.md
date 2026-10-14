@@ -122,5 +122,6 @@ Keep explanations readable for researchers inheriting the work.
   Use only documented PBS commands. Bound installer bytecode workers with
   MAMBA_EXTRACT_THREADS=4; do not run heavy installation on a login node.
   Re-measure settings on the target machine.
-  Generate remaining annual radar figures only after the Polaris pilot and first
-  production month verify for both reflectivity products.
+  Annual radar figures may run on the workstation while the Polaris job is
+  queued, as authorized after the successful pilots and tuning. Keep GOES paused
+  and separate figure reads from controlled network benchmarks.

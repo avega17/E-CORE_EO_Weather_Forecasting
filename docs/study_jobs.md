@@ -407,5 +407,6 @@ Resubmit the same study command to reuse completed archives. Do not run two
 coordinators against the same state/destination. Retain compact receipts and
 bounded error logs rather than per-object operational histories.
 
-Annual workstation radar-map calculations remain gated on a successful pilot
-and a verified production month for both reflectivity products.
+Following successful pilots and tuning, the user authorized annual workstation
+radar maps while the full-study PBS job is queued. Their validation and the
+first verified production month remain separate checks.

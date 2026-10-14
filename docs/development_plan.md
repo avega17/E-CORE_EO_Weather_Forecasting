@@ -49,10 +49,13 @@ run the isolated PBS pilot and the bounded 10 GiB tuning suite, then pin any
 measured profile changes before production. Completed months are durable on
 Eagle; unfinished node-local months may be refetched after a job ends.
 
-Generate the remaining annual workstation maps only after the pilot and first
-production month verify for both composite and base reflectivity. Remote CPU setup and two pilots passed on revision `4db62f1`; tuning passed
-on `1f017e0`. Production job `7743827` is queued at revision `2038b86`; first-month
-verification and the remaining annual figures depend on it starting.
+The user authorized the remaining annual workstation maps while Polaris is
+queued, after the successful pilots and tuning. The 2021–2025 and H1 2026
+figures are now complete and validated; 2022 reused its cached summary. The post-render PBS check still reports a capacity queue
+node limit, so production fetching has not started. Remote CPU
+setup and two pilots passed on `4db62f1`; tuning passed on `1f017e0`.
+Production job `7743827` is pinned to `2038b86`; its first-month verification
+remains separate from the workstation figure work.
 
 Future training preparation: decode and inspect native observations, validate
 cloud-height-dependent parallax correction, map onto an explicit 1 km training

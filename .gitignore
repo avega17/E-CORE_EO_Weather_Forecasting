@@ -227,4 +227,4 @@ __marimo__/
 .streamlit/secrets.toml
 
 results/
-figures/
+figures/*.html

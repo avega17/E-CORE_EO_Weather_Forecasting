@@ -15,8 +15,8 @@ training patch and a black contour around pixels with valid reflectivity in at
 least 1% of successfully read hourly samples. That contour depends on weather
 and data availability; it does not establish a fixed station range.
 
-Generated images live in `figures/`, which is intentionally ignored by Git.
-After rendering locally, open:
+PNG and SVG figures live in `figures/`; numerical working state stays out of
+Git under `results/`. Open the 2022 examples:
 
 - [Caribbean overview](../figures/mrms-2022/mrms-rqi-macro-2022.png)
 - [Puerto Rico region](../figures/mrms-2022/mrms-rqi-regional-2022.png)
@@ -52,9 +52,10 @@ python scripts/dataset_report.py radar-figure --start 2026-01-01 --end 2026-07-0
   --location /mnt/p/ecore_eo_datasets --workers 4
 ```
 
-The remaining annual calculations for 2021–2025 and H1 2026 are gated on a
-successful Polaris pilot and a verified production month for both reflectivity
-products. They will run on the workstation; 2022 reuses its saved summary.
+After successful Polaris pilots and tuning, the remaining annual calculations
+may run on the workstation while the full-study PBS job is queued. Process
+2021, 2023–2025 and H1 2026 with bounded readers; 2022 reuses its saved summary.
+Check the PBS job again after validating the figures.
 `--figures-dir` changes image output, while `--output` changes numerical report
 state. Other controls set the center and illustrative square sizes.
 
@@ -80,6 +81,41 @@ In 2022, these anomalies accounted for 3.56% of full-grid pixel observations;
 77.0% encoded no coverage. The regional view helps interpret these source-grid
 statistics around Puerto Rico. The mean is calculated from valid RQI observations
 at each pixel, not by treating absent values as zero.
+
+## Completed study-period figures
+
+All six periods have separate Caribbean and Puerto Rico maps, each exported as
+PNG and SVG. Source-to-archive checks passed for the five newly read periods;
+2022 reused its previously validated numerical summary. Monthly counts, source
+selection hashes, pixel bounds and image files passed read-back checks. The 66
+original reflectivity completion markers still match their recorded hashes.
+
+| Period | Reflectivity hours | RQI hours | Missing hours, reflectivity / RQI | Returned MB | Aggregation minutes | Maps |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 2021 | 8,739 | 8,738 | 21 / 22 | 473.4 | 17.5 | [Overview](../figures/mrms-2021/mrms-rqi-macro-2021.png), [regional](../figures/mrms-2021/mrms-rqi-regional-2021.png) |
+| 2022 | 8,757 | 8,752 | 3 / 8 | 507.5 | 16.3 | [Overview](../figures/mrms-2022/mrms-rqi-macro-2022.png), [regional](../figures/mrms-2022/mrms-rqi-regional-2022.png) |
+| 2023 | 8,756 | 8,746 | 4 / 14 | 469.7 | 16.5 | [Overview](../figures/mrms-2023/mrms-rqi-macro-2023.png), [regional](../figures/mrms-2023/mrms-rqi-regional-2023.png) |
+| 2024 | 8,783 | 8,783 | 1 / 1 | 504.5 | 16.3 | [Overview](../figures/mrms-2024/mrms-rqi-macro-2024.png), [regional](../figures/mrms-2024/mrms-rqi-regional-2024.png) |
+| 2025 | 8,760 | 8,760 | 0 / 0 | 457.4 | 16.3 | [Overview](../figures/mrms-2025/mrms-rqi-macro-2025.png), [regional](../figures/mrms-2025/mrms-rqi-regional-2025.png) |
+| 2026-h1 | 4,344 | 4,344 | 0 / 0 | 220.7 | 7.6 | [Overview](../figures/mrms-2026-h1/mrms-rqi-macro-2026-h1.png), [regional](../figures/mrms-2026-h1/mrms-rqi-regional-2026-h1.png) |
+
+MB means decimal megabytes. Timings sum monthly source reads and aggregation,
+excluding listing, pilots and rendering; concurrent periods overlap in wall time.
+The 2022 row reports the earlier calculation, not new downloads. Expected hours
+are 8,760 per ordinary year, 8,784 for 2024 and 4,344 for January–June 2026.
+All passes recorded zero retries. These hourly figure samples are separate from
+the ten-minute research archives and their fetch performance.
+
+The 2025 and H1 2026 maps show a broader area of positive mean RQI near Puerto
+Rico than earlier years. These are observed source differences, not evidence
+by themselves of improved radar accuracy or a particular algorithm change.
+H1 2026 covers a different seasonal interval, so it is not a full-year comparison.
+Investigate monthly RQI distributions and NOAA product history before using
+these differences to choose a training mask.
+
+Compact run and validation records are `results/dataset-report/figure-run.json`
+and `figure-validation.json`. Each period retains its report, compressed source
+selection and resumable numerical summary. No original GRIB copies are retained.
 
 ## Percentage retained
 

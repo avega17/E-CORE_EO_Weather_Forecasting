@@ -1,28 +1,25 @@
-# October 13, 2026 — Polaris preparation
+# Polaris validation and annual radar figures
 
-The 2022 radar figure now renders as separate Caribbean and Puerto Rico maps
-under figures/mrms-2022/, using the completed numerical summary without NOAA
-reads. Machine-specific MRMS profiles, bounded queues, source-month scheduling,
-Polaris PBS setup/tuning and shared progress monitoring passed 134 focused local
-checks. An isolated DAS pilot verified four scans per reflectivity product,
-then reused both archives on a second run without source downloads.
-The eight-writer Polaris profile is an unmeasured starting candidate.
+The implementation passed **137 focused checks**. CPU setup `7743696`, fetch
+pilot `7743706` and fresh-job reuse pilot `7743711` all exited 0. Polaris tuning
+`7743767` selected twelve product-month writers, four downloads each and one
+decoder each: median 76.256 seconds on the matched selection and maximum
+8.76 GiB job RSS. The cumulative experiment used 3.52 GiB of its 10 GiB budget.
+See [measured settings and commands](study_jobs.md#polaris-pbs).
 
-Polaris authentication succeeded. The checkout is under
-`/eagle/lighthouse-upr/ecore-weather/repo`; allocation `lighthouse-upr` and the
-project quota were confirmed. CPU setup job `7743696` passed imports and dependency checks. Pilot `7743706`
-verified eight observations (four per product) and Eagle publication; fresh-job
-reuse pilot `7743711` also exited 0 without source downloads. Both tested revision
-`4db62f1`. Initial tuning job `7743717` retained six verified cases before a controlled
-stop to correct finalist selection. Corrected job `7743767` completed with exit 0 on revision `1f017e0`. Three
-rotated repeats selected twelve product-month writers, four downloads each and
-one decoder each: median 76.256 s, maximum 8.76 GiB job RSS. The cumulative
-byte ledger charged 3.52 GiB of 10 GiB. Production job `7743827` is submitted to capacity at pinned revision
-`2038b86fb7d69ff2625dd1e515e84a93a42edd67`. PBS currently reports it queued
-because the capacity queue node limit is occupied; it is not fetching yet.
-Keep that remote checkout unchanged while queued/running. Annual workstation
-figures remain gated on a verified full production month for both products. Remaining annual maps are gated on successful
-Polaris validation. See [study jobs](study_jobs.md#polaris-pbs).
+Full-study job **7743827** is pinned to `2038b86` under
+`/eagle/lighthouse-upr/ecore-weather/repo`. At the last check it was queued
+because the capacity queue had reached its node limit. Leave that checkout
+unchanged while queued/running. First-production-month verification remains
+outstanding.
+
+The annual workstation figures are complete and validated for 2021–2025 and
+January–June 2026: twelve maps, each in PNG and SVG. All five new source pilots
+passed; 2022 reused its cached summary. Counts, source-selection hashes, RQI
+bounds, all image files and 66 unchanged archive completion markers passed.
+See the [annual results and maps](mrms_roi_and_radar_coverage.md#completed-study-period-figures).
+The live post-render PBS check still reports job 7743827 queued because of the
+capacity queue's node limit; production fetching has not started.
 
 # Current operation — October 9, 2026
 
