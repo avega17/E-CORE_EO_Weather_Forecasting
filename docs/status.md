@@ -17,7 +17,11 @@ reuse pilot `7743711` also exited 0 without source downloads. Both tested revisi
 stop to correct finalist selection. Corrected job `7743767` completed with exit 0 on revision `1f017e0`. Three
 rotated repeats selected twelve product-month writers, four downloads each and
 one decoder each: median 76.256 s, maximum 8.76 GiB job RSS. The cumulative
-byte ledger charged 3.52 GiB of 10 GiB. Production submission is next. Remaining annual maps are gated on successful
+byte ledger charged 3.52 GiB of 10 GiB. Production job `7743827` is submitted to capacity at pinned revision
+`2038b86fb7d69ff2625dd1e515e84a93a42edd67`. PBS currently reports it queued
+because the capacity queue node limit is occupied; it is not fetching yet.
+Keep that remote checkout unchanged while queued/running. Annual workstation
+figures remain gated on a verified full production month for both products. Remaining annual maps are gated on successful
 Polaris validation. See [study jobs](study_jobs.md#polaris-pbs).
 
 # Current operation — October 9, 2026

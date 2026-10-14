@@ -51,7 +51,8 @@ Eagle; unfinished node-local months may be refetched after a job ends.
 
 Generate the remaining annual workstation maps only after the pilot and first
 production month verify for both composite and base reflectivity. Remote CPU setup and two pilots passed on revision `4db62f1`; tuning passed
-on `1f017e0`. Production submission and first-month verification remain.
+on `1f017e0`. Production job `7743827` is queued at revision `2038b86`; first-month
+verification and the remaining annual figures depend on it starting.
 
 Future training preparation: decode and inspect native observations, validate
 cloud-height-dependent parallax correction, map onto an explicit 1 km training
