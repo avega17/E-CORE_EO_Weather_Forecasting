@@ -249,14 +249,21 @@ module use /soft/modulefiles
 module load conda
 export CONDA_PKGS_DIRS="$ECORE_PROJECT_ROOT/ecore-weather/conda-cache"
 export CONDA_ENVS_PATH="$ECORE_PROJECT_ROOT/ecore-weather/envs"
-mamba create -y -p "$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu" \
-  --file jobs/environment-polaris-linux-64.lock
 export ECORE_PYTHON="$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu/bin/python"
-"$ECORE_PYTHON" -m pip install obstore==0.11.1 earth2studio==0.18.0
-"$ECORE_PYTHON" -m pip install --no-deps -e .
-"$ECORE_PYTHON" -m pip check
-"$ECORE_PYTHON" -m pip freeze > "$ECORE_PROJECT_ROOT/ecore-weather/environment-resolved.txt"
+export ECORE_PBS_ACCOUNT=lighthouse-upr
+export ECORE_QUOTA_FREE_GIB=<current-free-project-GiB>
+export ECORE_PBS_MODE=setup
+qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
+  jobs/polaris_mrms.pbs
 ```
+
+The `setup` job installs dependencies on a compute node, with bounded Conda
+installer and numerical-library thread pools. It resumes a partially installed
+environment, performs imports and `pip check`, and saves
+`ecore-weather/environment-resolved.txt`. Check its PBS exit status before
+submitting the pilot. A login-node installation hit the process-resource limit
+during first setup, so the supported procedure uses PBS for installation.
 
 The explicit Linux package list avoids repeating the Conda dependency solve.
 It was generated from `jobs/environment-polaris.yml`; keep both files together

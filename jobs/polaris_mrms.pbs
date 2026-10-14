@@ -19,7 +19,6 @@ cd "$code_root"
 test "$(git rev-parse HEAD)" = "$ECORE_REVISION"
 test -z "$(git status --porcelain --untracked-files=no)"
 test -d "$ECORE_PROJECT_ROOT"
-test -x "$ECORE_PYTHON"
 
 export HTTP_PROXY=http://proxy.alcf.anl.gov:3128
 export HTTPS_PROXY="$HTTP_PROXY"
@@ -41,6 +40,31 @@ if test -f "$state_root/archive_index.duckdb"; then
 fi
 export ECORE_LOCAL_SCRATCH="$scratch_root"
 export ECORE_REQUIRED_GIB="${ECORE_REQUIRED_GIB:-32}"
+if test "$ECORE_PBS_MODE" = setup; then
+    module use /soft/modulefiles
+    module load conda/2026-10-01
+    export CONDA_PKGS_DIRS="$ECORE_PROJECT_ROOT/ecore-weather/conda-cache"
+    export CONDA_ENVS_PATH="$ECORE_PROJECT_ROOT/ecore-weather/envs"
+    export CONDA_DEFAULT_THREADS=4 CONDA_EXECUTE_THREADS=2 CONDA_VERIFY_THREADS=2
+    export RAYON_NUM_THREADS=4
+    environment_root="${ECORE_PYTHON%/bin/python}"
+    if test "$environment_root" = "$ECORE_PYTHON"; then
+        printf 'ECORE_PYTHON must end with /bin/python\n' >&2
+        exit 2
+    fi
+    if test -d "$environment_root/conda-meta"; then
+        conda install -y -p "$environment_root" --file "$code_root/jobs/environment-polaris-linux-64.lock"
+    else
+        conda create -y -p "$environment_root" --file "$code_root/jobs/environment-polaris-linux-64.lock"
+    fi
+    "$ECORE_PYTHON" -m pip install obstore==0.11.1 earth2studio==0.18.0
+    "$ECORE_PYTHON" -m pip install --no-deps -e "$code_root"
+    "$ECORE_PYTHON" -m pip check
+    "$ECORE_PYTHON" -m pip freeze > "$ECORE_PROJECT_ROOT/ecore-weather/environment-resolved.txt"
+    "$ECORE_PYTHON" -c 'import torch, pygrib, eccodes, zarr; from earth2studio.io import ZarrBackend; print("CPU ingestion imports passed; CUDA build:", torch.version.cuda)'
+    exit 0
+fi
+test -x "$ECORE_PYTHON"
 "$ECORE_PYTHON" - <<'PY'
 import os, shutil
 from pathlib import Path
