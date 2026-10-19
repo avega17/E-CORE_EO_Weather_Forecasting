@@ -269,11 +269,9 @@ first production months before extrapolating to the entire study.
 
 ### First setup
 
-For a fresh Polaris checkout/environment, first commit
-and push the reviewed implementation. Authenticate with `ssh
-asvnpr@polaris.alcf.anl.gov` using a fresh application passcode. Check the PBS
-allocation and queue eligibility, `myprojectquotas`, and the project path before
-using the example values below. Do not assume the PBS account equals the
+For a fresh Polaris checkout/environment, first commit and push the reviewed
+implementation. Check PBS allocation and queue eligibility, `myprojectquotas`,
+and the project path before using the example values below. Do not assume the PBS account equals the
 storage directory name. The authenticated check on October 13, 2026 confirmed
 `lighthouse-upr` as the allocation and `/eagle/lighthouse-upr` (also
 `/lus/eagle/projects/lighthouse-upr`) as the project directory. At that check,
@@ -338,8 +336,9 @@ backed up.
 export ECORE_PBS_ACCOUNT=<confirmed-allocation>
 export ECORE_QUOTA_FREE_GIB=<current-free-project-GiB>
 export ECORE_PBS_MODE=pilot
+export PBS_MRMS_START=2022-09-18T12:00:00Z PBS_MRMS_END=2022-09-18T12:40:00Z
 qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_MRMS_START,PBS_MRMS_END \
   jobs/polaris_mrms.pbs
 ```
 
@@ -363,12 +362,14 @@ checkout before starting production. Do not alter a running checkout.
 
 ```bash
 export ECORE_PBS_MODE=study
+export PBS_MRMS_START=2021-01-01 PBS_MRMS_END=2026-07-01
 qsub -A "$ECORE_PBS_ACCOUNT" \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_MRMS_START,PBS_MRMS_END \
   jobs/polaris_mrms.pbs
 ```
 
-The default production request is one node in `capacity` for 24 hours. Confirm
+The MRMS production request is one node in `capacity` for **six hours**.
+Its measured twelve-writer/four-download/one-decoder profile is unchanged. Confirm
 current [queue limits](https://docs.alcf.anl.gov/polaris/running-jobs/) first.
 Use normal `qstat -was1 JOBID`, `qstat -f JOBID` and `qstat -x -f JOBID` to inspect
 queue comments, current state and completed exit status. If access is denied,
@@ -410,3 +411,170 @@ bounded error logs rather than per-object operational histories.
 Following successful pilots and tuning, the user authorized annual workstation
 radar maps while the full-study PBS job is queued. Their validation and the
 first verified production month remain separate checks.
+
+
+## Polaris GOES: manual pilot and 2021–2022 study
+
+The GOES PBS job is ready for **manual validation**; no GOES Polaris execution
+or speedup is claimed by the local tests. Reuse the prepared CPU ingestion
+environment. The code must be a clean checkout of the tested pushed revision;
+update it only when no pinned job is running. Fetch jobs do not install GPU
+model dependencies or run inference.
+
+The study keeps eight native CMIPF bands, every available full-disk scan and the
+current Puerto Rico box. It defaults to 2021-01-01 through 2023-01-01, end excluded.
+C02 uses range reads; the other seven bands share asynchronous whole-file staging.
+Full files are cropped locally and retired after verified scan checkpoints.
+See the [pipeline explanation](goes_parallel_pipeline.md) and
+[storage layout](storage_and_data_management.md).
+
+### Initial Polaris GOES resource settings
+
+`jobs/goes_polaris.json` starts with four normal month owners plus one C02-only
+owner, 64 global async downloads, eight local HDF5 readers, sixteen C02 range
+readers and two finalizers. ROI queues share 4,096 MiB; staging shares 32,768 MiB.
+The job-process RSS ceiling is 64 GiB. These limits do not multiply by month or
+band. Async requests are not CPU threads. Independent HDF5 reader processes,
+writers and finalizers also use the node's CPU resources.
+
+This is a higher-concurrency **starting profile**, not a measured optimum.
+The workstation's two-month profile remains unchanged. Record effective
+concurrency and first production-month runtimes before drawing conclusions about
+Polaris throughput. The shared proxy, source sizes and C02's different read method
+can matter more than hardware thread count.
+
+### Date variables and common submission settings
+
+After checking that no pinned job is active, update the existing checkout:
+
+```bash
+git fetch origin
+git checkout --detach <tested-pushed-commit>
+```
+
+Use the commit provided in the implementation handoff. The existing CPU
+environment needs no new packages for these job changes.
+
+Both fetch wrappers require explicit ISO dates or UTC timestamps. Examples are
+in `.env.example`; assigning a value there does not automatically export it to
+PBS. Export the listed settings and pass them with `qsub -v`. Do not source or
+export the entire credential-bearing `.env`, and do not use `qsub -V`.
+
+```bash
+export ECORE_PROJECT_ROOT=/eagle/lighthouse-upr
+export ECORE_PYTHON="$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu/bin/python"
+export ECORE_REVISION=$(git rev-parse HEAD)  # reviewed and pushed revision
+export ECORE_PBS_ACCOUNT=lighthouse-upr
+export ECORE_QUOTA_FREE_GIB=<current-free-project-GiB>
+```
+
+The scripts validate dates and revision, use the documented proxy, and cap
+incidental BLAS/OpenMP threads. The MRMS study uses `PBS_MRMS_START` and
+`PBS_MRMS_END`; GOES uses `PBS_GOES_START` and `PBS_GOES_END`. End dates are
+excluded. Setup/tuning do not require these fetch-date variables.
+
+### Bounded four-context pilot
+
+```bash
+export ECORE_PBS_MODE=pilot
+export PBS_GOES_START=2021-01-01T12:00:00Z
+export PBS_GOES_END=2021-01-01T13:20:00Z
+qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END \
+  jobs/polaris_goes.pbs
+```
+
+Pilot mode uses the supplied UTC time-of-day window on January 1, April 1,
+July 1 and October 1 of the start year. It requires eight available scans per
+band in each context, allowing all four monthly pipelines to overlap. It is
+not a continuous January-to-October fetch. The cumulative transfer ceiling is
+**32 GiB**, including retries and conservative failed-request reservations.
+The compact transfer ledger remains on Eagle across failed submissions; retries
+do not reset it. Its accounting I/O is included in the pilot runtime.
+
+The pilot runs the normal source-to-Zarr checks for all arrays, native
+coordinates and scan metadata, then starts a fresh pipeline against the
+completed stores and requires zero additional source bytes. Its summary records
+source-identity hashes, effective concurrency, runtime through publication,
+returned bytes, scratch/ROI reservations and peak process RSS. It removes only
+its isolated successful temporary archives after preserving compact evidence.
+A failure retains its stores for inspection; choose a fresh isolated pilot
+location or inspect/remove those test files before retrying.
+
+Check `state/goes/pilot/pilot-summary.json` under `ecore-weather/`, the joined
+`ecore_goes.oJOBID` output and `qstat -x -f JOBID`. Require exit 0, 32 verified
+band archives, 256 observations and successful no-download reuse. These are
+bounded pilot measurements, not a full-study performance forecast. Its CLI operation is `dataset_jobs.py benchmark goes --polaris-pilot`,
+with the profile, dates, destination, scratch and output arguments used by the PBS wrapper.
+
+### Study submission and monitoring
+
+```bash
+export ECORE_PBS_MODE=study
+export PBS_GOES_START=2021-01-01 PBS_GOES_END=2023-01-01
+qsub -A "$ECORE_PBS_ACCOUNT" \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END \
+  jobs/polaris_goes.pbs
+```
+
+GOES requests one capacity node for 24 hours. `ECORE_PROFILE` and
+`ECORE_DESTINATION` can be exported and explicitly added to `-v` to override
+profile/destination. Do not increase resource limits by launching competing jobs
+against the same stores.
+
+```bash
+qstat -was1 JOBID
+qstat -x -f JOBID
+watch -n 30 -t "$ECORE_PYTHON scripts/dataset_jobs.py status goes --progress $ECORE_PROJECT_ROOT/ecore-weather/state/goes/study/progress.json"
+sbank-list-transactions -r polaris -p lighthouse-upr -j JOBID
+```
+
+Progress is an atomic aggregate snapshot published about every 30 seconds and
+at shutdown. Completed band records survive scratch deletion. A closed index
+snapshot is published after each verified band and at shutdown; no live DuckDB
+WAL is copied to Eagle. Status can report a stale remote heartbeat without
+pretending a compute-node PID is accessible on the login node.
+
+### Capacity, walltime and resubmission
+
+The **400 decimal GB cap** covers GOES arrays and GOES state on Eagle, including
+pilot data and temporary publication copies; it excludes MRMS, environments and
+node-local scratch. Saved workstation checkpoints for the 24 study months total
+311.4 GB; a 20% allowance gives 373.7 GB. This is historical evidence, not a
+new Polaris measurement or the much larger volume transferred from NOAA.
+
+Admission reserves estimated remaining native subsets. Before copying a closed,
+verified ZIP, the finalizer replaces that estimate with its actual size and
+checks the cap again. Existing physical files are counted once, with a 512 MiB
+allowance for changing progress/index metadata. Shared project quota and physical
+filesystem free space are checked independently. The larger profile also needs
+node-local space for open stores, staged inputs and simultaneous packed copies;
+insufficient space stops the job rather than redirecting to Eagle scratch.
+
+Before walltime the runner stops new admissions using at least fifteen minutes,
+or 130% of the longest observed month runtime. The application deadline leaves
+four minutes for cleanup; an outer timeout is a final safeguard. Exit 75 means
+an intentional pause. A timeout, killed process or genuine I/O error is not
+reported as successful study completion.
+
+Resubmit the same pinned command to continue. Verified band-month ZIPs on Eagle
+are reusable even if their other bands never finished. Unfinished node-local
+stores may need refetching because Polaris erases local SSD between jobs. Keep
+the same date range and shared state path. Do not copy node-local partial stores
+onto Eagle to evade the storage cap.
+
+### Completed MRMS production evidence
+
+MRMS job 7743827 on revision `2038b86` finished with exit 0: PBS walltime 1:14:14,
+application time 4,372.7 seconds, 577,665 archived observations across the two
+reflectivity products, 19.06 GB returned and 12.70 GB retained. Application peak
+process RSS was 12.2 GiB; there were no unfinished product-months or retries.
+Its one boundary observation per product comes from December 31, 2020 for the
+January 1, 2021 00:00 requested slot. This is intentional causal matching.
+The six-hour MRMS request leaves headroom without changing the measured profile.
+
+The allocation is in **node-hours**. One node for 1:14:14 is approximately
+1.237 node-hours, subject to the authoritative sbank charge. PBS `cput` sums CPU
+execution time; it is not the allocation deduction. A transaction may take time
+to become visible. Per-band average transfer rates include waiting and processing
+and are not historical NIC-speed measurements.

@@ -57,8 +57,8 @@ Keep explanations readable for researchers inheriting the work.
   or month. HDF5 concurrency requires independent processes, not more threads.
 - MRMS workstation defaults are four product-month writers, eight downloads each,
   one decode slot, eight admitted observations and 128 MiB ROI queue per writer.
-  Polaris starts at eight writers, eight downloads, one decoder, sixteen admitted
-  observations and 256 MiB ROI queues; these are candidates until measured.
+  The measured Polaris MRMS profile uses twelve writers, four downloads, one
+  decoder, sixteen admitted observations and 256 MiB ROI queues.
   Versioned MRMS JSON profiles are overridden by explicit CLI resource arguments.
   Source-month task partitioning prevents adjacent workers sharing a physical ZIP. Whole gzip downloads precede decoding; radar ROI does not reduce transfers.
 - Pin changed code/configuration only after supported pause drains every admitted
@@ -125,3 +125,15 @@ Keep explanations readable for researchers inheriting the work.
   Annual radar figures may run on the workstation while the Polaris job is
   queued, as authorized after the successful pilots and tuning. Keep GOES paused
   and separate figure reads from controlled network benchmarks.
+
+- Polaris GOES has a separate **unmeasured starting profile**: four normal month
+  owners plus one C02 tail, 64 global async downloads, eight local HDF5 readers,
+  sixteen C02 range readers, 4,096 MiB ROI and 32,768 MiB staging. Do not change
+  workstation settings or call this profile optimal without target-machine data.
+  The manual four-context pilot has a 32 GiB transfer ceiling; this sprint does
+  not submit it. GOES study dates are 2021-01-01 to 2023-01-01, end excluded,
+  with a 400 decimal GB cap for GOES Eagle data/state. MRMS PBS requests six hours.
+- PBS fetch dates come from PBS_GOES_START/END and PBS_MRMS_START/END, in ISO UTC.
+  Setup/tuning are date-independent. Do not export the entire .env to PBS.
+  Solar conditioning is cosine of **zenith**, not azimuth; the model computes it
+  at inference. GPU inference and analysis-ready preprocessing remain separate.

@@ -114,5 +114,11 @@ It reports the default CONUS workload separately from matched CARIB source reads
 explain what has passed and what remains queued.
 
 For Polaris, follow the [PBS setup, profiles, pilot and production guide](docs/study_jobs.md#polaris-pbs).
+MRMS requests six hours with the measured 12-writer profile. The new
+[GOES manual pilot and 2021–2022 job](docs/study_jobs.md#polaris-goes-manual-pilot-and-20212022-study)
+uses a separate initial profile and a 400 GB retained-data cap. Both PBS wrappers
+read explicit ISO date variables. The [StormScope overview](docs/StormScope-paper-notes.md)
+explains model inputs, geographic limits and solar zenith conditioning; it does
+not run inference or replace our future analysis-ready preprocessing.
 The cluster collection contains composite and base reflectivity; workstation
 four-product defaults remain available. Generated maps live under `figures/`.

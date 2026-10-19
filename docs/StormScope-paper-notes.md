@@ -1,5 +1,130 @@
 # StormScope and the Caribbean study
 
+## First inference checks: what the fetched data enables
+
+Our archives preserve observations; they are not yet analysis-ready model inputs.
+The practical first check is a small inference example on the released model's
+supported CONUS domain, followed by a separate assessment of Caribbean adaptation.
+Successfully opening our Zarr stores does not establish checkpoint compatibility
+or forecast skill in Puerto Rico.
+
+The [current NVIDIA example](https://nvidia.github.io/earth2studio/main/examples/04_nowcasting/03_stormscope_goes_example/)
+couples two models. The GOES model predicts eight ABI channels from their recent
+history. The radar model is conditioned on GOES and predicts composite
+reflectivity, base reflectivity and gridded GLM lightning density. Our completed
+Polaris radar job supplies the two reflectivity products; **GLM is still a separate
+data requirement** for that coupled configuration. GOES-only inference can be
+tested independently of the radar/GLM model.
+
+The broad sequence for a future smoke test is:
+
+1. Prepare a separate GPU/model environment and pin Earth2Studio, PhysicsNeMo
+   and the checkpoint package. Keep GPU dependencies out of the CPU ingestion
+   environment. Inspect available model variants and their actual input/output
+   coordinates before choosing a model or estimating GPU memory.
+2. Load the package and model, move it to the selected device, and call `eval()`.
+   Start with one forecast and one ensemble member; distinguish package download,
+   optional compilation, initial inference and repeated-step timings.
+3. Inspect `model.input_coords()` for variable order and required history, and
+   use the checkpoint's physical units and normalization. The paper's nowcast
+   setup uses six preceding ten-minute states, but the selected API/checkpoint
+   remains the authority. Missing or poorly aligned observations need an explicit
+   eligibility decision rather than silent filling in our raw stores.
+4. On the supported domain, build the example's input interpolator from source
+   latitude/longitude to the model grid, call `fetch_data`, and verify the tensor
+   shape, time/lead-time coordinates and interpolation support. For the coupled
+   path, assemble the radar and GLM initial state in the model's variable order.
+5. Run a short forecast using the model call/iterator, or the example's coupled
+   `call_with_conditioning` path. Inspect valid times, invalid-grid masks and
+   output fields before interpreting the maps as forecasts.
+
+For stock GOES access covering the Caribbean, the relevant source setting is:
+
+```python
+goes = GOES(satellite="goes16", scan_mode="F")
+goes_lat, goes_lon = GOES.grid(satellite="goes16", scan_mode="F")
+```
+
+`F` selects full-disk observations. It does **not** relocate the trained CONUS
+grid to Puerto Rico. The example's regional Flash option selects a region within
+its supported domain; it is not a general geographic extension of the checkpoint.
+Stock GOES reads the shared-grid MCMIPF product, while our CMIPF archives retain
+separate native band grids. They cannot be stacked through implicit xarray
+alignment. Our future analysis-ready processing must provide the chosen model's
+grid, channels, coordinates, quality treatment and calibration explicitly.
+
+The installed ingestion environment uses **Earth2Studio 0.18.0**. NVIDIA's changing
+`main` example now demonstrates `3km_10min_flash`, `set_domain`, mixed precision
+and optional compilation. Do not assume those newer interfaces exist in 0.18.0.
+The baseline 3 km/ten-minute and legacy 6 km/hourly variants also have different
+requirements. Pin and inspect the future inference installation rather than
+copying a `main` example into the ingestion environment unchanged.
+
+Polaris has four 40 GB A100 GPUs per node; their memory is not automatically
+combined into one 160 GB device. A full-CONUS model may need a supported regional
+mode or explicit parallel execution. Measure GPU memory on the selected model
+and history length; neither the training-memory numbers below nor our CPU fetch
+job establish inference-memory requirements.
+
+This is an overview, not a regional dataloader or preprocessing implementation.
+Parallax correction, the 1 km training grid, causal window construction and
+fine-tuning design remain subsequent research work.
+
+## Solar geometry is also needed at inference
+
+The relevant term is **solar zenith angle**, not solar azimuth. Zenith is the
+angle between the Sun and the local upward vertical; azimuth is its compass
+direction around the horizon. The attached paper names zenith in its model
+conditioning. In both installed Earth2Studio 0.18.0 and the
+[NVIDIA implementation](https://github.com/NVIDIA/earth2studio/blob/main/earth2studio/models/px/stormscope.py),
+`build_condition` calls PhysicsNeMo's `cos_zenith_angle` for the current input
+and target forecast times, then supplies those fields to the diffusion model.
+The inference forward path calls this function: **it is not training-only**.
+
+No extra NOAA imagery is needed to compute this feature: UTC time, latitude
+and longitude determine the geometry. Using the known Sun position at a future
+forecast time does not introduce future weather observations. Earth2Studio's
+wrapper generates the feature internally; callers should not append duplicate
+solar channels. Future training code must reproduce the checkpoint's convention
+and treatment of nighttime values rather than silently substitute another
+solar-position algorithm or clamp negative cosine values.
+
+### What NREL SPA means
+
+NREL's **Solar Position Algorithm (SPA)** is a published astronomical procedure
+for calculating where the Sun appears from a given location and time. It accounts
+for the Earth's orbital position, rotation and observer location; apparent-angle
+outputs additionally account for atmospheric refraction. It calculates geometry,
+not clouds, surface irradiance or radar quality.
+
+[pvlib's solar-position interface](https://pvlib-python.readthedocs.io/en/stable/reference/solarposition.html)
+offers multiple methods. Its
+[Python SPA implementation](https://pvlib-python.readthedocs.io/en/stable/reference/generated/pvlib.solarposition.spa_python.html)
+returns geometric and apparent zenith/elevation, azimuth and equation of time.
+It accepts UTC/localized timestamps, coordinates and optional altitude,
+pressure and temperature. Zenith and azimuth are different quantities; geometric
+and apparent zenith are also not interchangeable near the horizon.
+
+An illustrative **point-location diagnostic**, requiring optional pvlib in a
+separate analysis environment, is:
+
+```python
+import numpy as np
+import pandas as pd
+from pvlib.solarposition import get_solarposition
+
+times = pd.DatetimeIndex(["2022-09-18T12:00:00Z"])
+sun = get_solarposition(times, latitude=18.2, longitude=-66.4,
+                        altitude=0, method="nrel_numpy")
+cos_zenith = np.cos(np.deg2rad(sun["zenith"]))
+```
+
+pvlib returns angles in degrees, whereas NumPy's cosine takes radians. A point
+example is not a model-grid feature generator. SPA can independently check
+day/night and coordinate conventions, but matching the released checkpoint
+requires validating against PhysicsNeMo's implementation first. We add no pvlib
+dependency or solar-field persistence to ingestion in this sprint.
+
 The attached *Stormscope: Learning Accurate Storm-Scale Evolution from
 Observations* paper (arXiv:2601.17268, January 2026 version) evaluates CONUS
 forecasting at 6 km with ten-minute observation updates. Its observation-only
@@ -62,9 +187,9 @@ not an estimate for StormScope or our regional experiment. It equals 7,680
 H100 GPU-hours before considering utilization. [Polaris](https://docs.alcf.anl.gov/polaris/)
 has four A100 GPUs per node: 64 GPUs would be 16 nodes, not eight, and H100 wall
 times cannot be assumed on A100 hardware. Node-hours, GPU-hours and elapsed
-hours differ. The unit of the shared 5,000-hour allocation is not confirmed, so
-no percentage of that allocation is claimed. Budget a measured regional pilot
-before extrapolating training cost.
+hours differ. Our authenticated sbank report confirms that the shared allocation
+is measured in **Polaris node-hours**, not summed CPU-hours or GPU-hours.
+Budget a measured regional pilot before extrapolating training cost.
 
 The attached StormScope paper separately reports approximately 48 elapsed
 hours on 32 H100 GPUs per main model: 1,536 H100 GPU-hours, and approximately

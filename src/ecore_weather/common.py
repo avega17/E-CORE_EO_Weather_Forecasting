@@ -147,6 +147,15 @@ def list_objects(bucket, prefix, client=None):
         yield from page.get("Contents", [])
 
 
+def anonymous_noaa_store(bucket):
+    """Separate anonymous NOAA access from credentials and honor site proxies."""
+    import os
+    from obstore.store import S3Store
+    proxy = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+    options = {'client_options': {'proxy_url': proxy}} if proxy else {}
+    return S3Store(bucket, region='us-east-1', skip_signature=True, **options)
+
+
 class Transport:
     """Count returned object bytes and read calls, including repeated range reads.
 
@@ -191,13 +200,9 @@ class Transport:
                         response["Body"].close()
                 else:
                     import obstore
-                    from obstore.store import S3Store
                     with self._lock:
                         if asset.bucket not in self._stores:
-                            import os
-                            proxy=os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
-                            options={'client_options':{'proxy_url':proxy}} if proxy else {}
-                            self._stores[asset.bucket] = S3Store(asset.bucket, region="us-east-1", skip_signature=True, **options)
+                            self._stores[asset.bucket] = anonymous_noaa_store(asset.bucket)
                         store = self._stores[asset.bucket]
                     options = {"if_match": f'"{asset.etag}"'}
                     if start is not None:

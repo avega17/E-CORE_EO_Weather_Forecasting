@@ -51,11 +51,16 @@ Eagle; unfinished node-local months may be refetched after a job ends.
 
 The user authorized the remaining annual workstation maps while Polaris is
 queued, after the successful pilots and tuning. The 2021–2025 and H1 2026
-figures are now complete and validated; 2022 reused its cached summary. The post-render PBS check still reports a capacity queue
-node limit, so production fetching has not started. Remote CPU
+figures are now complete and validated; 2022 reused its cached summary. Polaris MRMS job 7743827 subsequently completed successfully in 1:14:14,
+with both reflectivity products archived through June 2026. Remote CPU
 setup and two pilots passed on `4db62f1`; tuning passed on `1f017e0`.
-Production job `7743827` is pinned to `2038b86`; its first-month verification
-remains separate from the workstation figure work.
+Production job `7743827` used `2038b86` and has no unfinished product-months.
+The next manual rollout is the 2021–2022 GOES PBS job with a 400 GB retained-data
+cap and a separate, higher-concurrency Polaris starting profile. It needs its
+bounded four-context pilot; no Polaris GOES performance result is claimed.
+The scripts use explicit ISO PBS date variables. MRMS now requests six hours.
+See the operational guide for manual submission and the StormScope notes for
+model/data requirements, including internally computed solar zenith at inference.
 
 Future training preparation: decode and inspect native observations, validate
 cloud-height-dependent parallax correction, map onto an explicit 1 km training

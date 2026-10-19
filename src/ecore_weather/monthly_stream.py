@@ -419,38 +419,42 @@ def _finalize_archive(directory, packed, checksums, dimensions, times, observed_
         if verified.source_metadata_json.values.tolist() != observed_metadata:
             raise IOError("Monthly source metadata changed in read-back")
     metrics["verify_seconds"] = time.perf_counter()-verify_started
-    target.mkdir(parents=True, exist_ok=True)
-    staged = target / ".raw.zarr.zip.tmp"
-    copy_started=time.perf_counter()
-    shutil.copyfile(packed, staged)
-    marker = {"raw_path": "raw.zarr.zip", "source": selection.source,
-        "product": selection.product, "satellite": selection.satellite,
-        "band": band, "region": list(selection.bbox),
-        "asset_ids": [r["asset_id"] for r in actual_rows],
-        "assets": actual_rows, "stored_bytes": packed.stat().st_size,
-        "observations": len(actual_rows), "writer_backend": "earth2studio-zarr-backend",
-        "updated_at": iso(datetime.now(timezone.utc))}
-    digest = hashlib.sha256()
-    with packed.open("rb") as stream:
-        for block in iter(lambda: stream.read(8*1024*1024), b""):
-            digest.update(block)
-    marker["archive_sha256"] = digest.hexdigest()
-    from .goes_monthly import _file_sha256
-    if _file_sha256(staged) != marker["archive_sha256"]:
-        raise IOError("Destination ZIP copy did not pass read-back hash verification")
-    metrics["destination_copy_hash_seconds"] = time.perf_counter()-copy_started
-    old_archive = target / "raw.zarr.zip"
-    if old_archive.is_file() and prior:
-        os.replace(old_archive, backup)
-    try:
-        os.replace(staged, old_archive)
-        from .goes_monthly import _checkpoint
-        _checkpoint(marker_path, marker)
-    except Exception:
+    from contextlib import nullcontext
+    from .goes_limits import publication
+    allowance = publication(target, packed.stat().st_size) if selection.source == 'goes' else nullcontext()
+    with allowance:
+        target.mkdir(parents=True, exist_ok=True)
+        staged = target / ".raw.zarr.zip.tmp"
+        copy_started=time.perf_counter()
+        shutil.copyfile(packed, staged)
+        marker = {"raw_path": "raw.zarr.zip", "source": selection.source,
+            "product": selection.product, "satellite": selection.satellite,
+            "band": band, "region": list(selection.bbox),
+            "asset_ids": [r["asset_id"] for r in actual_rows],
+            "assets": actual_rows, "stored_bytes": packed.stat().st_size,
+            "observations": len(actual_rows), "writer_backend": "earth2studio-zarr-backend",
+            "updated_at": iso(datetime.now(timezone.utc))}
+        digest = hashlib.sha256()
+        with packed.open("rb") as stream:
+            for block in iter(lambda: stream.read(8*1024*1024), b""):
+                digest.update(block)
+        marker["archive_sha256"] = digest.hexdigest()
+        from .goes_monthly import _file_sha256
+        if _file_sha256(staged) != marker["archive_sha256"]:
+            raise IOError("Destination ZIP copy did not pass read-back hash verification")
+        metrics["destination_copy_hash_seconds"] = time.perf_counter()-copy_started
+        old_archive = target / "raw.zarr.zip"
+        if old_archive.is_file() and prior:
+            os.replace(old_archive, backup)
+        try:
+            os.replace(staged, old_archive)
+            from .goes_monthly import _checkpoint
+            _checkpoint(marker_path, marker)
+        except Exception:
+            if backup.is_file():
+                os.replace(backup, old_archive)
+            raise
         if backup.is_file():
-            os.replace(backup, old_archive)
-        raise
-    if backup.is_file():
-        backup.unlink()
+            backup.unlink()
     metrics["stored_bytes"] = marker["stored_bytes"]
     return metrics

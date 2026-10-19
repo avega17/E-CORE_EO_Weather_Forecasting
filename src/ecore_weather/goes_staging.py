@@ -12,8 +12,8 @@ from . import goes
 
 async def download_batch(assets,directory,concurrency):
     import obstore
-    from obstore.store import S3Store
-    stores={a.bucket:S3Store(a.bucket,region='us-east-1',skip_signature=True) for a in assets}
+    from .common import anonymous_noaa_store
+    stores={a.bucket:anonymous_noaa_store(a.bucket) for a in assets}
     semaphore=asyncio.Semaphore(concurrency)
     async def fetch(asset):
         path=Path(directory)/(asset.id+'.nc')
@@ -217,8 +217,8 @@ def pipeline_reads(rows,selection,band,processes,concurrency,budget_mib,staging_
     for key in keys:metrics.setdefault(key,0)
     reserve=[None]
     async def produce():
-        from obstore.store import S3Store
-        stores={a.bucket:S3Store(a.bucket,region='us-east-1',skip_signature=True)
+        from .common import anonymous_noaa_store
+        stores={a.bucket:anonymous_noaa_store(a.bucket)
                 for a in (r['asset'] for r in rows)}
         semaphore=asyncio.Semaphore(concurrency)
         children=[]

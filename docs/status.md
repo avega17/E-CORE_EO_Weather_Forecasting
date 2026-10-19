@@ -7,19 +7,25 @@ decoder each: median 76.256 seconds on the matched selection and maximum
 8.76 GiB job RSS. The cumulative experiment used 3.52 GiB of its 10 GiB budget.
 See [measured settings and commands](study_jobs.md#polaris-pbs).
 
-Full-study job **7743827** is pinned to `2038b86` under
-`/eagle/lighthouse-upr/ecore-weather/repo`. At the last check it was queued
-because the capacity queue had reached its node limit. Leave that checkout
-unchanged while queued/running. First-production-month verification remains
-outstanding.
+MRMS full-study job **7743827**, pinned to `2038b86`, completed with exit 0 on
+October 14, 2026: PBS walltime 1:14:14, 577,665 observations, 19.06 GB returned,
+12.70 GB retained and 12.2 GiB application peak process RSS. Both reflectivity
+products are published through June 2026, with no unfinished product-months.
+The PBS request is now six hours; its measured profile remains twelve writers,
+four downloads each and one decoder each. Accounting is in node-hours.
+
+The GOES PBS implementation passed **178 relevant local regression checks**
+and its explicit-date dry run selected exactly 24 study months. The wrapper is
+for **manual pilot and study submission**, not an already launched job. The initial Polaris profile uses four normal months plus
+one C02 tail, 64 async downloads, eight local readers and sixteen range readers.
+It is unmeasured on Polaris. The intended dates are 2021-01-01 through 2023-01-01,
+end excluded, with a 400 GB GOES-only cap. See the [manual procedure](study_jobs.md#polaris-goes-manual-pilot-and-20212022-study).
 
 The annual workstation figures are complete and validated for 2021–2025 and
 January–June 2026: twelve maps, each in PNG and SVG. All five new source pilots
 passed; 2022 reused its cached summary. Counts, source-selection hashes, RQI
 bounds, all image files and 66 unchanged archive completion markers passed.
 See the [annual results and maps](mrms_roi_and_radar_coverage.md#completed-study-period-figures).
-The live post-render PBS check still reports job 7743827 queued because of the
-capacity queue's node limit; production fetching has not started.
 
 # Current operation — October 9, 2026
 

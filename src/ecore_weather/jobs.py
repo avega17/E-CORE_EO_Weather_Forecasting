@@ -36,6 +36,13 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
         'pbs_job_id':os.getenv('PBS_JOBID')},output=os.getenv('ECORE_RUN_ROOT','results/runs'),index_path=index_path)
     os.environ['ECORE_RUN_ID']=run.id
     stop=threading.Event()
+    def publish_progress():
+        progress = _option(arguments, '--durable-progress', None)
+        if progress:
+            from .runlog import publish_progress as publish
+            publish(source, progress, index_path)
+
+
     def heartbeat():
         while not stop.wait(30):
             try:
@@ -43,6 +50,7 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
                 
                 if os.getenv('ECORE_SHARED_GOES')!='1':task_progress(run,scratch)
                 run.update()
+                publish_progress()
             except Exception as exc:run.state['heartbeat_error']=f'{type(exc).__name__}: {exc}'
     thread=threading.Thread(target=heartbeat,daemon=True);thread.start()
     def request_pause(signum,frame):pause.write_text('Pause at the next verified month boundary.\n')
@@ -72,14 +80,7 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
         except Exception as exc:run.state["progress_error"]=str(exc)
         run.finish(code)
         if durable_state:closed_snapshot(Path(durable_state)/'archive_index.duckdb',index_path)
-        progress=_option(arguments,'--durable-progress',None)
-        if source=='mrms' and progress:
-            from .common import write_json
-            from .runlog import compact
-            import time
-            data=compact(status(index_path))
-            data.update(snapshot_at=time.time(),source=source,pbs_job_id=os.getenv('PBS_JOBID'))
-            write_json(progress,data)
+        publish_progress()
 
 
 def status(index_path=None):

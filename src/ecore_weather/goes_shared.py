@@ -170,10 +170,10 @@ class SharedReads:
 
     async def _download(self, state, index):
         from .goes_staging import _stream_one
-        from obstore.store import S3Store
+        from .common import anonymous_noaa_store
         asset = state['rows'][index]['asset']
         if asset.bucket not in self.stores:
-            self.stores[asset.bucket] = S3Store(asset.bucket, region='us-east-1', skip_signature=True)
+            self.stores[asset.bucket] = anonymous_noaa_store(asset.bucket)
         try:
             started = time.perf_counter()
             path = await asyncio.wait_for(_stream_one(asset,state['directory'],self.stores[asset.bucket],
@@ -450,7 +450,8 @@ def _progress(active,broker,index_results):
 
 
 def fetch_contexts(requests,destination,config=None,scratch=None,index_results=True,
-                   pause=None,on_complete=None,progress=None,retain_records=False,progress_total=None):
+                   pause=None,on_complete=None,progress=None,retain_records=False,progress_total=None,
+                   deadline=None):
     """Consume chronological (key, selection-loader, report-dir) requests lazily.
 
     No new month is admitted after pause(). Admitted normal/tail writers drain.
@@ -463,7 +464,7 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
     config=(config or default_config()).validate();scratch=Path(scratch or scratch_root())
     scratch.mkdir(parents=True,exist_ok=True)
     context=mp.get_context('spawn');events=context.Queue();slots=MonthSlots(config.month_writers,config.tail_months)
-    iterator=iter(requests);exhausted=False;active={};reports=[];failures=[];started=time.perf_counter()
+    iterator=iter(requests);exhausted=False;admission_paused=False;pause_reason=None;active={};reports=[];failures=[];started=time.perf_counter()
     completed_observations=0
     def notify_progress(status='checkpointed'):
         if not progress:return
@@ -479,8 +480,13 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
         heartbeat=0
         try:
             while active or not exhausted:
+                if deadline is not None and time.monotonic() >= deadline:
+                    from .goes_limits import IntentionalPause
+                    raise IntentionalPause('hard wall-time deadline; verified band archives retained')
                 stopping=bool(pause and pause()) or bool(failures) or broker.error is not None
-                if stopping:exhausted=True
+                if stopping:
+                    admission_paused |= not exhausted
+                    exhausted=True
                 while not exhausted and slots.normal_count<config.month_writers:
                     try:key,load,report_dir=next(iterator)
                     except StopIteration:exhausted=True;break
@@ -495,6 +501,14 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                         reports.append(empty)
                         if on_complete:on_complete(key,empty)
                         continue
+                    from .goes_limits import reserve_groups
+                    try:
+                        reserve_groups(groups)
+                    except Exception as exc:
+                        from .goes_limits import IntentionalPause
+                        if not isinstance(exc, IntentionalPause):raise
+                        admission_paused=True;pause_reason=str(exc);exhausted=True
+                        break
                     if not slots.admit(key,[band for (_,band),_ in groups]):raise RuntimeError('Invalid admission')
                     req,reply=broker.attach(key)
                     tasks={};requested_indices={}
@@ -533,6 +547,9 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                                 'read_bytes':message['result'].get('read_bytes',0),
                                 'stored_bytes':message['result'].get('stored_bytes',0),
                                 'monthly_archives':[message['result']]})
+                        if index_results and os.getenv('ECORE_GOES_PROGRESS'):
+                            from .runlog import publish_progress
+                            publish_progress('goes', os.environ['ECORE_GOES_PROGRESS'])
                         notify_progress('archived')
                     elif message['op']=='failed':
                         failures.append(message);broker.error=OSError(message['error']);broker.stop.set()
@@ -589,7 +606,7 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
         metrics=broker.snapshot()
     return {'reports':reports,'interrupted':bool(failures),'wall_s':time.perf_counter()-started,
             'global_metrics':{k:v for k,v in metrics.items() if k!='bands'},'global_config':config.manifest(),
-            'paused':bool(pause and pause())}
+            'paused':admission_paused, 'pause_reason':pause_reason}
 
 
 def fetch(selection,destination,config=None,scratch=None,report_dir=None,index_results=True,progress=None):

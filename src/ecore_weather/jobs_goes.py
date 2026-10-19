@@ -112,12 +112,20 @@ def satellite_segments(month):
     return segments
 
 
-def checkpoint_matches(saved, product):
+def checkpoint_matches(saved, product, month=None):
     """Old checkpoints may omit product, but every marker and ZIP must prove it."""
     if saved.get("status") != "complete" or not saved.get("archives"):
         return False
     if saved.get("product") not in (None, product):
         return False
+    if month is not None:
+        if not saved.get('start') or not saved.get('end_excluded'):
+            return False
+        if (utc(saved['start']), utc(saved['end_excluded'])) != (utc(month['start']), utc(month['end_excluded'])):
+            return False
+        requested = set(saved.get('bands', saved.get('available_bands', []) + saved.get('missing_bands', [])))
+        if requested != set(BANDS):
+            return False
     from ecore_weather.storage import open_raw
     from ecore_weather.goes_monthly import _file_sha256
     for item in saved["archives"]:
@@ -126,6 +134,9 @@ def checkpoint_matches(saved, product):
         if not path.is_file() or not marker_path.is_file():
             return False
         marker = json.loads(marker_path.read_text())
+        if month is not None and (tuple(marker.get('region', ())) != (-70.24, 14.36, -62.56, 22.04)
+                                  or marker.get('band') not in BANDS):
+            return False
         if marker.get("product") != product or marker.get("source") != "goes":
             return False
         if marker.get("archive_sha256") and _file_sha256(path) != marker["archive_sha256"]:
@@ -143,6 +154,11 @@ def checkpoint_matches(saved, product):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", choices=[row[0] for row in STAGES] + ["all"], default="all")
+    parser.add_argument('--start', help='ISO UTC start; supply with --end instead of --phase')
+    parser.add_argument('--end', help='ISO UTC exclusive end')
+    parser.add_argument('--storage-cap-gb', type=float, help='GOES archives and state limit in decimal GB')
+    parser.add_argument('--durable-progress', help='Atomic aggregate progress JSON on shared storage')
+    parser.add_argument('--drain-minutes', type=float, default=15, help='Minimum admission drain allowance before deadline')
     parser.add_argument("--destination", default="/mnt/p/ecore_eo_datasets")
     parser.add_argument("--output", default="results/study-goes-native")
     parser.add_argument("--scratch", default="results/study-scratch")
@@ -168,10 +184,23 @@ def main(argv=None):
     parser.add_argument("--max-hours",type=float,default=12.)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    requested = None
+    if args.start or args.end:
+        if not (args.start and args.end) or args.phase != 'all':
+            parser.error('Supply --start and --end together, without a specific --phase')
+        from .pbs import interval
+        try: requested = interval(args.start, args.end)
+        except ValueError as exc: parser.error(str(exc))
+    if args.max_hours <= 0 or args.drain_minutes < 0:
+        parser.error('Positive max-hours and nonnegative drain-minutes required')
+    if args.storage_cap_gb is not None and args.storage_cap_gb <= 0:
+        parser.error('storage-cap-gb must be positive')
     from .goes_shared import config_from_args
     try:shared_config=config_from_args(args)
     except ValueError as exc:parser.error(str(exc))
     args.monthly_writers=shared_config.month_writers
+    if args.storage_cap_gb is not None and (args.pipeline != 'shared' or args.product != 'ABI-L2-CMIPF'):
+        parser.error('storage-cap-gb requires the shared native CMIPF pipeline')
     if args.pipeline=='shared' and args.product=='ABI-L2-CMIPF' and args.read_profiles:
         parser.error('Schema-1 per-band profiles require --pipeline legacy; shared limits are global')
     if args.read_mode in ('async_full', 'async_pipeline') and args.product != 'ABI-L2-CMIPF':
@@ -209,13 +238,23 @@ def main(argv=None):
         command_base += ["--reuse-cmipf-2km-from", args.reuse_cmipf_2km_from]
     plan = []
     for name, start, end in stages:
-        for month_start, month_end in _months(start, end):
+        for left, right in _months(start, end):
+            month_start, month_end = utc(left), utc(right)
+            if requested:
+                month_start, month_end = max(month_start, requested[0]), min(month_end, requested[1])
+                if month_start >= month_end:
+                    continue
             report_dir = Path(args.output) / name / f"{month_start:%Y-%m}"
-            command = command_base + ["--start", month_start.isoformat(), "--end", month_end.isoformat(),
+            start_text = month_start.isoformat() if requested else left.isoformat()
+            end_text = month_end.isoformat() if requested else right.isoformat()
+            command = command_base + ["--start", start_text, "--end", end_text,
                 "--output", str(report_dir)]
-            plan.append({"stage": name, "start": month_start.isoformat(),
-                "end_excluded": month_end.isoformat(), "report_dir": str(report_dir),
-                "command": command})
+            plan.append({"stage": name, "start": start_text,
+                "end_excluded": end_text, "report_dir": str(report_dir), "command": command})
+    if not plan:
+        parser.error('Requested dates do not intersect the supported 2021 through June 2026 study')
+    if requested and (utc(plan[0]['start']) != requested[0] or utc(plan[-1]['end_excluded']) != requested[1]):
+        parser.error('Explicit dates must be within 2021-01-01 through 2026-07-01')
     if args.begin_month:
         begin_index = next((i for i, month in enumerate(plan)
                             if month["start"][:7] == args.begin_month), None)
@@ -310,7 +349,7 @@ def main(argv=None):
                     Path(item["path"]).is_file() and
                     (Path(item["path"]).parent / "complete.json").is_file()
                     for item in saved["archives"])
-                if valid and checkpoint_matches(saved, archive_product):
+                if valid and checkpoint_matches(saved, archive_product, month):
                     completed.append(saved)
                     print(f"Reused checkpoint {month['start']}", flush=True)
                     continue
@@ -349,7 +388,7 @@ def main(argv=None):
         for stage_name, stage_start, stage_end in stages:
             stage_rows = [r for r in completed if r['stage'] == stage_name]
             if stage_rows:
-                expected = len(list(_months(stage_start,stage_end)))
+                expected = sum(m['stage']==stage_name for m in plan)
                 write_json(output / stage_name / 'summary.json', {'stage':stage_name,
                     'product':archive_product,'status':'complete' if len(stage_rows)==expected else 'partial',
                     'verified_months':len(stage_rows),'expected_months':expected,'months':stage_rows})
@@ -361,7 +400,7 @@ def main(argv=None):
         stage_rows = [r for r in completed if r["stage"] == stage_name]
         write_json(output / stage_name / "summary.json", {"stage": stage_name,
             "product": archive_product, "months": stage_rows,
-            "status": "complete" if len(stage_rows) == len(list(_months(stage_start,stage_end))) else "partial"})
+            "status": "complete" if len(stage_rows) == sum(m['stage']==stage_name for m in plan) else "partial"})
     completed.sort(key=lambda row: row["start"])
     write_json(output / "summary.json", {"status": "complete", "stages": [r[0] for r in stages],
         "completed_months": len(completed), "elapsed_seconds": time.perf_counter()-start_time,
@@ -379,18 +418,35 @@ def run_shared(plan,args,config):
     from .jobs_mrms import preflight
     preflight(args.destination)
     output=Path(args.output);output.mkdir(parents=True,exist_ok=True)
+    from .goes_limits import configure, IntentionalPause
+    try:
+        configure(args.destination, os.getenv('ECORE_DURABLE_STATE', str(output)), args.scratch, args.storage_cap_gb)
+    except IntentionalPause as exc:
+        write_json(output/'paused.json', {'status':'paused','reason':str(exc),'completed_months':0})
+        return 75
+    if args.durable_progress:os.environ['ECORE_GOES_PROGRESS']=args.durable_progress
+    else:os.environ.pop('ECORE_GOES_PROGRESS',None)
     os.environ['ECORE_SHARED_GOES']='1'
+    import hashlib
+    from .mrms_profile import hardware, code_identity
+    revision, snapshot_sha = code_identity()
+    profile_hash = hashlib.sha256(Path(args.shared_profile).read_bytes()).hexdigest() if args.shared_profile else None
     write_json(output/'run_config.json',{'schema':2,'product':args.product,'bands':BANDS,
+        'git_revision':revision,'code_snapshot_sha256':snapshot_sha,'hardware':hardware(),
+        'profile_sha256':profile_hash,
         'global_config':config.manifest(),'begin_month':args.begin_month,
-        'stop_after_month':args.stop_after_month,'start_order':'ascending half-year stages'})
-    started=time.perf_counter();completed=[];requests=[];metadata={};segments_done={}
+        'stop_after_month':args.stop_after_month,'start_order':'ascending half-year stages',
+        'start':plan[0]['start'],'end_excluded':plan[-1]['end_excluded'],
+        'storage_cap_gb':args.storage_cap_gb,'resolved_profile':args.shared_profile})
+    started=time.perf_counter();completed=[];requests=[];metadata={};segments_done={};durations=[]
+    deadline=time.monotonic()+args.max_hours*3600
     def checkpoint(month):return output/'checkpoints'/month['stage']/f"{month['start']}.json"
     def monthly_requests():
         # Validate completed months when chronological admission reaches them,
         # not by rereading every future ZIP before the first unfinished month.
         for month in plan:
             path=checkpoint(month)
-            if path.is_file() and checkpoint_matches(json.loads(path.read_text()),args.product):
+            if path.is_file() and checkpoint_matches(json.loads(path.read_text()),args.product,month):
                 completed.append(json.loads(path.read_text()));continue
             segments=satellite_segments(month)
             segments_done[month['start']]=[]
@@ -415,14 +471,14 @@ def run_shared(plan,args,config):
         bands=sorted({a['band'] for a in archives})
         row={'status':'complete' if archives else 'unavailable','product':args.product,
             'stage':month['stage'],'start':month['start'],'end_excluded':month['end_excluded'],
-            'selected_assets':sum(r.get('selection_summary',{}).get('files',0) for r in reports),
+            'bands':BANDS,'selected_assets':sum(r.get('selection_summary',{}).get('files',0) for r in reports),
             'archives':archives,'available_bands':bands,'missing_bands':sorted(set(BANDS)-set(bands)),
             'read_bytes':sum(r.get('read_bytes',0) for r in reports),
             'stored_bytes':sum(r.get('stored_bytes',0) for r in reports),
             'wall_seconds':max((r.get('wall_s',0) for r in reports),default=0),
             'timing_scope':'current attempt; maximum satellite-context wall time; concurrent global resources',
             'global_config':config.manifest()}
-        write_json(checkpoint(month),row);completed.append(row)
+        write_json(checkpoint(month),row);completed.append(row);durations.append(row['wall_seconds'])
         if args.shared_profile and any(a.get('status')=='saved' for a in archives):
             review=output/'first-month-review.json'
             previous=json.loads(review.read_text()) if review.exists() else {}
@@ -436,16 +492,21 @@ def run_shared(plan,args,config):
         write_json(output/month['stage']/'summary.json',{'stage':month['stage'],
             'verified_months':len(stage_rows),'expected_months':expected,
             'status':'complete' if len(stage_rows)==expected else 'partial','months':stage_rows})
-    def paused():return (output/'pause.request').exists() or time.perf_counter()-started>=args.max_hours*3600
+    def paused():
+        allowance=max(args.drain_minutes*60, 1.3*max(durations,default=0))
+        return (output/'pause.request').exists() or time.monotonic() >= deadline-allowance
     try:
-        result=fetch_contexts(requests,args.destination,config,args.scratch,True,paused,finished)
+        result=fetch_contexts(requests,args.destination,config,args.scratch,True,paused,finished,deadline=deadline)
     except BaseException as exc:
+        if 'GOES intentional pause:' in str(exc):
+            write_json(output/'paused.json',{'status':'paused','reason':str(exc),'completed_months':len(completed)})
+            return 75
         write_json(output/'failure.json',{'status':'failed','error':f'{type(exc).__name__}: {exc}'})
         raise
     summary={'status':'paused' if result['paused'] or args.stop_after_month else 'complete',
         'completed_months':len(completed),'months':sorted(completed,key=lambda r:r['start']),
         'elapsed_seconds':time.perf_counter()-started,'global_config':config.manifest(),
-        'global_metrics':result['global_metrics']}
+        'global_metrics':result['global_metrics'],'pause_reason':result.get('pause_reason')}
     write_json(output/'summary.json',summary)
     if summary['status']=='paused':write_json(output/'paused.json',summary);return 75
     return 0

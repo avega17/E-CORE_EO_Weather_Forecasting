@@ -2,7 +2,7 @@
 #PBS -N ecore_mrms
 #PBS -l select=1:system=polaris:ncpus=64
 #PBS -l place=scatter
-#PBS -l walltime=24:00:00
+#PBS -l walltime=06:00:00
 #PBS -l filesystems=home:eagle
 #PBS -q capacity
 #PBS -j oe
@@ -86,12 +86,14 @@ test "$job_seconds" -gt 180
 max_hours="$("$ECORE_PYTHON" -c 'import sys; print((int(sys.argv[1])-90)/3600)' "$job_seconds")"
 profile="${ECORE_PROFILE:-$code_root/jobs/mrms_polaris.json}"
 destination="${ECORE_DESTINATION:-$ECORE_PROJECT_ROOT/ecore_eo_datasets}"
-start_date=2021-01-01
-end_date=2026-07-01
+if test "$ECORE_PBS_MODE" != tune; then
+    : "${PBS_MRMS_START:?Set an ISO start date}"
+    : "${PBS_MRMS_END:?Set an ISO exclusive end date}"
+    validated_dates="$("$ECORE_PYTHON" -m ecore_weather.pbs "$PBS_MRMS_START" "$PBS_MRMS_END" "$ECORE_PBS_MODE")"
+    read -r start_date end_date <<< "$validated_dates"
+fi
 if test "$ECORE_PBS_MODE" = pilot; then
     destination="$ECORE_PROJECT_ROOT/ecore-weather/pilot-archives"
-    start_date=2022-09-18T12:00:00Z
-    end_date=2022-09-18T12:40:00Z
 elif test "$ECORE_PBS_MODE" != study && test "$ECORE_PBS_MODE" != tune; then
     printf 'Unknown ECORE_PBS_MODE: %s\n' "$ECORE_PBS_MODE" >&2
     exit 2

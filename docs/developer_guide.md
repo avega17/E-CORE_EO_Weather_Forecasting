@@ -118,3 +118,36 @@ out the exact pushed commit, build the environment once, and keep that checkout
 unchanged throughout a PBS job. Later tuning changes need another commit/push
 and a new pinned checkout. See the setup and submission commands in
 [study jobs](study_jobs.md#polaris-pbs).
+
+
+## PBS date handling and GOES portability
+
+The GOES runner accepts explicit `--start`/`--end` UTC bounds; combining these
+with a specific half-year phase is rejected. It clips both boundary months and
+checks interval, bands and ROI before reusing a run checkpoint. Archive identity
+still depends on native scientific data, not the machine profile.
+
+`jobs/polaris_goes.pbs` uses the initial profile in `jobs/goes_polaris.json`;
+`jobs/polaris_mrms.pbs` retains the measured radar profile and requests six hours.
+Both wrappers take exported ISO fetch-date variables. Neither automatically
+exports credentials from `.env`. Setup and tuning remain date-independent.
+[Manual testing instructions](study_jobs.md#polaris-goes-manual-pilot-and-20212022-study)
+cover the four-context GOES pilot, progress snapshots, quotas and resubmission.
+
+GOES storage reservations are a disposable node-local resource ledger. Scientific
+provenance stays in native archives; the shared database copy is always closed.
+The publication guard checks actual packed candidate bytes before copying, and
+progress snapshots serialize coordinator/heartbeat writes to the same path.
+A storage/admission pause or application deadline preserves verified archives;
+never relabel an unverified partial store complete.
+
+The preparation passed 178 relevant local checks (source/metadata equality,
+archive read-back, scheduler, interruptions, status, dates and PBS mocks), plus
+shell syntax and Python compilation. This is fixture-based workstation evidence,
+not a completed live Polaris GOES pilot. A short repeatable subset is:
+
+```bash
+python -m pytest -q tests/test_polaris_goes.py tests/test_goes_shared.py \
+  tests/test_jobs.py tests/test_mrms_profiles.py
+bash -n jobs/polaris_goes.pbs jobs/polaris_mrms.pbs
+```

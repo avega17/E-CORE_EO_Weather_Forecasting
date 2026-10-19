@@ -5,10 +5,13 @@ import json
 import os
 from pathlib import Path
 import socket
+import threading
 import time
 import uuid
 
 from .common import write_json
+
+_PROGRESS_LOCK = threading.Lock()
 
 OMIT = {'records', 'assets', 'features', 'hourly_matches', 'expected_times',
         'shifted_matches', 'missing_times', 'source_metadata_json', 'asset_ids'}
@@ -134,6 +137,17 @@ def closed_snapshot(destination,index_path=None):
         with connect(index_path) as con:con.execute('CHECKPOINT')
         temporary=target.with_suffix(target.suffix+'.partial')
         shutil.copyfile(database_path(index_path),temporary);os.replace(temporary,target)
+
+
+def publish_progress(source, destination, index_path=None):
+    """Atomic shared snapshot; never exposes the node-local live database."""
+    from .jobs import status
+    with _PROGRESS_LOCK:
+        data = compact(status(index_path))
+        if data.get('status') == 'index_unavailable':
+            return
+        data.update(snapshot_at=time.time(), source=source, pbs_job_id=os.getenv('PBS_JOBID'))
+        write_json(destination, data)
 
 
 class BoundedStream:

@@ -287,3 +287,27 @@ specific completed month directory supplied through `--location`.
 Training, parallax correction and 1 km preprocessing remain separate research
 work. [GOES ROI study](goes_roi_training_study.md) discusses native pixel counts,
 contextual margins and future training requirements.
+
+
+## Separate Polaris GOES starting profile
+
+The workstation settings above remain the operating defaults for that machine.
+For the manually submitted 2021–2022 Polaris job, `jobs/goes_polaris.json` starts
+with **four normal month owners and one C02 tail**, **64 global asynchronous
+full-file downloads**, **eight local HDF5 crop processes** and **sixteen C02
+range-reader processes**. Two workers finalize closed stores. The global ROI
+budget is 4 GiB and staged-source capacity is 32 GiB; the summed job-process RSS
+ceiling is 64 GiB. These limits share the whole job, not each band or month.
+
+This exposes more work to the 32-core/64-thread Polaris node. It is not a claim
+that 64 downloads use 64 CPU cores, or that a dataset's size proves the benefit
+of more concurrency. HDF5 calls are parallel across processes; async network
+requests can overlap while those processes crop and the owners write separate
+stores. The proxy and source response times can still limit throughput.
+
+The bounded manual pilot exercises four seasonal contexts and all eight bands,
+checks archive publication/reuse and records effective concurrency and process
+memory. It does not establish an optimum or replace a full-month measurement.
+Keep the [manual PBS procedure](study_jobs.md#polaris-goes-manual-pilot-and-20212022-study)
+and its compact pilot summary with any target-machine comparisons. No production
+Polaris GOES run was launched as part of preparing this profile.

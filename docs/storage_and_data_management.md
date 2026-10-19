@@ -327,3 +327,24 @@ Machine profiles and PBS monitoring are explained in [study jobs](study_jobs.md#
 Generated maps and animations live under `figures/`; diagnostic tables and
 resumable aggregate counts stay under `results/dataset-report/`. Figure files
 are derived views and never replace the raw scientific archives.
+
+
+## Bounded GOES storage on Polaris
+
+The initial manual Polaris study requests 2021–2022 with a **400 decimal GB**
+cap on GOES Eagle archives and GOES job state. Existing MRMS data and Conda
+environments are outside that cap. The prior workstation checkpoints report
+311.4 GB for these 24 months; 373.7 GB includes a 20% allowance. This is retained
+subset size, not the much larger source transfer volume.
+
+Before admitting a month, the coordinator reserves estimated candidate ZIPs.
+Before copying each verified candidate, its actual size replaces the estimate.
+Existing ZIPs, temporary replacement copies and shared state are counted once;
+a replacement must fit alongside the old verified archive until publication
+succeeds. A 512 MiB allowance protects changing state/index metadata. Physical
+filesystem free space and remaining shared project quota are separate checks.
+
+Open stores, staged source files and packing candidates stay on node-local SSD.
+Only verified band-month archives and compact status/index snapshots are durable
+on Eagle. Resubmission reuses those archives; incomplete node-local work may be
+lost when PBS clears the node. See the [PBS instructions](study_jobs.md#polaris-goes-manual-pilot-and-20212022-study).

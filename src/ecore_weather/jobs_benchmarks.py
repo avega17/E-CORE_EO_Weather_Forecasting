@@ -126,6 +126,9 @@ def stock_reference(output):
 def main(argv=None):
     import sys
     inputs=list(sys.argv[1:] if argv is None else argv)
+    if '--polaris-pilot' in inputs:
+        from .goes_polaris import main as pilot
+        inputs.remove('--polaris-pilot');return pilot(inputs)
     if '--scheduler' in inputs:
         from .goes_scheduler_benchmark import main as scheduler
         inputs.remove('--scheduler');return scheduler(inputs)

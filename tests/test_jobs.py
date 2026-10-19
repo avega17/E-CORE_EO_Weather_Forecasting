@@ -334,8 +334,8 @@ def test_shared_resume_defers_future_archive_hashes_until_admission(tmp_path, mo
     checkpoint.write_text(json.dumps({'status': 'complete', 'start': later['start']}))
     monkeypatch.setattr(jobs_mrms, 'preflight', lambda _: None)
     checks = []
-    monkeypatch.setattr(jobs_goes, 'checkpoint_matches', lambda row, product: checks.append(row) or True)
-    def consume(requests, *args):
+    monkeypatch.setattr(jobs_goes, 'checkpoint_matches', lambda row, product, month=None: checks.append(row) or True)
+    def consume(requests, *args, **kwargs):
         iterator = iter(requests)
         assert next(iterator)[0] == '2021-10-0'
         assert checks == []  # Future DAS hashes must not delay first admission.
@@ -343,6 +343,7 @@ def test_shared_resume_defers_future_archive_hashes_until_admission(tmp_path, mo
         return {'paused': True, 'global_metrics': {}}
     monkeypatch.setattr(goes_shared, 'fetch_contexts', consume)
     args = SimpleNamespace(destination='unused', output=str(tmp_path), scratch=str(tmp_path/'scratch'),
-        product='ABI-L2-CMIPF', begin_month='2021-10', stop_after_month=None, max_hours=1)
+        product='ABI-L2-CMIPF', begin_month='2021-10', stop_after_month=None, max_hours=1,
+        storage_cap_gb=None, drain_minutes=15, shared_profile=None, durable_progress=None)
     assert jobs_goes.run_shared([first, later], args, goes_shared.SharedConfig()) == 75
     assert checks == [] and checkpoint.exists()

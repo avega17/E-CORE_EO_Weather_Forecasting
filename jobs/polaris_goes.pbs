@@ -1,0 +1,88 @@
+#!/bin/bash -l
+#PBS -N ecore_goes
+#PBS -l select=1:system=polaris:ncpus=64
+#PBS -l place=scatter
+#PBS -l walltime=24:00:00
+#PBS -l filesystems=home:eagle
+#PBS -q capacity
+#PBS -j oe
+
+set -euo pipefail
+: "${PBS_JOBID:?Submit with qsub}"
+: "${PBS_O_WORKDIR:?PBS submission directory is required}"
+: "${ECORE_PROJECT_ROOT:?Set the Eagle project directory}"
+: "${ECORE_PYTHON:?Set the prepared CPU interpreter}"
+: "${ECORE_REVISION:?Set the tested pushed revision}"
+: "${ECORE_QUOTA_FREE_GIB:?Refresh available project quota with myprojectquotas}"
+: "${PBS_GOES_START:?Set an ISO UTC start}"
+: "${PBS_GOES_END:?Set an ISO UTC exclusive end}"
+code_root="${ECORE_CODE_ROOT:-$PBS_O_WORKDIR}"
+cd "$code_root"
+test "$(git rev-parse HEAD)" = "$ECORE_REVISION"
+test -z "$(git status --porcelain --untracked-files=no)"
+export ECORE_PBS_MODE="${ECORE_PBS_MODE:-pilot}"
+case "$ECORE_PBS_MODE" in pilot|study) ;; *) printf 'Use pilot or study mode\n' >&2; exit 2;; esac
+validated_dates="$("$ECORE_PYTHON" -m ecore_weather.pbs "$PBS_GOES_START" "$PBS_GOES_END" "$ECORE_PBS_MODE")"
+read -r start_date end_date <<< "$validated_dates"
+export HTTP_PROXY=http://proxy.alcf.anl.gov:3128
+export HTTPS_PROXY="$HTTP_PROXY" http_proxy="$HTTP_PROXY" https_proxy="$HTTP_PROXY"
+export no_proxy='localhost,*.cm.polaris.alcf.anl.gov,*.polaris.alcf.anl.gov,*.alcf.anl.gov'
+export NO_PROXY="$no_proxy"
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+export TMPDIR=/tmp PYTHONUNBUFFERED=1
+state_root="$ECORE_PROJECT_ROOT/ecore-weather/state/goes/$ECORE_PBS_MODE"
+scratch_root="${ECORE_NODE_SCRATCH:-/local/scratch}/ecore-goes-${USER}-${PBS_JOBID%%.*}"
+destination="${ECORE_DESTINATION:-$ECORE_PROJECT_ROOT/ecore_eo_datasets}"
+if test "$ECORE_PBS_MODE" = pilot; then
+    destination="${ECORE_DESTINATION:-$ECORE_PROJECT_ROOT/ecore-weather/goes-pilot-archives}"
+fi
+profile="${ECORE_PROFILE:-$code_root/jobs/goes_polaris.json}"
+mkdir -p "$state_root" "$scratch_root" "$destination"
+export ECORE_RUN_ROOT="$state_root/runs" ECORE_LOCAL_SCRATCH="$scratch_root"
+export ECORE_DURABLE_STATE="$state_root" ECORE_INDEX_PATH="$scratch_root/archive_index.duckdb"
+if test -f "$state_root/archive_index.duckdb"; then
+    cp "$state_root/archive_index.duckdb" "$ECORE_INDEX_PATH"
+fi
+export ECORE_GOES_ACCOUNTING_ROOTS="[\"$ECORE_PROJECT_ROOT/ecore_eo_datasets/goes\",\"$ECORE_PROJECT_ROOT/ecore-weather/goes-pilot-archives/goes\",\"$ECORE_PROJECT_ROOT/ecore-weather/state/goes\"]"
+export ECORE_RSS_LIMIT_BYTES="$("$ECORE_PYTHON" -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["job_memory_gib"]*1024**3))' "$profile")"
+"$ECORE_PYTHON" - "$profile" "$destination" "$scratch_root" <<'PY'
+import json, os, shutil, sys
+from pathlib import Path
+profile=json.loads(Path(sys.argv[1]).read_text()); config=profile['global_config']
+samples=profile['empirical_roi_bytes_per_observation']
+month=sum(samples.values())*31*24*6*1.2
+scratch_needed=int(2*(config['month_writers']+config['tail_months'])*month+config['staging_mib']*1024**2)
+publication_needed=int(2*max(samples.values())*31*24*6*1.2+512*1024**2)
+if shutil.disk_usage(sys.argv[3]).free < scratch_needed:
+    raise SystemExit(f'Node scratch needs {scratch_needed} bytes including packing and staging')
+if min(shutil.disk_usage(sys.argv[2]).free,float(os.environ['ECORE_QUOTA_FREE_GIB'])*1024**3)<publication_needed:
+    raise SystemExit('Insufficient filesystem/project quota headroom for two publication candidates')
+reference=profile['storage_reference']
+forecast=reference['native_zip_bytes']*(1+reference['allowance_fraction'])
+if forecast+512*1024**2 > profile['storage_cap_gb']*1e9:
+    raise SystemExit('Historical selection estimate exceeds GOES storage cap')
+print(f'Historical 2021–2022 retained estimate with margin: {forecast/1e9:.1f} GB; actual publication is capped')
+print(f'Initial scratch reservation: {scratch_needed/1024**3:.1f} GiB; profile is unmeasured on Polaris')
+PY
+walltime="$(qstat -f "$PBS_JOBID" | awk '$1 == "Resource_List.walltime" {print $3}')"
+test -n "$walltime"
+IFS=: read -r wall_hours wall_minutes wall_seconds <<< "$walltime"
+job_seconds=$((10#$wall_hours*3600 + 10#$wall_minutes*60 + 10#$wall_seconds))
+test "$job_seconds" -gt 300
+max_hours="$("$ECORE_PYTHON" -c 'import sys; print((int(sys.argv[1])-240)/3600)' "$job_seconds")"
+if test "$ECORE_PBS_MODE" = pilot; then
+    command=("$ECORE_PYTHON" scripts/dataset_jobs.py benchmark goes --polaris-pilot
+        --start "$start_date" --end "$end_date" --shared-profile "$profile"
+        --destination "$destination" --scratch "$scratch_root" --output "$state_root"
+        --budget-gib 32 --max-hours "$max_hours")
+else
+    command=("$ECORE_PYTHON" scripts/dataset_jobs.py fetch goes --start "$start_date" --end "$end_date"
+        --shared-profile "$profile" --product ABI-L2-CMIPF --destination "$destination"
+        --scratch "$scratch_root" --output "$state_root/fetch" --index-path "$ECORE_INDEX_PATH"
+        --durable-state "$state_root" --durable-progress "$state_root/progress.json"
+        --storage-cap-gb 400 --max-hours "$max_hours" --drain-minutes 15)
+    if test "${ECORE_DRY_RUN:-0}" = 1; then command+=(--dry-run); fi
+fi
+printf 'GOES PBS %s | mode %s | revision %s | %s to %s (end excluded)\n' "$PBS_JOBID" "$ECORE_PBS_MODE" "$ECORE_REVISION" "$start_date" "$end_date"
+timeout --signal=TERM --kill-after=30s "$((job_seconds-30))s" \
+    mpiexec -n 1 --ppn 1 --depth=64 --cpu-bind none "${command[@]}"
