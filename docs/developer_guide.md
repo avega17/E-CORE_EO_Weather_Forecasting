@@ -134,6 +134,14 @@ still depends on native scientific data, not the machine profile.
 `jobs/polaris_mrms.pbs` retains the measured radar profile and requests six hours.
 Both wrappers take exported ISO fetch-date variables. Neither automatically
 exports credentials from `.env`. Setup and tuning remain date-independent.
+Source `jobs/polaris.env.sh` in each Polaris terminal for fixed non-sensitive
+settings and an automatically refreshed project-quota estimate. Missing or
+ambiguous quota rows clear stale values and fail with a useful explanation.
+The parser runs with standard-library Python before the CPU environment exists.
+The GOES-only `check-noaa` helper uses production anonymous discovery for at
+most one hour, with no imagery reads. Follow local wrapper checks with that
+listing check on a compute node, then use pilot mode for actual downloads and
+archive validation. A full day is a later bounded test, not a dry run.
 The startup correction also passed 117 local regression checks (one mock-only
 case skipped). Both wrappers report entry, failing phase and final exit status;
 one small source/mode `startup.log` is overwritten for each attempt.

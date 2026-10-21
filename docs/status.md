@@ -1,5 +1,13 @@
 # GOES PBS startup correction — October 20, 2026
 
+`jobs/polaris.env.sh` now exports non-sensitive job defaults and refreshes a
+conservative quota estimate from `myprojectquotas`. GOES initially selects 2021;
+the longer interval remains an explicit date override. The discovery-only
+command passed a live workstation NOAA check: six GOES-16 scans / 48 study-band
+files for one hour, with zero imagery bytes downloaded. This is not a Polaris
+proxy test. Configuration, quota, discovery and wrapper regressions passed
+78 focused tests (one mock-only case skipped), plus shell/compile checks.
+
 User-reported GOES pilot **7762801** failed with exit 1 and empty output. It
 received a compute node; timestamps span ten seconds and sampled CPU time is
 zero. `Stageout_status = 1` reports successful stage-out. The old wrapper's

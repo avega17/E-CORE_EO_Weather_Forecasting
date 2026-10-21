@@ -7,7 +7,91 @@ import pytest
 
 from ecore_weather import jobs_goes, goes_limits
 from ecore_weather.common import Asset
-from ecore_weather.pbs import interval
+from ecore_weather.pbs import interval, quota_free_gib, check_noaa
+
+
+QUOTA_TABLE = '''Name Type Filesystem Used Quota Grace
+===================================================
+unrelated Project /lus/eagle 900G 1T -
+lighthouse-upr Project /lus/eagle 167.7G 1T -
+lighthouse-upr Project /lus/other 1G 2T -
+'''
+
+
+def test_quota_matches_project_filesystem_and_handles_printed_units():
+    assert quota_free_gib(QUOTA_TABLE,'lighthouse-upr')==774
+    assert quota_free_gib('p Project eagle 167.7GiB 1TiB -','p')==855
+    assert quota_free_gib('p Project /lus/eagle 2T 1T -','p')==0
+    assert quota_free_gib('p Project eagle 0 1GiB -','p')==0
+
+
+@pytest.mark.parametrize('text', [
+    '', QUOTA_TABLE+QUOTA_TABLE,
+    'lighthouse-upr Project /lus/eagle unknown 1T -',
+    'lighthouse-upr Project /lus/eagle 1G unlimited -'])
+def test_quota_rejects_missing_ambiguous_or_unknown_rows(text):
+    with pytest.raises(ValueError):quota_free_gib(text,'lighthouse-upr')
+
+
+def test_quota_parser_requires_only_standard_library():
+    import sys
+    result=subprocess.run([sys.executable,'-S','src/ecore_weather/pbs.py','quota',
+        '--project','lighthouse-upr'],input=QUOTA_TABLE,capture_output=True,text=True,check=True)
+    assert result.stdout.strip()=='774'
+
+
+@pytest.mark.parametrize('broken',[False,True])
+def test_polaris_config_exports_settings_refreshes_quota_and_preserves_credentials(tmp_path,broken):
+    import sys
+    bin_dir=tmp_path/'bin';bin_dir.mkdir()
+    command=bin_dir/'myprojectquotas'
+    command.write_text('#!/bin/bash\nprintf "%s\\n" "$QUOTA_TABLE"\n')
+    command.chmod(0o755)
+    env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH'],
+        'ECORE_CODE_ROOT':str(Path.cwd()),'ECORE_PROJECT_ROOT':str(tmp_path),
+        'ECORE_PYTHON':sys.executable,'ECORE_QUOTA_FREE_GIB':'9999',
+        'PBS_GOES_END':'2022-01-01','QUOTA_TABLE':'bad table' if broken else QUOTA_TABLE,
+        'HF_TOKEN':'test-credential-must-stay-unchanged'}
+    # Simulate source in a new shell; configuration may not read private .env.
+    result=subprocess.run(['bash','-c',
+        'source jobs/polaris.env.sh; rc=$?; '
+        'printf "quota=%s;end=%s;mode=%s\\n" "${ECORE_QUOTA_FREE_GIB-unset}" "$PBS_GOES_END" "${ECORE_PBS_MODE-unset}"; '
+        'test "$HF_TOKEN" = test-credential-must-stay-unchanged || exit 99; exit "$rc"'],
+        env={k:v for k,v in env.items() if k!='ECORE_PBS_MODE'},capture_output=True,text=True)
+    assert result.returncode==(1 if broken else 0)
+    assert ('quota=unset' if broken else 'quota=774') in result.stdout
+    assert 'end=2022-01-01;mode=unset' in result.stdout
+    assert 'test-credential-must-stay-unchanged' not in result.stdout+result.stderr
+
+
+def test_discovery_probe_uses_study_selection_and_never_reads_images(monkeypatch):
+    from ecore_weather import goes
+    from ecore_weather.common import Selection, Transport
+    calls=[]
+    def discover(start,end,**kwargs):
+        calls.append((start,end,kwargs))
+        assets=[Asset('noaa-goes16',f'C{band:02}',10,'etag',start) for band in goes.STORMSCOPE_BANDS]
+        return Selection('goes','ABI-L2-CMIPF',start,end,(-70,14,-62,22),assets,
+                         bands=goes.STORMSCOPE_BANDS,satellite=16)
+    monkeypatch.setattr(goes,'discover',discover)
+    monkeypatch.setattr(Transport,'read',lambda *a,**k:pytest.fail('No raw imagery reads in discovery probe'))
+    for name in ('HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy'):
+        monkeypatch.setenv(name,'http://old-proxy')
+    # Restore test process proxies after the helper's explicit site override.
+    result=check_noaa(minutes=60,polaris_proxy=True)
+    assert calls==[('2021-01-01T12:00:00Z','2021-01-01T13:00:00Z',{'satellite':'auto'})]
+    assert result['selected_band_files']==8 and result['listed_source_bytes']==80
+    assert result['imagery_bytes_downloaded']==0 and result['distinct_scan_times']==1
+    assert os.environ['HTTPS_PROXY']=='http://proxy.alcf.anl.gov:3128'
+    with pytest.raises(ValueError,match='1–60'):check_noaa(minutes=1440)
+
+
+def test_empty_listing_is_distinguished_from_network_failure(monkeypatch):
+    from ecore_weather import goes
+    from ecore_weather.common import Selection
+    monkeypatch.setattr(goes,'discover',lambda start,end,**kw:Selection(
+        'goes','ABI-L2-CMIPF',start,end,(-70,14,-62,22),[],bands=(13,),satellite=16))
+    with pytest.raises(ValueError,match='listing succeeded'):check_noaa()
 
 
 @pytest.fixture(autouse=True)

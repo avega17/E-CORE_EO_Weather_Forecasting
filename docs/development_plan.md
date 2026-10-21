@@ -85,3 +85,10 @@ inspect failed-job records, run a short interactive wrapper dry run, then
 validate bounded NOAA/storage probes and the
 existing four-context pilot before another study submission. Keep competing
 jobs held; preserve archives and recovery state.
+
+Polaris configuration now lives in `jobs/polaris.env.sh`; sourcing refreshes a
+conservative quota estimate from `myprojectquotas` without reading credentials.
+The debug sequence separately checks local setup, a real one-hour NOAA listing
+and the existing download/storage pilot. A full-day fetch is deferred until the
+pilot succeeds. The configuration defaults to the requested first year of GOES
+data; the two-year study interval remains an explicit later override.

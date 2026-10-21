@@ -7,6 +7,8 @@
 For Polaris startup failures or empty PBS output, use the
 [short interactive debugging procedure](docs/study_jobs.md#debugging-a-goes-job-that-ends-without-output).
 PBS jobs do not require commit checks or a clean Git checkout.
+Source [the Polaris configuration](jobs/polaris.env.sh) for non-sensitive job
+settings and an automatically refreshed project-quota estimate.
 
 
 This project prepares reproducible raw subsets from NOAA MRMS radar and GOES

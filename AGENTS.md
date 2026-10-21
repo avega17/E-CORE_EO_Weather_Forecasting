@@ -152,3 +152,9 @@ Keep explanations readable for researchers inheriting the work.
   Setup/tuning are date-independent. Do not export the entire .env to PBS.
   Solar conditioning is cosine of **zenith**, not azimuth; the model computes it
   at inference. GPU inference and analysis-ready preprocessing remain separate.
+- Source `jobs/polaris.env.sh` for non-sensitive Polaris defaults and a fresh
+  conservative quota estimate; it does not select a job mode or read `.env`.
+  Refresh quota before each submission. A wrapper dry run tests local setup;
+  `python -m ecore_weather.pbs check-noaa --polaris-proxy` tests bounded real
+  GOES listing without imagery. Downloads, range reads, native cropping and
+  Zarr verification belong in the existing bounded pilot, not a dry run.

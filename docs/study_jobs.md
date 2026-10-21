@@ -288,11 +288,10 @@ module load conda
 export CONDA_PKGS_DIRS="$ECORE_PROJECT_ROOT/ecore-weather/conda-cache"
 export CONDA_ENVS_PATH="$ECORE_PROJECT_ROOT/ecore-weather/envs"
 export ECORE_PYTHON="$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu/bin/python"
-export ECORE_PBS_ACCOUNT=lighthouse-upr
-export ECORE_QUOTA_FREE_GIB=<current-free-project-GiB>
+source jobs/polaris.env.sh
 export ECORE_PBS_MODE=setup
 qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE" \
   jobs/polaris_mrms.pbs
 ```
 
@@ -322,7 +321,8 @@ It launches one coordinator with access to the node's CPUs. Verify that its
 recorded affinity is appropriate rather than assuming the MPI launch exposed
 all cores. GPUs are unused.
 
-Set `ECORE_QUOTA_FREE_GIB` from the current `myprojectquotas` result. The minimum
+Source `jobs/polaris.env.sh` to derive `ECORE_QUOTA_FREE_GIB` from the current
+`myprojectquotas` result. The minimum
 32 GiB gate is provisional: increase it if pilot output projections plus safety
 margin require more. Global filesystem free space does not measure project
 quota. Keep output/state on Eagle and live stores/index under `/local/scratch`.
@@ -331,12 +331,11 @@ explains that local SSD is erased between jobs and Eagle is not automatically
 backed up.
 
 ```bash
-export ECORE_PBS_ACCOUNT=<confirmed-allocation>
-export ECORE_QUOTA_FREE_GIB=<current-free-project-GiB>
+source jobs/polaris.env.sh
 export ECORE_PBS_MODE=pilot
 export PBS_MRMS_START=2022-09-18T12:00:00Z PBS_MRMS_END=2022-09-18T12:40:00Z
 qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_MRMS_START,PBS_MRMS_END \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE,PBS_MRMS_START,PBS_MRMS_END" \
   jobs/polaris_mrms.pbs
 ```
 
@@ -348,7 +347,7 @@ This proves correctness and proxy operation, not full-month throughput.
 ```bash
 export ECORE_PBS_MODE=tune
 qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE" \
   jobs/polaris_mrms.pbs
 ```
 
@@ -362,7 +361,7 @@ checkout before starting production. Do not alter a running checkout.
 export ECORE_PBS_MODE=study
 export PBS_MRMS_START=2021-01-01 PBS_MRMS_END=2026-07-01
 qsub -A "$ECORE_PBS_ACCOUNT" \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_MRMS_START,PBS_MRMS_END \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE,PBS_MRMS_START,PBS_MRMS_END" \
   jobs/polaris_mrms.pbs
 ```
 
@@ -461,11 +460,32 @@ PBS. Export the listed settings and pass them with `qsub -v`. Do not source or
 export the entire credential-bearing `.env`, and do not use `qsub -V`.
 
 ```bash
-export ECORE_PROJECT_ROOT=/eagle/lighthouse-upr
-export ECORE_PYTHON="$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu/bin/python"
-export ECORE_PBS_ACCOUNT=lighthouse-upr
-export ECORE_QUOTA_FREE_GIB=<current-free-project-GiB>
+source jobs/polaris.env.sh
 ```
+
+This non-sensitive file exports the project/code/Python paths, allocation and
+default fetch dates. It preserves explicit overrides. It does not read `.env`,
+submit jobs or select pilot/study mode. Its initial GOES interval is **2021 only**
+(`2021-01-01` to `2022-01-01`, end excluded); set `PBS_GOES_END=2023-01-01`
+explicitly when ready for the full two-year selection. MRMS retains the full
+2021–June 2026 interval.
+
+Sourcing runs the documented [project-quota command](https://docs.alcf.anl.gov/data-management/filesystem-and-storage/disk-quota/)
+and exports `ECORE_QUOTA_FREE_GIB` from the exact project/Eagle row. Call
+`ecore_refresh_quota` again before a later submission. A missing/changed table
+returns an error and clears the old quota value; resolve that error before
+submitting. The helper can use system Python 3 before the CPU environment exists.
+
+The displayed `G`/`T` suffixes do not state decimal versus binary units. The
+parser honors explicit GB/GiB suffixes, otherwise takes the smaller free-space
+estimate under both conventions, rounds down and leaves 1 GiB for display
+rounding. The example `167.7G` used against `1T` yields a conservative **774 GiB**
+estimate. This is a submission-time estimate, not a space reservation or an exact
+byte quota; other jobs and queue delays can change availability. The separate
+400 decimal GB GOES cap and filesystem checks still apply during the fetch.
+
+`ECORE_PBS_ENV_VARS` contains the common exported variable names, so submission
+commands can use `-v "$ECORE_PBS_ENV_VARS,..."` instead of typing each name.
 
 The scripts validate dates, use the documented proxy, and cap
 incidental BLAS/OpenMP threads. The MRMS study uses `PBS_MRMS_START` and
@@ -479,7 +499,7 @@ export ECORE_PBS_MODE=pilot
 export PBS_GOES_START=2021-01-01T12:00:00Z
 export PBS_GOES_END=2021-01-01T13:20:00Z
 qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END" \
   jobs/polaris_goes.pbs
 ```
 
@@ -512,7 +532,7 @@ with the profile, dates, destination, scratch and output arguments used by the P
 export ECORE_PBS_MODE=study
 export PBS_GOES_START=2021-01-01 PBS_GOES_END=2023-01-01
 qsub -A "$ECORE_PBS_ACCOUNT" \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END" \
   jobs/polaris_goes.pbs
 ```
 
@@ -599,14 +619,14 @@ An exit before the first message still needs shell-startup/PBS investigation.
    its parent directory is writable. See [PBS output issues](https://docs.alcf.anl.gov/running-jobs/known-issues/).
 
 2. **Use a short interactive allocation.** Keep any competing queued fetch held
-   and confirm no GOES job is using the same archives/state. From the repository,
-   with the common path/quota variables exported:
+   and confirm no GOES job is using the same archives/state. From the repository:
 
    ```bash
-   qsub -I -A lighthouse-upr -q debug \
+   source jobs/polaris.env.sh
+   qsub -I -A "$ECORE_PBS_ACCOUNT" -q debug \
      -l select=1:system=polaris:ncpus=64 \
      -l filesystems=home:eagle -l walltime=00:20:00 \
-     -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB
+     -v "$ECORE_PBS_ENV_VARS"
    ```
 
    Once PBS gives a compute-node shell, run a short study **dry run**:
@@ -619,16 +639,34 @@ An exit before the first message still needs shell-startup/PBS investigation.
    ```
 
    This checks the wrapper, Python/date handling, quota, scratch and MPI launch,
-   then prints the plan without NOAA discovery or imagery fetching. The script's
-   `#PBS` lines are comments when run inside an allocation. Inspect the terminal
-   and `ecore-weather/state/goes/study/startup.log`. Exit the interactive shell
-   afterwards. This follows the [documented Polaris approach](https://docs.alcf.anl.gov/polaris/running-jobs/).
+   then prints the plan. The script's `#PBS` lines are comments when run inside
+   an allocation. Inspect the terminal and `ecore-weather/state/goes/study/startup.log`.
 
-3. **Validate progressively.** Follow a successful dry run with bounded anonymous
-   NOAA listing, a staged download, a C02 range read and local/Eagle Zarr checks.
-   Then repeat the existing four-context pilot with its 32 GiB ceiling and short
+   **In that same compute allocation, test real NOAA discovery next:**
+
+   ```bash
+   timeout 120s "$ECORE_PYTHON" -m ecore_weather.pbs check-noaa \
+     --polaris-proxy --start 2021-01-01T12:00:00Z --minutes 60 --satellite 16
+   ```
+
+   This uses the production GOES discovery function and anonymous S3 listing,
+   with the documented outbound proxy and all eight study bands. It reports
+   matching files/scans and listed object bytes; **no imagery is downloaded**.
+   Listing transfers a small metadata response. Zero matching observations is
+   distinguished from a failed network request. The 120-second timeout prevents
+   a connection failure from consuming the interactive allocation. It proves
+   listing access, not GET/range-read, HDF5 or archive-writing performance.
+   Exit the interactive shell after these checks. This follows the
+   [documented Polaris approach](https://docs.alcf.anl.gov/polaris/running-jobs/).
+
+3. **Validate imagery in pilot mode.** After local setup and discovery succeed,
+   repeat the existing four-context pilot with its 32 GiB ceiling and short
    pilot date window. Require exit 0, `pilot-summary.json`, exact archive checks
-   and no-download reuse before another study job. A one-year study uses
+   and no-download reuse before another study job. The pilot exercises staged
+   downloads, C02 range reads, HDF5 cropping, local/Eagle Zarr publication and
+   reuse. A full day is a separate larger validation run, not a dry run: it can
+   consume substantial transfer and should wait until this pilot passes.
+   A one-year study uses
    `PBS_GOES_START=2021-01-01` and `PBS_GOES_END=2022-01-01`.
 
 Publish wrapper updates to Polaris before testing them. **Already submitted
