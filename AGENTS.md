@@ -6,6 +6,21 @@ forecasting project. Read [current plan](docs/development_plan.md),
 [source references](docs/agent_dev_references.md) before extending the pipeline.
 Keep explanations readable for researchers inheriting the work.
 
+## Job startup and code lineage
+
+- Do not inspect Git commits, enforce a clean checkout, or calculate/compare code
+  hashes unless the developer explicitly requests that work. This is not a
+  default reproducibility requirement for this small research team.
+- Code-lineage metadata must never block, fail or delay a PBS job, fetch,
+  resumption or environment setup. PBS wrappers do not require a Git checkout,
+  a pinned commit, `ECORE_REVISION`, or a clean working tree. Optional recording
+  through `ECORE_RECORD_CODE_IDENTITY=1` is explicit opt-in and best effort.
+- Continue validating scientific selections, source/array equality, archive
+  integrity and safe storage ownership. Those protect research data and are
+  separate from code-lineage checks.
+- Print a startup message before setup checks. Report a named phase and the
+  actual exit status on failure; never dump credentials or the full environment.
+
 ## Scientific preservation
 
 - Persist native ROI values, grids, timestamps, units, metadata and quality unchanged.
@@ -61,8 +76,8 @@ Keep explanations readable for researchers inheriting the work.
   decoder, sixteen admitted observations and 256 MiB ROI queues.
   Versioned MRMS JSON profiles are overridden by explicit CLI resource arguments.
   Source-month task partitioning prevents adjacent workers sharing a physical ZIP. Whole gzip downloads precede decoding; radar ROI does not reduce transfers.
-- Pin changed code/configuration only after supported pause drains every admitted
-  month. Never edit active snapshots. Exit 75 means intentional resumable pause.
+- Update active fetching code/configuration only after supported pause drains every
+  admitted month. Never edit a running job's files. Exit 75 means intentional resumable pause.
   Status must show actual PIDs, heartbeat and advancing counts before claiming active.
 - Report verified archive runtime boundaries, transferred/listed/retained bytes and
   memory separately. Per-band average rates are not NIC speeds. Two-month settings
@@ -111,12 +126,12 @@ Keep explanations readable for researchers inheriting the work.
   performance requires day-level evidence, not manufactured month-log estimates.
 - Update README and canonical docs when interfaces change. Preserve useful compact
   findings in guides rather than proliferating test result folders. Do not claim
-  live HF, Colab or long-run checks without exact-revision evidence.
+  live HF, Colab or long-run checks without actual run evidence.
 - Polaris PBS uses one node, the documented outbound proxy, local scratch/index
   and verified monthly publication to Eagle. Use debug for bounded environment setup, pilot and tuning, then
   capacity for the full study, after account/queue/quota checks. Completed months
-  are durable; unfinished local stores may be lost between jobs. Commit/push
-  tested changes and pin that exact revision before remote setup/submission.
+  are durable; unfinished local stores may be lost between jobs. Push tested
+  changes so they are available during remote setup; jobs do not verify commits.
   The measured Polaris MRMS profile uses twelve product-month writers, four
   downloads each and one decoder each; workstation settings remain four/eight/one.
   Use only documented PBS commands. Bound installer bytecode workers with

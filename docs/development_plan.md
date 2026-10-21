@@ -43,10 +43,11 @@ scheduling and a Polaris PBS wrapper passed local checks and a live PBS pilot. T
 profile is twelve writers × four downloads × one decoder; workstation defaults
 remain four × eight × one.
 
-Commit/push tested code, then clone the exact revision on Polaris and prepare
+Push tested code, then clone/update the repository on Polaris and prepare
 the dedicated CPU environment. Authenticate, confirm allocation/queue/quota,
-run the isolated PBS pilot and the bounded 10 GiB tuning suite, then pin any
-measured profile changes before production. Completed months are durable on
+run the isolated PBS pilot and the bounded 10 GiB tuning suite, then save any
+measured profile changes before production. Do not gate jobs on Git commits,
+tracked-file changes or code hashes. Completed months are durable on
 Eagle; unfinished node-local months may be refetched after a job ends.
 
 The user authorized the remaining annual workstation maps while Polaris is
@@ -68,3 +69,19 @@ grid, then build aligned windows. CMI alone lacks cloud height. No ingestion-tim
 interpolation or correction is implemented. See [StormScope](StormScope-paper-notes.md),
 [CorrDiff](CorrDiff-paper-notes.md) and [ROI considerations](goes_roi_training_study.md).
 Model training, inference and managed cloud-native architecture are outside this sprint.
+
+## GOES PBS failure investigation — October 20, 2026
+
+Pilot 7762801 ended with exit 1, zero reported CPU time and empty output. Its
+execution-to-exit timestamps span ten seconds; no successful GOES pilot is
+established. A local reproduction confirms the old revision/clean-checkout
+guards can produce this symptom, but the specific remote cause is unconfirmed.
+At the developer's request those guards and the required revision variable are
+removed from all PBS wrappers. Code-lineage inspection is off by default and
+must never block jobs. Startup/phase/exit diagnostics now replace silent checks.
+Follow the
+[debugging sequence](study_jobs.md#debugging-a-goes-job-that-ends-without-output):
+inspect failed-job records, run a short interactive wrapper dry run, then
+validate bounded NOAA/storage probes and the
+existing four-context pilot before another study submission. Keep competing
+jobs held; preserve archives and recovery state.

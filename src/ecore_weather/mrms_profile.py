@@ -68,14 +68,21 @@ def hardware():
 
 
 def code_identity(root=None):
+    """Optional developer-requested metadata; never a prerequisite for a job."""
+    if os.getenv('ECORE_RECORD_CODE_IDENTITY') != '1':
+        return None, None
     import subprocess
     root = Path(root or Path(__file__).resolve().parents[2])
-    snapshot = root/'snapshot.json'
-    if snapshot.exists():
-        record = json.loads(snapshot.read_text())
-        return record.get('git_revision'), record['sha256']
-    revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
-    return revision, None
+    try:
+        snapshot = root/'snapshot.json'
+        if snapshot.exists():
+            record = json.loads(snapshot.read_text())
+            return record.get('git_revision'), record.get('sha256')
+        revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'],
+                                           text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+        return revision, None
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+        return None, None
 
 
 def cap_library_threads():

@@ -7,18 +7,20 @@
 #PBS -q capacity
 #PBS -j oe
 
-set -euo pipefail
-: "${PBS_JOBID:?Submit this script with qsub}"
-: "${PBS_O_WORKDIR:?PBS must supply the submission directory}"
-: "${ECORE_PROJECT_ROOT:?Set the confirmed Eagle project directory}"
-: "${ECORE_PYTHON:?Set the absolute Python path of the prepared environment}"
-: "${ECORE_REVISION:?Set the tested and pushed commit SHA}"
-: "${ECORE_QUOTA_FREE_GIB:?Set available project quota from myprojectquotas}"
+set -Eeuo pipefail
+ecore_phase=startup
+printf 'E-CORE MRMS wrapper entered | job %s | host %s\n' "${PBS_JOBID:-unset}" "${HOSTNAME:-unknown}"
+trap 'ecore_status=$?; printf "E-CORE shell error | job %s | phase %s | file %s | line %s | exit %s\n" "${PBS_JOBID:-unset}" "$ecore_phase" "${BASH_SOURCE[0]}" "$LINENO" "$ecore_status" >&2' ERR
+trap 'ecore_status=$?; printf "E-CORE wrapper ended | job %s | phase %s | exit %s\n" "${PBS_JOBID:-unset}" "$ecore_phase" "$ecore_status" >&2; if test -n "${ecore_startup_log:-}"; then printf "E-CORE wrapper ended | phase %s | exit %s\n" "$ecore_phase" "$ecore_status" >> "$ecore_startup_log" || :; fi' EXIT
+source "${ECORE_CODE_ROOT:-${PBS_O_WORKDIR:-$PWD}}/jobs/pbs_common.sh"
+ecore_require PBS_JOBID PBS_O_WORKDIR ECORE_PROJECT_ROOT ECORE_PYTHON ECORE_QUOTA_FREE_GIB
+export ECORE_PBS_MODE="${ECORE_PBS_MODE:-pilot}"
+case "$ECORE_PBS_MODE" in pilot|study|setup|tune) ;; *) ecore_fail 'Use pilot, study, setup or tune mode.';; esac
+if ! test -d "$ECORE_PROJECT_ROOT"; then ecore_fail "Eagle project directory is unavailable: $ECORE_PROJECT_ROOT"; fi
+state_root="$ECORE_PROJECT_ROOT/ecore-weather/state/$ECORE_PBS_MODE"
+ecore_startup_record "$state_root"
 code_root="${ECORE_CODE_ROOT:-$PBS_O_WORKDIR}"
-cd "$code_root"
-test "$(git rev-parse HEAD)" = "$ECORE_REVISION"
-test -z "$(git status --porcelain --untracked-files=no)"
-test -d "$ECORE_PROJECT_ROOT"
+ecore_code_directory
 
 export HTTP_PROXY=http://proxy.alcf.anl.gov:3128
 export HTTPS_PROXY="$HTTP_PROXY"
@@ -29,8 +31,7 @@ export NO_PROXY="$no_proxy"
 export TMPDIR=/tmp
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
-export ECORE_PBS_MODE="${ECORE_PBS_MODE:-pilot}"
-state_root="$ECORE_PROJECT_ROOT/ecore-weather/state/$ECORE_PBS_MODE"
+ecore_phase=storage-preflight
 scratch_root="${ECORE_NODE_SCRATCH:-/local/scratch}/ecore-${USER}-${PBS_JOBID%%.*}"
 mkdir -p "$state_root" "$scratch_root"
 export ECORE_RUN_ROOT="$state_root/runs"
@@ -41,6 +42,7 @@ fi
 export ECORE_LOCAL_SCRATCH="$scratch_root"
 export ECORE_REQUIRED_GIB="${ECORE_REQUIRED_GIB:-32}"
 if test "$ECORE_PBS_MODE" = setup; then
+    ecore_phase=environment-setup
     module use /soft/modulefiles
     module load conda/2026-10-01
     export CONDA_PKGS_DIRS="$ECORE_PROJECT_ROOT/ecore-weather/conda-cache"
@@ -64,7 +66,7 @@ if test "$ECORE_PBS_MODE" = setup; then
     "$ECORE_PYTHON" -c 'import torch, pygrib, eccodes, zarr; from earth2studio.io import ZarrBackend; print("CPU ingestion imports passed; CUDA build:", torch.version.cuda)'
     exit 0
 fi
-test -x "$ECORE_PYTHON"
+if ! test -x "$ECORE_PYTHON"; then ecore_fail "Prepared Python is not executable: $ECORE_PYTHON"; fi
 "$ECORE_PYTHON" - <<'PY'
 import os, shutil
 from pathlib import Path
@@ -78,17 +80,14 @@ if shutil.disk_usage(os.environ['ECORE_LOCAL_SCRATCH']).free < 8*1024**3:
     raise SystemExit('Node scratch needs at least 8 GiB free')
 PY
 
-walltime="$(qstat -f "$PBS_JOBID" | awk '$1 == "Resource_List.walltime" {print $3}')"
-test -n "$walltime"
-IFS=: read -r wall_hours wall_minutes wall_seconds <<< "$walltime"
-job_seconds=$((10#$wall_hours * 3600 + 10#$wall_minutes * 60 + 10#$wall_seconds))
-test "$job_seconds" -gt 180
+ecore_walltime 180
+ecore_phase=prepare-command
 max_hours="$("$ECORE_PYTHON" -c 'import sys; print((int(sys.argv[1])-90)/3600)' "$job_seconds")"
 profile="${ECORE_PROFILE:-$code_root/jobs/mrms_polaris.json}"
 destination="${ECORE_DESTINATION:-$ECORE_PROJECT_ROOT/ecore_eo_datasets}"
 if test "$ECORE_PBS_MODE" != tune; then
-    : "${PBS_MRMS_START:?Set an ISO start date}"
-    : "${PBS_MRMS_END:?Set an ISO exclusive end date}"
+    ecore_phase=python-and-dates
+    ecore_require PBS_MRMS_START PBS_MRMS_END
     validated_dates="$("$ECORE_PYTHON" -m ecore_weather.pbs "$PBS_MRMS_START" "$PBS_MRMS_END" "$ECORE_PBS_MODE")"
     read -r start_date end_date <<< "$validated_dates"
 fi
@@ -114,6 +113,15 @@ fi
 if test "${ECORE_DRY_RUN:-0}" = 1 && test "$ECORE_PBS_MODE" != tune; then
     command+=(--dry-run)
 fi
-printf 'PBS job %s | mode %s | revision %s | walltime %s\n' "$PBS_JOBID" "$ECORE_PBS_MODE" "$ECORE_REVISION" "$walltime"
+ecore_note "PBS job $PBS_JOBID | mode $ECORE_PBS_MODE | walltime $walltime"
+ecore_phase=application
+ecore_note 'Launching MRMS application through mpiexec'
+ecore_status=0
 timeout --signal=TERM --kill-after=30s "$((job_seconds-30))s" \
-    mpiexec -n 1 --ppn 1 --depth=64 --cpu-bind none "${command[@]}"
+    mpiexec -n 1 --ppn 1 --depth=64 --cpu-bind none "${command[@]}" || ecore_status=$?
+if test "$ecore_status" -eq 75; then
+    ecore_note 'MRMS application intentionally paused; verified archives can be resumed.'
+elif test "$ecore_status" -ne 0; then
+    ecore_note "MRMS application failed | exit $ecore_status | inspect the PBS output for its error."
+fi
+exit "$ecore_status"

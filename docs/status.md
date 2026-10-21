@@ -1,3 +1,24 @@
+# GOES PBS startup correction — October 20, 2026
+
+User-reported GOES pilot **7762801** failed with exit 1 and empty output. It
+received a compute node; timestamps span ten seconds and sampled CPU time is
+zero. `Stageout_status = 1` reports successful stage-out. The old wrapper's
+silent Git guards reproduce the empty-output symptom locally; the exact remote
+cause is unconfirmed. GOES pilot validation remains incomplete. Job **7762846**
+was the later study submission; its current state has not been verified here.
+
+Both PBS wrappers now omit commit/clean-checkout/code-hash gates and the required
+revision variable. Operational code-lineage inspection is off by default;
+explicitly requested metadata is best effort and cannot stop jobs. Startup,
+phase and exit messages plus one overwritten startup log make subsequent errors
+visible. Scientific array/archive checks remain in place. The correction passed
+117 local PBS/scheduler/profile/status checks (one application-mock case was
+skipped), shell syntax and Python compilation. These are local checks, not a
+successful Polaris execution. Use the
+[short interactive dry run](study_jobs.md#debugging-a-goes-job-that-ends-without-output)
+before the bounded NOAA/storage checks and pilot. Existing queued submissions
+contain the old wrapper and need fresh submission to use the correction.
+
 # Polaris validation and annual radar figures
 
 The implementation passed **137 focused checks**. CPU setup `7743696`, fetch

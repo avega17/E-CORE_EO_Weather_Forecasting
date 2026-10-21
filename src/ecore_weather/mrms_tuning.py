@@ -160,8 +160,8 @@ def main(argv=None):
     selection_digest=hashlib.sha256(json.dumps([s.id for s in selected]).encode()).hexdigest()
     suite_path=output/'suite.json'
     previous=json.loads(suite_path.read_text()) if suite_path.exists() else {}
-    if previous and (previous.get('revision')!=revision or previous.get('selection_digest')!=selection_digest):
-        raise ValueError('Tuning evidence belongs to another revision/selection; choose a new output')
+    if previous and previous.get('selection_digest')!=selection_digest:
+        raise ValueError('Tuning evidence belongs to another scientific selection; choose a new output')
     rows=previous.get('rows',[])
     reference={k:tuple(v) for k,v in previous.get('signatures',{}).items()}
     budget=Budget(output/'transfer-budget.json',int(args.budget_gib*1024**3))

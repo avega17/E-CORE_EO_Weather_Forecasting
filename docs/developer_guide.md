@@ -113,10 +113,13 @@ profiles in `jobs/`. Profile values are defaults; explicit CLI resource options
 override them. A profile is not part of scientific archive identity. Test exact
 values, bitmap preservation, queue bounds and source-month boundary matching.
 
-Commit and push the reviewed implementation before cloning on Polaris. Check
-out the exact pushed commit, build the environment once, and keep that checkout
-unchanged throughout a PBS job. Later tuning changes need another commit/push
-and a new pinned checkout. See the setup and submission commands in
+Push reviewed changes so they are available on Polaris, build the environment
+once, and avoid editing files used by a running job. PBS jobs do not inspect Git
+commits, require a clean checkout or compare code hashes. Code-lineage inspection
+is performed only when explicitly requested by the developer and must never
+block a job. Optional `ECORE_RECORD_CODE_IDENTITY=1` recording is best effort;
+leave it unset for normal use. Scientific selection and archive-integrity
+checks remain required. See the setup and submission commands in
 [study jobs](study_jobs.md#polaris-pbs).
 
 
@@ -131,6 +134,9 @@ still depends on native scientific data, not the machine profile.
 `jobs/polaris_mrms.pbs` retains the measured radar profile and requests six hours.
 Both wrappers take exported ISO fetch-date variables. Neither automatically
 exports credentials from `.env`. Setup and tuning remain date-independent.
+The startup correction also passed 117 local regression checks (one mock-only
+case skipped). Both wrappers report entry, failing phase and final exit status;
+one small source/mode `startup.log` is overwritten for each attempt.
 [Manual testing instructions](study_jobs.md#polaris-goes-manual-pilot-and-20212022-study)
 cover the four-context GOES pilot, progress snapshots, quotas and resubmission.
 
@@ -141,7 +147,7 @@ progress snapshots serialize coordinator/heartbeat writes to the same path.
 A storage/admission pause or application deadline preserves verified archives;
 never relabel an unverified partial store complete.
 
-The preparation passed 178 relevant local checks (source/metadata equality,
+The original preparation passed 178 relevant local checks (source/metadata equality,
 archive read-back, scheduler, interruptions, status, dates and PBS mocks), plus
 shell syntax and Python compilation. This is fixture-based workstation evidence,
 not a completed live Polaris GOES pilot. A short repeatable subset is:

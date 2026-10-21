@@ -32,9 +32,29 @@ def test_profiles_precedence_and_input_validation(tmp_path):
     with pytest.raises(ValueError):mrms_profile.resolve(argparse.Namespace(profile=str(path)))
 
 
-def test_snapshot_identity_without_git(tmp_path):
+def test_snapshot_identity_without_git(tmp_path,monkeypatch):
+    monkeypatch.setenv('ECORE_RECORD_CODE_IDENTITY','1')
     (tmp_path/'snapshot.json').write_text(json.dumps({'git_revision':'commit','sha256':'content'}))
     assert mrms_profile.code_identity(tmp_path)==('commit','content')
+
+
+def test_code_identity_is_not_inspected_by_default(tmp_path,monkeypatch):
+    monkeypatch.delenv('ECORE_RECORD_CODE_IDENTITY',raising=False)
+    def forbidden(*args,**kwargs):
+        pytest.fail('No source-file inspection or Git command without developer opt-in')
+    monkeypatch.setattr(Path,'exists',forbidden)
+    import subprocess
+    monkeypatch.setattr(subprocess,'check_output',forbidden)
+    assert mrms_profile.code_identity(tmp_path)==(None,None)
+
+
+def test_opted_in_code_metadata_failure_cannot_stop_job(tmp_path,monkeypatch):
+    import subprocess
+    monkeypatch.setenv('ECORE_RECORD_CODE_IDENTITY','1')
+    monkeypatch.setattr(subprocess,'check_output',lambda *a,**kw:(_ for _ in ()).throw(FileNotFoundError('git')))
+    assert mrms_profile.code_identity(tmp_path)==(None,None)
+    (tmp_path/'snapshot.json').write_text('invalid optional metadata')
+    assert mrms_profile.code_identity(tmp_path)==(None,None)
 
 
 def test_ordered_reads_reserve_earliest_observation_and_bound_bytes(monkeypatch):

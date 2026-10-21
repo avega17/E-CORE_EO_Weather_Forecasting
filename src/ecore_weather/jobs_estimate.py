@@ -10,7 +10,6 @@ import csv
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import subprocess
 import sys
 
 
@@ -34,7 +33,8 @@ def main(argv=None):
     start, end = utc(args.start), utc(args.end)
     if start >= end:
         parser.error("End must be after start")
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    from .mrms_profile import code_identity
+    revision, _ = code_identity()
     config = {"start": start.isoformat(), "end_excluded": end.isoformat(),
               "bbox": args.bbox, "output": args.output, "sample": not args.inventory_only,
               "git_revision": revision, "python": sys.executable,

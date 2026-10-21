@@ -28,8 +28,13 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
     receipt=output/'paused.json'
     if receipt.exists():os.replace(receipt,output/'previous-paused.json')
     if durable_state:os.environ['ECORE_DURABLE_STATE']=str(Path(durable_state).resolve())
-    snapshot=Path(__file__).resolve().parents[2]/'snapshot.json'
-    identity=json.loads(snapshot.read_text()) if snapshot.exists() else None
+    identity=None
+    if os.getenv('ECORE_RECORD_CODE_IDENTITY')=='1':
+        snapshot=Path(__file__).resolve().parents[2]/'snapshot.json'
+        try:
+            identity=json.loads(snapshot.read_text()) if snapshot.exists() else None
+        except (OSError, ValueError):
+            pass  # Optional code metadata cannot prevent the requested fetch.
     import platform,importlib.metadata
     environment={'python':__import__('sys').version,'platform':platform.platform(),'packages':{name:importlib.metadata.version(name) for name in ('earth2studio','zarr','duckdb','obstore','h5py','xarray','numpy')}}
     run=Run({'environment':environment,'code_snapshot':identity,'source':source,'arguments':arguments,'index':index_path,'scratch':str(scratch),

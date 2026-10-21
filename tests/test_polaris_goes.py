@@ -102,30 +102,43 @@ def test_checkpoint_dates_checked_before_opening_archives():
         {'start':'2021-01-02','end_excluded':'2021-02-01'})
 
 
-@pytest.mark.parametrize('source,mode,start,end', [
-    ('goes','study','2021-01-01','2023-01-01'),
-    ('mrms','study','2021-01-01','2026-07-01'),
-    ('mrms','pilot','2022-09-18T12:00:00Z','2022-09-18T12:40:00Z')])
-def test_mocked_pbs_passes_dates_and_deadline_without_fetch(tmp_path,source,mode,start,end):
+@pytest.fixture
+def pbs_environment(tmp_path):
     import sys
     repo=Path.cwd();bin_dir=tmp_path/'bin';bin_dir.mkdir()
     def executable(name,body):
         p=bin_dir/name;p.write_text('#!/bin/bash\n'+body+'\n');p.chmod(0o755);return p
-    executable('git','if test "$1" = rev-parse; then echo pinned; fi')
-    executable('qstat','echo "Resource_List.walltime = 06:00:00"')
-    executable('timeout','exec "$@"')  # Replaced below to consume timeout switches.
+    # Any Git call is a regression, including with missing/mismatched revision
+    # metadata or tracked edits in the actual developer checkout.
+    executable('git','printf "Git must not be called\\n" >&2; exit 99')
+    executable('qstat','printf "Resource_List.walltime = %s\\n" "${MOCK_WALLTIME-06:00:00}"')
     executable('timeout','shift 3; exec "$@"')
-    executable('mpiexec','printf "%s\\n" "$@" > "$CAPTURE"')
-    python=executable('python',f'if test "$1" = -; then cat >/dev/null; exit 0; fi\nexec {sys.executable} "$@"')
+    executable('mpiexec','printf "%s\\n" "$@" > "$CAPTURE"; exit "${MOCK_APPLICATION_EXIT:-0}"')
+    python=executable('python',f'if test "$1" = -; then cat >/dev/null; exit "${{MOCK_STORAGE_EXIT:-0}}"; fi\n'
+                      'if test "$1" = -m && test "${MOCK_IMPORT_FAILURE:-0}" = 1; then '
+                      'printf "Simulated import failure\\n" >&2; exit 42; fi\n'
+                      f'exec {sys.executable} "$@"')
     env={**os.environ,'PATH':str(bin_dir)+os.pathsep+os.environ['PATH'],
          'PYTHONPATH':str(repo/'src'),'PBS_JOBID':'mock.1','PBS_O_WORKDIR':str(repo),
          'ECORE_PROJECT_ROOT':str(tmp_path/'project'),'ECORE_PYTHON':str(python),
-         'ECORE_REVISION':'pinned','ECORE_QUOTA_FREE_GIB':'800','ECORE_PBS_MODE':mode,
-         'ECORE_NODE_SCRATCH':str(tmp_path/'scratch'),'CAPTURE':str(tmp_path/'args'),
-         f'PBS_{source.upper()}_START':start,f'PBS_{source.upper()}_END':end}
-    # Wrappers intentionally reject dirty tracked files; the git stub isolates
-    # this shell-interface test from the developer checkout's current edits.
+         'ECORE_QUOTA_FREE_GIB':'800','ECORE_PBS_MODE':'study',
+         'ECORE_NODE_SCRATCH':str(tmp_path/'scratch'),'CAPTURE':str(tmp_path/'args')}
+    for name in ('ECORE_REVISION','ECORE_CODE_ROOT','ECORE_RECORD_CODE_IDENTITY'):
+        env.pop(name,None)
+    for source in ('GOES','MRMS'):
+        env[f'PBS_{source}_START']='2021-01-01'
+        env[f'PBS_{source}_END']='2021-01-02'
     (tmp_path/'project').mkdir()
+    return env
+
+
+@pytest.mark.parametrize('source,mode,start,end', [
+    ('goes','study','2021-01-01','2023-01-01'),
+    ('mrms','study','2021-01-01','2026-07-01'),
+    ('mrms','pilot','2022-09-18T12:00:00Z','2022-09-18T12:40:00Z')])
+def test_mocked_pbs_passes_dates_and_deadline_without_fetch(tmp_path,pbs_environment,source,mode,start,end):
+    env={**pbs_environment,'ECORE_PBS_MODE':mode,
+         f'PBS_{source.upper()}_START':start,f'PBS_{source.upper()}_END':end}
     subprocess.run(['bash',f'jobs/polaris_{source}.pbs'],env=env,check=True,capture_output=True,text=True)
     args=(tmp_path/'args').read_text().splitlines()
     assert args[args.index('--start')+1].startswith(start[:10])
@@ -133,6 +146,68 @@ def test_mocked_pbs_passes_dates_and_deadline_without_fetch(tmp_path,source,mode
     hours=float(args[args.index('--max-hours')+1])
     assert 5<hours<6
     if source=='goes':assert args[args.index('--storage-cap-gb')+1]=='400'
+
+
+@pytest.mark.parametrize('source',['goes','mrms'])
+@pytest.mark.parametrize('revision',[None,'unrelated-revision'])
+def test_pbs_has_no_git_or_code_revision_gate(pbs_environment,source,revision):
+    env=dict(pbs_environment)
+    if revision is not None:env['ECORE_REVISION']=revision
+    result=subprocess.run(['bash',f'jobs/polaris_{source}.pbs'],env=env,capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    assert 'wrapper entered' in result.stdout
+    assert 'Git must not be called' not in result.stderr
+
+
+@pytest.mark.parametrize('source',['goes','mrms'])
+@pytest.mark.parametrize('failure,expected',[
+    ('missing-variable','ECORE_QUOTA_FREE_GIB'),
+    ('missing-dates','END'),
+    ('bad-dates','End must be later'),
+    ('missing-python','Python is not executable'),
+    ('import','Simulated import failure'),
+    ('storage','storage-preflight'),
+    ('missing-walltime','valid Resource_List.walltime'),
+    ('short-walltime','safe shutdown'),
+    ('profile','profile is not readable')])
+def test_pbs_startup_failures_are_visible(tmp_path,pbs_environment,source,failure,expected):
+    env=dict(pbs_environment)
+    if failure=='missing-variable':env.pop('ECORE_QUOTA_FREE_GIB')
+    elif failure=='missing-dates':env.pop(f'PBS_{source.upper()}_END')
+    elif failure=='bad-dates':env[f'PBS_{source.upper()}_END']='2020-01-01'
+    elif failure=='missing-python':env['ECORE_PYTHON']=str(tmp_path/'absent-python')
+    elif failure=='import':env['MOCK_IMPORT_FAILURE']='1'
+    elif failure=='storage':env['MOCK_STORAGE_EXIT']='19'
+    elif failure=='missing-walltime':env['MOCK_WALLTIME']=''
+    elif failure=='short-walltime':env['MOCK_WALLTIME']='00:02:00'
+    elif failure=='profile':
+        if source=='mrms':pytest.skip('MRMS validates its profile in the application')
+        env['ECORE_PROFILE']=str(tmp_path/'missing-profile')
+    result=subprocess.run(['bash',f'jobs/polaris_{source}.pbs'],env=env,capture_output=True,text=True)
+    assert result.returncode!=0
+    assert 'wrapper entered' in result.stdout
+    assert expected in result.stdout+result.stderr
+    assert f'exit {result.returncode}' in result.stderr
+    assert not Path(env['CAPTURE']).exists(), 'Do not launch application after failed preflight'
+
+
+@pytest.mark.parametrize('source',['goes','mrms'])
+@pytest.mark.parametrize('code',[0,1,75,124])
+def test_pbs_preserves_status_and_one_small_startup_record(pbs_environment,source,code):
+    env={**pbs_environment,'MOCK_APPLICATION_EXIT':str(code),'UNRELATED_SECRET':'never-print-this-value'}
+    script=f'jobs/polaris_{source}.pbs'
+    root=Path(env['ECORE_PROJECT_ROOT'])/'ecore-weather/state'
+    log=root/('goes/study' if source=='goes' else 'study')/'startup.log'
+    log.parent.mkdir(parents=True);log.write_text('OLD STARTUP\n')
+    result=subprocess.run(['bash',script],env=env,capture_output=True,text=True)
+    assert result.returncode==code
+    assert f'exit {code}' in result.stderr
+    assert 'OLD STARTUP' not in log.read_text()
+    assert log.stat().st_size<4096
+    assert 'never-print-this-value' not in result.stdout+result.stderr+log.read_text()
+    if code==75:
+        assert 'intentionally paused' in result.stdout
+        assert 'application failed' not in result.stdout
 
 
 def test_deadline_reached_before_admission_does_not_load_sources(tmp_path):

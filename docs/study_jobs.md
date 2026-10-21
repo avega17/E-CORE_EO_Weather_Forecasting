@@ -279,12 +279,10 @@ storage directory name. The authenticated check on October 13, 2026 confirmed
 
 ```bash
 export ECORE_PROJECT_ROOT=/eagle/lighthouse-upr
-export ECORE_REVISION=<tested-pushed-commit>
 mkdir -p "$ECORE_PROJECT_ROOT/ecore-weather"
 git clone https://github.com/avega17/E-CORE_EO_Weather_Forecasting.git \
   "$ECORE_PROJECT_ROOT/ecore-weather/repo"
 cd "$ECORE_PROJECT_ROOT/ecore-weather/repo"
-git checkout --detach "$ECORE_REVISION"
 module use /soft/modulefiles
 module load conda
 export CONDA_PKGS_DIRS="$ECORE_PROJECT_ROOT/ecore-weather/conda-cache"
@@ -294,7 +292,7 @@ export ECORE_PBS_ACCOUNT=lighthouse-upr
 export ECORE_QUOTA_FREE_GIB=<current-free-project-GiB>
 export ECORE_PBS_MODE=setup
 qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
   jobs/polaris_mrms.pbs
 ```
 
@@ -338,7 +336,7 @@ export ECORE_QUOTA_FREE_GIB=<current-free-project-GiB>
 export ECORE_PBS_MODE=pilot
 export PBS_MRMS_START=2022-09-18T12:00:00Z PBS_MRMS_END=2022-09-18T12:40:00Z
 qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_MRMS_START,PBS_MRMS_END \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_MRMS_START,PBS_MRMS_END \
   jobs/polaris_mrms.pbs
 ```
 
@@ -350,21 +348,21 @@ This proves correctness and proxy operation, not full-month throughput.
 ```bash
 export ECORE_PBS_MODE=tune
 qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE \
   jobs/polaris_mrms.pbs
 ```
 
 Tuning writes one compact suite, one compressed scientific selection and a
-selected-profile JSON. Resume an incomplete tuning suite with the same revision
+selected-profile JSON. Resume an incomplete tuning suite with the same scientific selection
 and output; its cumulative byte budget is not reset. Review the results, commit
-and push any selected profile/code changes, and update the detached Polaris
+and push any selected profile/code changes, and update the Polaris
 checkout before starting production. Do not alter a running checkout.
 
 ```bash
 export ECORE_PBS_MODE=study
 export PBS_MRMS_START=2021-01-01 PBS_MRMS_END=2026-07-01
 qsub -A "$ECORE_PBS_ACCOUNT" \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_MRMS_START,PBS_MRMS_END \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_MRMS_START,PBS_MRMS_END \
   jobs/polaris_mrms.pbs
 ```
 
@@ -417,8 +415,8 @@ first verified production month remain separate checks.
 
 The GOES PBS job is ready for **manual validation**; no GOES Polaris execution
 or speedup is claimed by the local tests. Reuse the prepared CPU ingestion
-environment. The code must be a clean checkout of the tested pushed revision;
-update it only when no pinned job is running. Fetch jobs do not install GPU
+environment. Jobs do not require Git metadata, a clean checkout or a pinned
+revision. Update the code only when no job is using it. Fetch jobs do not install GPU
 model dependencies or run inference.
 
 The study keeps eight native CMIPF bands, every available full-disk scan and the
@@ -445,15 +443,17 @@ can matter more than hardware thread count.
 
 ### Date variables and common submission settings
 
-After checking that no pinned job is active, update the existing checkout:
+After checking that no job is using this checkout, update it:
 
 ```bash
-git fetch origin
-git checkout --detach <tested-pushed-commit>
+git pull --ff-only
 ```
 
-Use the commit provided in the implementation handoff. The existing CPU
-environment needs no new packages for these job changes.
+The existing CPU environment needs no new packages for these job changes.
+Commit checks, clean-checkout requirements and code-hash gates are absent from
+both PBS wrappers. Code-lineage recording is off unless explicitly requested by
+the developer and cannot stop a job. The ordinary date, capacity and scientific
+archive checks still apply.
 
 Both fetch wrappers require explicit ISO dates or UTC timestamps. Examples are
 in `.env.example`; assigning a value there does not automatically export it to
@@ -463,12 +463,11 @@ export the entire credential-bearing `.env`, and do not use `qsub -V`.
 ```bash
 export ECORE_PROJECT_ROOT=/eagle/lighthouse-upr
 export ECORE_PYTHON="$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu/bin/python"
-export ECORE_REVISION=$(git rev-parse HEAD)  # reviewed and pushed revision
 export ECORE_PBS_ACCOUNT=lighthouse-upr
 export ECORE_QUOTA_FREE_GIB=<current-free-project-GiB>
 ```
 
-The scripts validate dates and revision, use the documented proxy, and cap
+The scripts validate dates, use the documented proxy, and cap
 incidental BLAS/OpenMP threads. The MRMS study uses `PBS_MRMS_START` and
 `PBS_MRMS_END`; GOES uses `PBS_GOES_START` and `PBS_GOES_END`. End dates are
 excluded. Setup/tuning do not require these fetch-date variables.
@@ -480,7 +479,7 @@ export ECORE_PBS_MODE=pilot
 export PBS_GOES_START=2021-01-01T12:00:00Z
 export PBS_GOES_END=2021-01-01T13:20:00Z
 qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END \
   jobs/polaris_goes.pbs
 ```
 
@@ -513,7 +512,7 @@ with the profile, dates, destination, scratch and output arguments used by the P
 export ECORE_PBS_MODE=study
 export PBS_GOES_START=2021-01-01 PBS_GOES_END=2023-01-01
 qsub -A "$ECORE_PBS_ACCOUNT" \
-  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_REVISION,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END \
+  -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END \
   jobs/polaris_goes.pbs
 ```
 
@@ -557,11 +556,87 @@ four minutes for cleanup; an outer timeout is a final safeguard. Exit 75 means
 an intentional pause. A timeout, killed process or genuine I/O error is not
 reported as successful study completion.
 
-Resubmit the same pinned command to continue. Verified band-month ZIPs on Eagle
+Resubmit the same scientific request and storage settings to continue. Verified band-month ZIPs on Eagle
 are reusable even if their other bands never finished. Unfinished node-local
 stores may need refetching because Polaris erases local SSD between jobs. Keep
 the same date range and shared state path. Do not copy node-local partial stores
 onto Eagle to evade the storage cap.
+
+### Debugging a GOES job that ends without output
+
+PBS `job_state = F` means finished, not successful. Pilot **7762801** ended
+with `Exit_status = 1`, no recorded CPU work and empty output. Its start/exit
+timestamps span ten seconds even though sampled walltime is zero. The scheduler
+allocated a node; this was not a continued queue wait. `Stageout_status = 1`
+means stage-out succeeded, not that an output error occurred, according to the
+[PBS reference guide](https://help.altair.com/2024.1.0/PBS%20Professional/PBSReferenceGuide2024.1.pdf).
+With joined output (`Join_Path = oe`), the `.e` file may normally be empty.
+
+The old wrapper could exit silently at its revision/clean-checkout checks. A
+local reproduction returned exit 1 with zero bytes on both output streams.
+This explains a possible failure, not a confirmed remote cause. Those Git
+checks are now **removed**, including the required revision variable, from
+both wrappers. Do not reintroduce commit or code-hash checks unless explicitly
+requested by the developer; optional lineage metadata must never stop a job.
+
+Both wrappers print a message immediately, name setup phases and report the
+exit status. One small `startup.log` in the source/mode state directory retains
+wrapper messages and is overwritten on the next attempt. Application output
+continues through PBS. No environment dump or general shell tracing is used.
+An exit before the first message still needs shell-startup/PBS investigation.
+
+1. **Recover scheduler evidence.** Run this for the pilot and job 7762846. It
+   deliberately excludes potentially sensitive environment values:
+
+   ```bash
+   qstat -x -f -F json JOBID | jq '.Jobs | map_values({
+     Job_Name, job_state, Exit_status, comment, Output_Path, Error_Path,
+     resources_used, exec_host, stime, obittime, Stageout_status
+   })'
+   ```
+
+   Read the actual `Output_Path` (PBS prefixes it with a hostname), and confirm
+   its parent directory is writable. See [PBS output issues](https://docs.alcf.anl.gov/running-jobs/known-issues/).
+
+2. **Use a short interactive allocation.** Keep any competing queued fetch held
+   and confirm no GOES job is using the same archives/state. From the repository,
+   with the common path/quota variables exported:
+
+   ```bash
+   qsub -I -A lighthouse-upr -q debug \
+     -l select=1:system=polaris:ncpus=64 \
+     -l filesystems=home:eagle -l walltime=00:20:00 \
+     -v ECORE_PROJECT_ROOT,ECORE_PYTHON,ECORE_QUOTA_FREE_GIB
+   ```
+
+   Once PBS gives a compute-node shell, run a short study **dry run**:
+
+   ```bash
+   cd /eagle/lighthouse-upr/ecore-weather/repo
+   export ECORE_PBS_MODE=study ECORE_DRY_RUN=1
+   export PBS_GOES_START=2021-01-01 PBS_GOES_END=2021-01-02
+   bash jobs/polaris_goes.pbs
+   ```
+
+   This checks the wrapper, Python/date handling, quota, scratch and MPI launch,
+   then prints the plan without NOAA discovery or imagery fetching. The script's
+   `#PBS` lines are comments when run inside an allocation. Inspect the terminal
+   and `ecore-weather/state/goes/study/startup.log`. Exit the interactive shell
+   afterwards. This follows the [documented Polaris approach](https://docs.alcf.anl.gov/polaris/running-jobs/).
+
+3. **Validate progressively.** Follow a successful dry run with bounded anonymous
+   NOAA listing, a staged download, a C02 range read and local/Eagle Zarr checks.
+   Then repeat the existing four-context pilot with its 32 GiB ceiling and short
+   pilot date window. Require exit 0, `pilot-summary.json`, exact archive checks
+   and no-download reuse before another study job. A one-year study uses
+   `PBS_GOES_START=2021-01-01` and `PBS_GOES_END=2022-01-01`.
+
+Publish wrapper updates to Polaris before testing them. **Already submitted
+jobs contain the old PBS script**: updating a repository file does not update
+that stored script. Replace an old queued submission with a fresh one using the
+corrected wrapper. Only one job may write these archives/state at a time.
+If an immediate startup message is still absent, ask ALCF support to investigate
+shell startup/output delivery; do not assume the NOAA reader was reached.
 
 ### Completed MRMS production evidence
 

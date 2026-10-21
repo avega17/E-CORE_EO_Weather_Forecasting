@@ -4,6 +4,10 @@
 > continuation uses two normal month owners plus one C02-only tail. See
 > [current operating settings](docs/goes_parallel_pipeline.md).
 
+For Polaris startup failures or empty PBS output, use the
+[short interactive debugging procedure](docs/study_jobs.md#debugging-a-goes-job-that-ends-without-output).
+PBS jobs do not require commit checks or a clean Git checkout.
+
 
 This project prepares reproducible raw subsets from NOAA MRMS radar and GOES
 satellite archives for weather-forecasting research. The notebooks use custom
