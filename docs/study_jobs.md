@@ -676,6 +676,81 @@ corrected wrapper. Only one job may write these archives/state at a time.
 If an immediate startup message is still absent, ask ALCF support to investigate
 shell startup/output delivery; do not assume the NOAA reader was reached.
 
+### Recovery after GOES job 7765036
+
+The October 21 study failed in the coordinator's task-index update with:
+
+```text
+Connection Error: Can't open a connection to same database file
+with a different configuration than existing connections
+```
+
+The heartbeat/progress monitor opened the live database read-only while another
+thread in that same coordinator opened it writable. This was an application
+connection-mode race, not evidence of a damaged Zarr archive, an S3 error or an
+external user's long-held SQL lock. The fixed internal monitor uses the same
+writable connection configuration and lock as updates and closed index copies.
+External viewers remain read-only; Polaris status uses the shared progress JSON.
+See [DuckDB concurrency guidance](https://duckdb.org/docs/stable/connect/concurrency).
+Repetitive worker-cancellation tracebacks are suppressed; the root failure is
+still reported. Scratch messages now state the PBS durability limitation.
+
+The user-supplied final progress table records:
+
+| Source month | Selected band observations | Verified observations | In completed Eagle archives | In unfinished node-local stores |
+| --- | ---: | ---: | ---: | ---: |
+| 2021-01 | 35,560 | 21,637 | 4,445 | 17,192 |
+| 2021-02 | 32,256 | 21,120 | 0 | 21,120 |
+| 2021-03 | 35,285 | 18,504 | 0 | 18,504 |
+| 2021-04 | 34,396 | 18,128 | 0 | 18,128 |
+| Total | 137,497 | 79,389 | 4,445 | 74,944 |
+
+One band observation means one scan of one band, not a complete eight-band
+model input. These counts describe the last saved snapshot, not a fresh archive
+inventory. January C02 is the only reported completed band-month. Its physical
+ZIP and `complete.json` on Eagle are reusable independently of the other bands
+and a whole-month completion report. The next fetch validates that archive.
+
+The other 74,944 observations had verified eight-scan batches on the node, but
+their arrays were not published to Eagle. Shared progress JSON/SQL counts do
+not contain those pixels. ALCF [wipes node SSD between jobs](https://docs.alcf.anl.gov/data-management/filesystem-and-storage/#local-node-ssd).
+Under this wrapper, treat those partial observations as requiring refetching
+after the allocation ends. A new job also uses a different job-specific scratch
+directory. No automatic cross-job partial-store restoration is implemented.
+Thus 5.6% of the reported verified observation count was in a completed archive;
+this is not a percentage of retained storage or elapsed compute time.
+
+The rounded rows total 2,343.31 GiB (about 2.52 decimal TB) returned in 5:56:43,
+approximately 940 Mb/s across the application. Individual 20–40 Mb/s band rates
+are not the aggregate network rate. January C02 accounts for 175.24 GiB of
+returned source bytes, not retained Zarr size. These figures do not identify a
+proxy, CPU or NIC bottleneck and do not justify changing concurrency alone.
+
+Use the existing monitor and canonical markers to inspect recovery evidence:
+
+```bash
+"$ECORE_PYTHON" scripts/dataset_jobs.py status goes \
+  --progress "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study/progress.json" \
+  --start 2021-01-01 --end 2022-01-01
+find "$ECORE_PROJECT_ROOT/ecore_eo_datasets/goes/ABI-L2-CMIPF" \
+  -name complete.json -exec jq -r \
+  '[input_filename, .band, .observations, .stored_bytes] | @tsv' {} +
+```
+
+The first command is historical progress; the second lists durable completion
+markers and retained bytes. It does not replace the fetcher's archive read-back.
+Do not delete the index or partial research data to resolve this connection race.
+
+For a queued continuation, hold it with `qhold JOBID`, update the repository on
+Polaris while no fetch uses it, then release it with `qrls JOBID`. This fix is
+in Python modules, so an already-queued job using the current wrapper can load
+the correction at startup; no PBS-script replacement is needed for this fix.
+Keep the same study dates and archive destination to reuse completed bands.
+Confirm that January C02 is reused and fresh checkpoint counts advance.
+Only completed band-months remain durable recovery points on Eagle. Preserving
+partial months across allocations would require a separate storage/workflow
+change; it is not part of this connection fix.
+
 ### Completed MRMS production evidence
 
 MRMS job 7743827 on revision `2038b86` finished with exit 0: PBS walltime 1:14:14,

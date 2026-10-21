@@ -390,7 +390,10 @@ def write_month(month, selection, groups, config, requests, replies, events, scr
             return result
         except BaseException as exc:
             import traceback
-            traceback.print_exc()
+            # The coordinator prints the root failure. Its cancellation notice
+            # must not produce another traceback for every active band.
+            if 'Coordinator stopping;' not in str(exc):
+                traceback.print_exc()
             client.error = f'{type(exc).__name__}: {exc}'
             with client.condition:client.condition.notify_all()
             events.put({'op':'failed','month':month,'band':band,'error':client.error})
@@ -598,7 +601,9 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
             if active:
                 broker.error=broker.error or RuntimeError('Coordinator stopping after an incomplete month')
                 broker.stop.set()
-                for reply in broker.replies.values():reply.put({'key':'*','op':'error','error':'Coordinator stopping; scratch retained'})
+                notice = ('Coordinator stopping; node-local scratch is not durable after this PBS allocation'
+                          if os.getenv('PBS_JOBID') else 'Coordinator stopping; scratch retained')
+                for reply in broker.replies.values():reply.put({'key':'*','op':'error','error':notice})
                 for entry in active.values():
                     entry['process'].join(30)
                     if entry['process'].is_alive():entry['process'].terminate();entry['process'].join(10)

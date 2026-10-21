@@ -88,6 +88,10 @@ Keep explanations readable for researchers inheriting the work.
 - One coordinator owns DuckDB writes. Workers send aggregate counters. Read-only
   viewers retry brief locks or use completed manifests; never require ephemeral paths.
   Keep index rebuildable from canonical archive metadata, not per-object logging.
+- Inside the coordinator, progress queries use its read-write connection mode and
+  the same lock as writes/closed snapshots. Never mix a read-only monitor with
+  writable connections to that file in the same process. External viewers remain
+  read-only and Polaris monitoring reads the durable progress JSON.
 - Results keep only latest MRMS and ongoing native GOES configuration/checkpoints,
   active scratch/snapshot/run, compact backup receipts, derived report summaries
   and the local index. Generated images/animations belong under figures/, never docs/assets/. One bounded live error log is useful; remove old tests,

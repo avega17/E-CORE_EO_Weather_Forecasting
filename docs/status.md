@@ -1,3 +1,24 @@
+# GOES coordinator recovery — October 21, 2026
+
+User-supplied output for **7765036** identifies an in-process DuckDB RO/RW
+connection-mode race during coordinator task updates. The internal progress
+monitor now uses the writable mode under the coordinator lock; external viewers
+stay read-only. Repeated cancellation tracebacks no longer obscure the root
+error. This is not evidence of a source-file or scientific archive failure.
+The failure was reproduced locally with DuckDB 1.5.6; the corrected monitor
+passed deterministic connection-overlap checks and the broader 132-test local
+regression run (one mock-only case skipped). Source-array round trips,
+interruption/reuse and status behavior passed. No long Polaris rerun has yet
+validated this correction.
+
+The final table contains 79,389 verified band observations out of 137,497
+selected for admitted January–April contexts. Only January C02 is reported
+complete on Eagle (4,445 observations); 74,944 were still node-local and should
+be treated as requiring refetching after PBS cleanup. Returned source bytes sum
+to about 2.52 TB, approximately 940 Mb/s over the 5:56:43 run. Per-band rates
+are not NIC rates. These are user-provided final-snapshot measurements, not a
+fresh remote inventory. See [recovery details and commands](study_jobs.md#recovery-after-goes-job-7765036).
+
 # GOES PBS startup correction — October 20, 2026
 
 `jobs/polaris.env.sh` now exports non-sensitive job defaults and refreshes a

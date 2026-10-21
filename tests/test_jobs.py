@@ -5,6 +5,76 @@ from ecore_weather.jobs_policy import ensure_paused,select_profiles
 from ecore_weather import jobs,index
 
 
+def test_internal_progress_uses_matching_duckdb_mode_and_external_status_stays_read_only(tmp_path):
+    """A held writer deterministically exposes the old mixed-mode monitor bug."""
+    from ecore_weather.runlog import publish_progress
+    db=tmp_path/'live.duckdb';snapshot=tmp_path/'progress.json'
+    with index.connect(db) as writer:
+        writer.execute("INSERT INTO jobs VALUES ('run','running',0,'other-host',0,0,'{}')")
+        publish_progress('goes',snapshot,db)
+        assert json.loads(snapshot.read_text())['runs'][0]['run_id']=='run'
+        # An independent reader must never be silently promoted to RW mode.
+        external=jobs.status(db)
+        assert external['status']=='index_unavailable'
+        assert 'different configuration' in external['reason']
+    assert jobs.status(db)['runs'][0]['run_id']=='run'
+
+
+def test_internal_monitor_serializes_with_writers_and_closed_snapshots(tmp_path,monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from ecore_weather import runlog
+    db=tmp_path/'live.duckdb';copy=tmp_path/'closed.duckdb';snapshot=tmp_path/'progress.json'
+    with index.connect(db):pass
+    real_connect=index.connect
+    monitor_open=threading.Event();release=threading.Event();writer_done=threading.Event()
+    modes=[]
+    def monitored(path=None,*,read_only=False,**kwargs):
+        con=real_connect(path,read_only=read_only,**kwargs)
+        modes.append(read_only)
+        if threading.current_thread().name.startswith('monitor'):
+            monitor_open.set()
+            assert release.wait(5)
+        return con
+    monkeypatch.setattr(index,'connect',monitored)
+    def write():
+        with index._writer_lock(db),index.connect(db) as con:
+            con.execute("INSERT INTO jobs VALUES ('run','running',0,'other-host',0,0,'{}')")
+        runlog.closed_snapshot(copy,db)
+        writer_done.set()
+    with ThreadPoolExecutor(1,thread_name_prefix='monitor') as monitor:
+        reading=monitor.submit(runlog.publish_progress,'goes',snapshot,db)
+        assert monitor_open.wait(5)
+        with ThreadPoolExecutor(1,thread_name_prefix='writer') as pool:
+            writing=pool.submit(write)
+            try:
+                assert not writer_done.wait(.1),'Writer must wait until the monitor closes its connection'
+            finally:release.set()
+            reading.result(timeout=5);writing.result(timeout=5)
+    assert modes and not any(modes)
+    with real_connect(copy,read_only=True) as con:
+        assert con.execute('SELECT count(*) FROM jobs').fetchone()[0]==1
+    assert json.loads(snapshot.read_text())['source']=='goes'
+
+
+def test_progress_snapshots_and_task_updates_can_overlap_repeatedly(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from ecore_weather import runlog
+    db=tmp_path/'live.duckdb';snapshot=tmp_path/'progress.json'
+    with index.connect(db):pass
+    def write():
+        for n in range(25):
+            with index._writer_lock(db),index.connect(db) as con:
+                con.execute('INSERT INTO jobs VALUES (?,\'running\',0,\'other-host\',0,0,\'{}\')',[str(n)])
+    def monitor():
+        for _ in range(25):runlog.publish_progress('goes',snapshot,db)
+    with ThreadPoolExecutor(2) as pool:
+        results=[pool.submit(write),pool.submit(monitor)]
+        for result in results:result.result(timeout=20)
+    assert len(jobs.status(db)['runs'])==25
+    assert snapshot.is_file()
+
+
 def test_notebook_cli_passes_json_band_profiles_to_fetch(tmp_path,monkeypatch):
     from ecore_weather import cli,catalog,monthly
     from ecore_weather.common import Asset,Selection

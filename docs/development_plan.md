@@ -8,6 +8,12 @@ preservation and interfaces are defined in [storage](storage_and_data_management
 
 ## Current work
 
+- Polaris GOES 7765036 failed after 5:56:43 on an internal DuckDB connection-mode
+  race. The coordinator-monitor fix passed 132 local regressions (one mock case
+  skipped); update Polaris before releasing the queued
+  continuation. Reuse January C02; node-local partial arrays are not durable
+  across PBS allocations. Details and user-reported counts are in
+  [the recovery guide](study_jobs.md#recovery-after-goes-job-7765036).
 - GOES has drained to a verified pause after December 2022. The next fetch
   stage should resume chronologically with two normal month owners and one
   C02-only tail, reusing completed native-band archives.

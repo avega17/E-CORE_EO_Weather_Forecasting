@@ -143,7 +143,7 @@ def publish_progress(source, destination, index_path=None):
     """Atomic shared snapshot; never exposes the node-local live database."""
     from .jobs import status
     with _PROGRESS_LOCK:
-        data = compact(status(index_path))
+        data = compact(status(index_path, coordinator=True))
         if data.get('status') == 'index_unavailable':
             return
         data.update(snapshot_at=time.time(), source=source, pbs_job_id=os.getenv('PBS_JOBID'))

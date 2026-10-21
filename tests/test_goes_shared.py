@@ -12,6 +12,27 @@ from ecore_weather.common import Asset,Selection
 from ecore_weather.goes_shared import MonthSlots,SharedConfig,SharedReads,ReaderClient
 
 
+@pytest.mark.parametrize('cancellation',[False,True])
+def test_worker_keeps_root_errors_but_does_not_repeat_coordinator_cancellation(tmp_path,monkeypatch,capsys,cancellation):
+    from ecore_weather import goes_shared,monthly_stream
+    class Client:
+        error=None
+        condition=threading.Condition()
+        def __init__(self,*args):pass
+        def close(self):pass
+    monkeypatch.setattr(goes_shared,'ReaderClient',Client)
+    message='Coordinator stopping; node-local scratch is not durable after this PBS allocation' if cancellation else 'actual source failure'
+    def failure(*args,**kwargs):raise OSError(message)
+    monkeypatch.setattr(monthly_stream,'_write_one',failure)
+    asset=Asset('noaa-goes16','C13',1,'etag','2021-01-01T00:00:00Z')
+    selection=Selection('goes','ABI-L2-CMIPF',asset.time,'2021-02-01',(-70,14,-62,22),[asset],satellite=16,bands=(13,))
+    events=queue.Queue()
+    goes_shared.write_month('jan',selection,[((str(tmp_path),13),[asset])],SharedConfig(),None,None,events,str(tmp_path))
+    stderr=capsys.readouterr().err
+    assert ('Traceback' in stderr)==(not cancellation)
+    assert events.get_nowait()['op']=='failed'
+
+
 def test_tail_slots_are_bounded_and_release_normal_capacity():
     slots=MonthSlots(2,2)
     assert slots.admit('jan',[1,2,13]) and slots.admit('feb',[1,2,13])

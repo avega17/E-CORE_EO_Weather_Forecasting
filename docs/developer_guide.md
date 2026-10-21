@@ -102,6 +102,13 @@ reference comparisons must run in a verified fetch pause; use the guarded
 [benchmark command](study_jobs.md#brief-mrms-source-comparison), not a separate
 one-off script.
 
+Coordinator heartbeat/progress queries use `jobs.status(..., coordinator=True)`:
+they share the writable DuckDB configuration and writer lock with task updates
+and closed database copies. External CLI/viewer calls keep read-only access and
+fallback behavior. Mixing RO/RW configurations inside one process caused the
+Polaris GOES 7765036 failure; retrying only external lock errors cannot fix it.
+Regression checks force overlapping connections, task writes and snapshots.
+
 After a crash, use the recovery sequence in [study jobs](study_jobs.md#recovering-after-a-workstation-restart).
 Keep partial native-band stores: scan-batch verification can replay a damaged
 tail while retaining the verified prefix. A stale launcher PID is not live work.

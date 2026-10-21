@@ -96,8 +96,12 @@ def test_empty_listing_is_distinguished_from_network_failure(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolate_limits(monkeypatch):
-    monkeypatch.delenv('ECORE_GOES_LIMIT_LEDGER', raising=False)
-    monkeypatch.delenv('ECORE_GOES_ACCOUNTING_ROOTS', raising=False)
+    names=('ECORE_GOES_LIMIT_LEDGER','ECORE_GOES_ACCOUNTING_ROOTS')
+    for name in names:monkeypatch.delenv(name, raising=False)
+    yield
+    # configure() sets os.environ directly, including when the variable was
+    # initially absent and monkeypatch.delenv had nothing to restore.
+    for name in names:os.environ.pop(name,None)
 
 
 @pytest.mark.parametrize('begin,end', [('01-01-2021','2023-01-01'),
@@ -351,12 +355,12 @@ def test_progress_snapshot_survives_index_lock_and_is_serialized(tmp_path,monkey
     from concurrent.futures import ThreadPoolExecutor
     from ecore_weather import jobs,runlog
     path=tmp_path/'progress.json'
-    monkeypatch.setattr(jobs,'status',lambda *_:{'status':'index_unavailable'})
+    monkeypatch.setattr(jobs,'status',lambda *_,**__:{'status':'index_unavailable'})
     path.write_text('{"old": true}')
     runlog.publish_progress('goes',path)
     assert json.loads(path.read_text())=={'old':True}
     active=peak=0
-    def status(*args):
+    def status(*args,**kwargs):
         nonlocal active,peak
         active+=1;peak=max(active,peak);time.sleep(.005);active-=1
         return {'runs':[],'tasks':[]}

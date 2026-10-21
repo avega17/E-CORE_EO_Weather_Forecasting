@@ -88,12 +88,20 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
         publish_progress()
 
 
-def status(index_path=None):
+def status(index_path=None, *, coordinator=False):
+    """Query progress; internal monitoring shares the coordinator's RW mode.
+
+    DuckDB rejects overlapping read-only and read-write connections to one file
+    in a process. External status/viewer callers retain read-only access and
+    their manifest fallback; the coordinator serializes its own queries with
+    writes and closed database snapshots.
+    """
     import socket
     import psutil
-    from .index import connect
+    from .index import connect, _writer_lock
     try:
-        with connect(index_path,read_only=True) as con:
+        lock = _writer_lock(index_path) if coordinator else contextlib.nullcontext()
+        with lock, connect(index_path,read_only=not coordinator) as con:
             rows=con.execute('SELECT run_id,status,pid,host,heartbeat,config_json FROM jobs ORDER BY started_at DESC').fetchall()
             cursor=con.execute('SELECT task_id,run_id,source,product,month,band,selected,checkpointed,completed,status,updated_at,metrics_json FROM tasks ORDER BY month,product,band')
             columns=[column[0] for column in cursor.description]
