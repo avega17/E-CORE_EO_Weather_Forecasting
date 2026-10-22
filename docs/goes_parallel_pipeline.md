@@ -5,6 +5,16 @@ archive layout and access, and [status](status.md) for actual live work.
 
 ## Current GOES operating profile
 
+The table below describes the workstation. Polaris now uses **three normal
+month owners plus one C02-only tail**, retaining its global 64 async downloads,
+eight local HDF5 readers, sixteen range readers, 4 GiB ROI and 32 GiB staging.
+All bands in an admitted month remain eligible. Fewer months share the same
+resources; no new speedup is claimed without a target-machine measurement.
+Polaris also saves incremental partial checkpoints to Eagle every quarter of a
+band-month. These protect against node-local scratch deletion and add copy/hash
+work; measured long-run overhead remains to be established. See
+[PBS recovery and walltime](study_jobs.md#capacity-walltime-and-resubmission).
+
 The current configuration allows **two months to fetch at once**, plus one
 additional month when only its C02 band remains unfinished. Each month has a
 writer process that owns its band stores. This changes when work runs, not what
@@ -293,7 +303,7 @@ contextual margins and future training requirements.
 
 The workstation settings above remain the operating defaults for that machine.
 For the manually submitted 2021–2022 Polaris job, `jobs/goes_polaris.json` starts
-with **four normal month owners and one C02 tail**, **64 global asynchronous
+with **three normal month owners and one C02 tail**, **64 global asynchronous
 full-file downloads**, **eight local HDF5 crop processes** and **sixteen C02
 range-reader processes**. Two workers finalize closed stores. The global ROI
 budget is 4 GiB and staged-source capacity is 32 GiB; the summed job-process RSS
@@ -309,5 +319,6 @@ The bounded manual pilot exercises four seasonal contexts and all eight bands,
 checks archive publication/reuse and records effective concurrency and process
 memory. It does not establish an optimum or replace a full-month measurement.
 Keep the [manual PBS procedure](study_jobs.md#polaris-goes-manual-pilot-and-20212022-study)
-and its compact pilot summary with any target-machine comparisons. No production
-Polaris GOES run was launched as part of preparing this profile.
+and its compact pilot summary with any target-machine comparisons. The supplied
+7770028 record used the earlier four-month profile; the revised three-month
+setting still needs a production comparison.

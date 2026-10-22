@@ -345,6 +345,12 @@ succeeds. A 512 MiB allowance protects changing state/index metadata. Physical
 filesystem free space and remaining shared project quota are separate checks.
 
 Open stores, staged source files and packing candidates stay on node-local SSD.
-Only verified band-month archives and compact status/index snapshots are durable
-on Eagle. Resubmission reuses those archives; incomplete node-local work may be
-lost when PBS clears the node. See the [PBS instructions](study_jobs.md#polaris-goes-manual-pilot-and-20212022-study).
+The GOES study also saves incremental partial checkpoints to Eagle roughly
+every quarter of each band-month. These contain new compressed chunks and the
+records needed to verify and restore them into a later node's scratch. They
+are recovery files, not complete datasets for analysis. They count against the
+same storage cap and are removed after the final monthly ZIP has been verified.
+This temporarily keeps both local working data and durable recovery data;
+source NetCDF files are not backed up. Sudden node loss can lose work since
+the last published checkpoint. Earlier jobs without this option protected only
+completed archives. See the [PBS instructions](study_jobs.md#capacity-walltime-and-resubmission).

@@ -425,16 +425,16 @@ Full files are cropped locally and retired after verified scan checkpoints.
 See the [pipeline explanation](goes_parallel_pipeline.md) and
 [storage layout](storage_and_data_management.md).
 
-### Initial Polaris GOES resource settings
+### Polaris GOES resource settings
 
-`jobs/goes_polaris.json` starts with four normal month owners plus one C02-only
+`jobs/goes_polaris.json` uses three normal month owners plus one C02-only
 owner, 64 global async downloads, eight local HDF5 readers, sixteen C02 range
 readers and two finalizers. ROI queues share 4,096 MiB; staging shares 32,768 MiB.
 The job-process RSS ceiling is 64 GiB. These limits do not multiply by month or
 band. Async requests are not CPU threads. Independent HDF5 reader processes,
 writers and finalizers also use the node's CPU resources.
 
-This is a higher-concurrency **starting profile**, not a measured optimum.
+This is the revised target-machine profile, not a measured optimum.
 The workstation's two-month profile remains unchanged. Record effective
 concurrency and first production-month runtimes before drawing conclusions about
 Polaris throughput. The shared proxy, source sizes and C02's different read method
@@ -505,7 +505,8 @@ qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
 
 Pilot mode uses the supplied UTC time-of-day window on January 1, April 1,
 July 1 and October 1 of the start year. It requires eight available scans per
-band in each context, allowing all four monthly pipelines to overlap. It is
+band in each context, admitted using the profile's month-owner limit (now three
+normal owners plus one C02-only tail). It is
 not a continuous January-to-October fetch. The cumulative transfer ceiling is
 **32 GiB**, including retries and conservative failed-request reservations.
 The compact transfer ledger remains on Eagle across failed submissions; retries
@@ -536,7 +537,12 @@ qsub -A "$ECORE_PBS_ACCOUNT" \
   jobs/polaris_goes.pbs
 ```
 
-GOES requests one capacity node for 24 hours. `ECORE_PROFILE` and
+GOES requests one capacity node for 24 hours. The current Polaris profile has
+three normal month owners plus one C02-only tail, with the existing global
+64 full-object downloads, eight local readers and sixteen C02 range readers.
+These limits do not multiply by month; this change is intended to reduce the
+work competing for bandwidth, not a demonstrated throughput improvement.
+`ECORE_PROFILE` and
 `ECORE_DESTINATION` can be exported and explicitly added to `-v` to override
 profile/destination. Do not increase resource limits by launching competing jobs
 against the same stores.
@@ -570,17 +576,62 @@ filesystem free space are checked independently. The larger profile also needs
 node-local space for open stores, staged inputs and simultaneous packed copies;
 insufficient space stops the job rather than redirecting to Eagle scratch.
 
-Before walltime the runner stops new admissions using at least fifteen minutes,
-or 130% of the longest observed month runtime. The application deadline leaves
-four minutes for cleanup; an outer timeout is a final safeguard. Exit 75 means
-an intentional pause. A timeout, killed process or genuine I/O error is not
-reported as successful study completion.
+The wrapper now enables incremental partial checkpoints under
+`state/goes/study/partial-archives/`. Roughly every quarter of a band-month,
+the writer copies **only the newly committed compressed Zarr chunks**, their
+source metadata and verification records to an immutable ZIP on Eagle. It does
+not re-download source files or rewrite the growing final monthly ZIP. Copies
+are hashed and flushed before the small checkpoint receipt is replaced. These
+temporary recovery files count against the 400 GB cap and are removed only
+after the completed monthly ZIP passes destination verification.
 
-Resubmit the same scientific request and storage settings to continue. Verified band-month ZIPs on Eagle
-are reusable even if their other bands never finished. Unfinished node-local
-stores may need refetching because Polaris erases local SSD between jobs. Keep
-the same date range and shared state path. Do not copy node-local partial stores
-onto Eagle to evade the storage cap.
+Resubmit with the same dates, archive destination and shared state directory.
+The runner first reuses completed archives, then restores matching partial
+checkpoints into the new node's local scratch and verifies their pixels before
+fetching the remaining observations. Changes to the source selection cannot
+silently reuse a different checkpoint. Supported shutdown attempts to save the
+latest verified eight-scan batch. A sudden node loss can still lose progress
+since the last quarter checkpoint; the original node-local-only checkpoints
+cannot be recovered retrospectively after PBS clears that node.
+
+With durable partial checkpoints enabled, new month admissions stop fifteen
+minutes before the application deadline. Active months continue until they
+finish or the deadline is reached. The deadline leaves four minutes before
+the PBS limit for shutdown, including a best-effort final partial checkpoint;
+the outer timeout remains a safeguard. Without durable checkpoints, the old
+rule still reserves 130% of the longest completed whole-month runtime, with a
+fifteen-minute minimum. This can stop an otherwise healthy job many hours early.
+
+Exit **75** means intentional pause, not completion of the whole selection.
+`fetch/paused.json` now records a compact reason, elapsed time and completion
+count; detailed monthly receipts stay under `fetch/checkpoints/`. A genuine
+I/O failure, timeout or killed process remains a different exit. Inspect without
+printing a large selection or the PBS environment:
+
+```bash
+cat "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study/fetch/paused.json"
+qstat -x -f JOBID | rg 'resources_used.(walltime|cput)|Resource_List.walltime|Exit_status'
+```
+
+The ordinary `qstat` **Time Use** field is CPU time accumulated across the
+processes, and can exceed elapsed hours. `resources_used.walltime` is the elapsed
+PBS runtime to compare with the requested `Resource_List.walltime`.
+The [PBS qstat reference](https://github.com/openpbs/openpbs/blob/master/doc/man1/qstat.1B)
+defines these two display formats.
+
+Job **7770028** illustrates the old rule. Its supplied pause record shows all
+32 January–April 2021 band archives verified/reused in **30,280.1 seconds
+(8:24:40)**. At the first completed month, about 8.26 hours, the 130% allowance
+already exceeded the remaining part of a sixteen-hour request. No next month
+was admitted. The record contains no partial later months lost by this pause;
+it is not a fresh inventory of Eagle. It also reports all four C02 archives as
+reused, so this run is not a new benchmark of C02 range throughput.
+
+After updating code, **submit a new PBS job** to use the revised wrapper and
+checkpoint options; an already queued job holds its earlier script. Do not pull
+changes into a checkout while another fetch is using it. Keep the same dates
+to reuse January–April automatically. Quota checks still apply to both recovery
+parts and final archives.
 
 ### Debugging a GOES job that ends without output
 

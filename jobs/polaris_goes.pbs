@@ -81,6 +81,7 @@ else
         --shared-profile "$profile" --product ABI-L2-CMIPF --destination "$destination"
         --scratch "$scratch_root" --output "$state_root/fetch" --index-path "$ECORE_INDEX_PATH"
         --durable-state "$state_root" --durable-progress "$state_root/progress.json"
+        --checkpoint-dir "$state_root/partial-archives" --checkpoint-fraction 0.25
         --storage-cap-gb 400 --max-hours "$max_hours" --drain-minutes 15)
     if test "${ECORE_DRY_RUN:-0}" = 1; then command+=(--dry-run); fi
 fi
@@ -91,7 +92,7 @@ ecore_status=0
 timeout --signal=TERM --kill-after=30s "$((job_seconds-30))s" \
     mpiexec -n 1 --ppn 1 --depth=64 --cpu-bind none "${command[@]}" || ecore_status=$?
 if test "$ecore_status" -eq 75; then
-    ecore_note 'GOES application intentionally paused; verified archives can be resumed.'
+    ecore_note "GOES application intentionally paused; inspect $state_root/fetch/paused.json for its reason. Resume with the same dates, destination and state; verified monthly archives and published partial checkpoints are retained."
 elif test "$ecore_status" -ne 0; then
     ecore_note "GOES application failed | exit $ecore_status | inspect the PBS output for its error."
 fi

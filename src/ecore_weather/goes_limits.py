@@ -42,7 +42,7 @@ def physical_bytes(roots):
     return total
 
 
-def configure(destination, state, scratch, cap_gb):
+def configure(destination, state, scratch, cap_gb, extra_roots=()):
     if cap_gb is None:
         os.environ.pop('ECORE_GOES_LIMIT_LEDGER', None)
         return None
@@ -52,6 +52,7 @@ def configure(destination, state, scratch, cap_gb):
     path.parent.mkdir(parents=True, exist_ok=True)
     roots = [str(Path(destination).resolve() / 'goes'), str(Path(state).resolve())]
     roots.extend(json.loads(os.getenv('ECORE_GOES_ACCOUNTING_ROOTS', '[]')))
+    roots.extend(str(Path(root).resolve()) for root in extra_roots)
     path.write_text(json.dumps({'limit': int(cap_gb * 1e9), 'roots': roots, 'reservations': {}}))
     os.environ['ECORE_GOES_LIMIT_LEDGER'] = str(path.resolve())
     with locked() as data:

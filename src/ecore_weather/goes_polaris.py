@@ -35,8 +35,6 @@ def main(argv=None):
     profile_data=json.loads(profile.read_text())
     data=profile_data['global_config']
     config=SharedConfig(**{k:v for k,v in data.items() if k in {f.name for f in fields(SharedConfig)}}).validate()
-    if config.month_writers != 4:
-        parser.error('This pilot must exercise four monthly contexts')
     output=Path(args.output);output.mkdir(parents=True,exist_ok=True)
     scratch=Path(args.scratch);scratch.mkdir(parents=True,exist_ok=True)
     destination=Path(args.destination)

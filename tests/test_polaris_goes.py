@@ -96,7 +96,9 @@ def test_empty_listing_is_distinguished_from_network_failure(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolate_limits(monkeypatch):
-    names=('ECORE_GOES_LIMIT_LEDGER','ECORE_GOES_ACCOUNTING_ROOTS')
+    names=('ECORE_GOES_LIMIT_LEDGER','ECORE_GOES_ACCOUNTING_ROOTS',
+           'ECORE_SHARED_GOES','ECORE_GOES_PROGRESS','ECORE_GOES_CHECKPOINT_ROOT',
+           'ECORE_GOES_CHECKPOINT_FRACTION')
     for name in names:monkeypatch.delenv(name, raising=False)
     yield
     # configure() sets os.environ directly, including when the variable was
@@ -169,7 +171,7 @@ def test_proxy_factory_keeps_noaa_anonymous(monkeypatch):
 def test_goes_profile_is_global_and_not_mrms_threads():
     profile=json.loads(Path('jobs/goes_polaris.json').read_text())
     config=profile['global_config']
-    assert (config['month_writers'],config['tail_months'])==(4,1)
+    assert (config['month_writers'],config['tail_months'])==(3,1)
     assert (config['download_concurrency'],config['local_readers'],config['range_readers'])==(64,8,16)
     assert profile['job_memory_gib']==64
 
@@ -296,6 +298,9 @@ def test_pbs_preserves_status_and_one_small_startup_record(pbs_environment,sourc
     if code==75:
         assert 'intentionally paused' in result.stdout
         assert 'application failed' not in result.stdout
+        if source=='goes':
+            command=Path(env['CAPTURE']).read_text()
+            assert '--checkpoint-dir' in command and '--checkpoint-fraction\n0.25' in command
 
 
 def test_deadline_reached_before_admission_does_not_load_sources(tmp_path):
@@ -327,7 +332,7 @@ def test_manual_pilot_four_contexts_reuses_and_cleans_own_archives(tmp_path,monk
     calls=[]
     def fetch(requests,destination,config,scratch,*args,**kwargs):
         calls.append(len(requests));reports=[]
-        assert len(requests)==4 and config.month_writers==4
+        assert len(requests)==4 and config.month_writers==3
         for key,selection,_ in requests:
             archives=[]
             for band in goes.STORMSCOPE_BANDS:
@@ -377,6 +382,37 @@ def test_initial_cap_pause_returns_75_without_discovery(tmp_path,monkeypatch):
         '--destination',str(tmp_path),'--output',str(tmp_path/'state'),
         '--scratch',str(tmp_path/'scratch'),'--storage-cap-gb','.01'])==75
     assert json.loads((tmp_path/'state/paused.json').read_text())['status']=='paused'
+
+
+@pytest.mark.parametrize('durable',[False,True])
+def test_drain_policy_and_compact_pause_summary(tmp_path,monkeypatch,durable):
+    from types import SimpleNamespace
+    from ecore_weather import jobs_mrms,goes_shared
+    clock=[0.]
+    monkeypatch.setattr(jobs_goes.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(jobs_mrms,'preflight',lambda _:None)
+    month={'stage':'h1-2021','start':'2021-01-01','end_excluded':'2021-02-01','report_dir':str(tmp_path/'jan')}
+    def consume(requests,destination,config,scratch,index,pause,finished,**kwargs):
+        key,_,_=next(iter(requests))
+        clock[0]=8.25*3600
+        finished(key,{'monthly_archives':[{'band':13,'path':'not-opened'}],
+            'selection_summary':{'files':8},'wall_s':8.25*3600})
+        if durable:
+            assert not pause(), 'Durable checkpoints must not reserve another ten hours'
+            clock[0]=16*3600-14*60
+            assert 'durable partial checkpoints' in pause()
+        else:
+            assert '130%' in pause()
+        return {'paused':True,'global_metrics':{},'pause_reason':pause()}
+    monkeypatch.setattr(goes_shared,'fetch_contexts',consume)
+    args=SimpleNamespace(destination=str(tmp_path/'dest'),output=str(tmp_path/'state'),scratch=str(tmp_path/'ssd'),
+        product='ABI-L2-CMIPF',begin_month=None,stop_after_month=None,max_hours=16,
+        storage_cap_gb=None,drain_minutes=15,shared_profile=None,durable_progress=None,
+        checkpoint_dir=str(tmp_path/'eagle-parts') if durable else None,checkpoint_fraction=.25)
+    assert jobs_goes.run_shared([month],args,goes_shared.SharedConfig())==75
+    result=json.loads((tmp_path/'state/paused.json').read_text())
+    assert result['reason'] and 'months' not in result and result['completed_months']==1
+    assert (tmp_path/'state/paused.json').stat().st_size<2048
 
 
 @pytest.mark.parametrize('extra',[['--pipeline','legacy'],['--product','ABI-L2-MCMIPF']])

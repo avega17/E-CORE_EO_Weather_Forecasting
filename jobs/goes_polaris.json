@@ -1,7 +1,7 @@
 {
   "pipeline": "shared",
   "global_config": {
-    "month_writers": 4,
+    "month_writers": 3,
     "tail_months": 1,
     "download_concurrency": 64,
     "local_readers": 8,
@@ -27,8 +27,8 @@
     "10": 137220.4375,
     "13": 153427.625
   },
-  "name": "polaris-initial",
-  "validation": "Unmeasured on Polaris; validate with the bounded four-context pilot",
+  "name": "polaris-three-month-checkpointed",
+  "validation": "Three normal month owners plus one C02 tail; unchanged global reader/download capacity. Locally validated; performance must be measured on Polaris.",
   "job_memory_gib": 64,
   "storage_cap_gb": 400,
   "storage_reference": {

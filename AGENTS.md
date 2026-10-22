@@ -145,13 +145,21 @@ Keep explanations readable for researchers inheriting the work.
   queued, as authorized after the successful pilots and tuning. Keep GOES paused
   and separate figure reads from controlled network benchmarks.
 
-- Polaris GOES has a separate **unmeasured starting profile**: four normal month
+- Polaris GOES has a separate **unmeasured three-month profile**: three normal month
   owners plus one C02 tail, 64 global async downloads, eight local HDF5 readers,
   sixteen C02 range readers, 4,096 MiB ROI and 32,768 MiB staging. Do not change
   workstation settings or call this profile optimal without target-machine data.
   The manual four-context pilot has a 32 GiB transfer ceiling; this sprint does
   not submit it. GOES study dates are 2021-01-01 to 2023-01-01, end excluded,
   with a 400 decimal GB cap for GOES Eagle data/state. MRMS PBS requests six hours.
+- GOES PBS study jobs publish incremental compressed partial checkpoints to
+  Eagle approximately every 25% of a band-month (rounded to verified eight-scan
+  batches). Restore them into local scratch on resubmission; never mark them as
+  complete monthly archives. Count them against the GOES cap and delete them
+  only after final ZIP verification. Supported shutdown attempts to save the
+  latest verified batch; sudden node loss can lose work since the last durable
+  part. With this enabled, use the configured admission drain interval rather
+  than 130% of a whole-month runtime. Preserve a compact, explicit pause reason.
 - PBS fetch dates come from PBS_GOES_START/END and PBS_MRMS_START/END, in ISO UTC.
   Setup/tuning are date-independent. Do not export the entire .env to PBS.
   Solar conditioning is cosine of **zenith**, not azimuth; the model computes it

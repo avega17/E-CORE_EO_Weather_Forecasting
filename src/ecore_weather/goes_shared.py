@@ -486,8 +486,12 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                 if deadline is not None and time.monotonic() >= deadline:
                     from .goes_limits import IntentionalPause
                     raise IntentionalPause('hard wall-time deadline; verified band archives retained')
-                stopping=bool(pause and pause()) or bool(failures) or broker.error is not None
+                requested_pause=pause() if pause else False
+                stopping=bool(requested_pause) or bool(failures) or broker.error is not None
                 if stopping:
+                    if requested_pause and pause_reason is None:
+                        pause_reason=requested_pause if isinstance(requested_pause,str) else 'pause requested; draining admitted months'
+                        print(f'GOES stopping new month admissions: {pause_reason}',flush=True)
                     admission_paused |= not exhausted
                     exhausted=True
                 while not exhausted and slots.normal_count<config.month_writers:
@@ -531,7 +535,11 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                         'results':[],'role':'normal','started_at':time.time(),'report_dir':report_dir,'task_progress':tasks,'requested_indices':requested_indices}
                     print(f'Admitted GOES {key}: {len(groups)} separate native-band stores',flush=True)
                     process.start()
-                    if pause and pause():exhausted=True;break
+                    reason=pause() if pause else False
+                    if reason:
+                        admission_paused=True;exhausted=True
+                        pause_reason=pause_reason or (reason if isinstance(reason,str) else 'pause requested; draining admitted months')
+                        break
                 try:message=events.get(timeout=.1)
                 except queue.Empty:message=None
                 if message:

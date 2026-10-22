@@ -414,6 +414,7 @@ def test_shared_resume_defers_future_archive_hashes_until_admission(tmp_path, mo
     monkeypatch.setattr(goes_shared, 'fetch_contexts', consume)
     args = SimpleNamespace(destination='unused', output=str(tmp_path), scratch=str(tmp_path/'scratch'),
         product='ABI-L2-CMIPF', begin_month='2021-10', stop_after_month=None, max_hours=1,
-        storage_cap_gb=None, drain_minutes=15, shared_profile=None, durable_progress=None)
+        storage_cap_gb=None, drain_minutes=15, shared_profile=None, durable_progress=None,
+        checkpoint_dir=None, checkpoint_fraction=.25)
     assert jobs_goes.run_shared([first, later], args, goes_shared.SharedConfig()) == 75
     assert checks == [] and checkpoint.exists()

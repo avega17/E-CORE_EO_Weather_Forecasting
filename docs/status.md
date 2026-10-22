@@ -1,3 +1,29 @@
+# GOES pause and cross-job recovery — October 22, 2026
+
+The user-supplied `7770028` pause record reports all 32 January–April 2021
+band archives complete/reused after 30,280.1 seconds (8:24:40). The old
+130%-of-a-month drain allowance explains stopping before the sixteen-hour
+request expired; this was not a second DuckDB failure. Later incomplete months
+are not present in this successful drain. All four C02 archives were reused,
+so the record does not measure new C02 range transfers.
+
+The updated Polaris profile uses three normal month owners plus the existing
+one C02 tail and unchanged global download/read pools. The revised study wrapper
+enables incremental quarter-month checkpoints on Eagle, restoring verified
+chunks to fresh local scratch. Controlled shutdown also attempts to publish the
+last verified scan batch. Sudden interruption may still lose the work since
+the last durable checkpoint. The final ZIP layout is unchanged. Future pause
+records are compact and state the reason explicitly. This is a local
+implementation, not yet a validated live Polaris restart.
+
+Validation: **136 passed, one skipped** across GOES native/monthly storage,
+shared scheduling, durable checkpoint recovery, PBS, status and resume tests.
+The recovery checks erase simulated node scratch, restore verified partials,
+fetch only the remaining scans and compare CMI, DQF and per-scan metadata.
+Corrupt copies, interrupted publication, storage accounting and the revised
+admission deadline are covered. Shell syntax, Python compilation and an explicit
+2021 CLI dry run also passed. No new NOAA benchmark or remote submission ran.
+
 # GOES coordinator recovery — October 21, 2026
 
 User-supplied output for **7765036** identifies an in-process DuckDB RO/RW

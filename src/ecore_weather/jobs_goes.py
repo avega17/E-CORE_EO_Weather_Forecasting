@@ -158,6 +158,8 @@ def main(argv=None):
     parser.add_argument('--end', help='ISO UTC exclusive end')
     parser.add_argument('--storage-cap-gb', type=float, help='GOES archives and state limit in decimal GB')
     parser.add_argument('--durable-progress', help='Atomic aggregate progress JSON on shared storage')
+    parser.add_argument('--checkpoint-dir', help='Durable native-band partial checkpoints; restored into local scratch on resubmission')
+    parser.add_argument('--checkpoint-fraction',type=float,default=.25,help='Fraction of selected scans between durable checkpoints; default 0.25, rounded to eight scans')
     parser.add_argument('--drain-minutes', type=float, default=15, help='Minimum admission drain allowance before deadline')
     parser.add_argument("--destination", default="/mnt/p/ecore_eo_datasets")
     parser.add_argument("--output", default="results/study-goes-native")
@@ -193,6 +195,10 @@ def main(argv=None):
         except ValueError as exc: parser.error(str(exc))
     if args.max_hours <= 0 or args.drain_minutes < 0:
         parser.error('Positive max-hours and nonnegative drain-minutes required')
+    if not 0 < args.checkpoint_fraction <= 1:
+        parser.error('checkpoint-fraction must be greater than zero and at most one')
+    if args.checkpoint_dir and (args.pipeline != 'shared' or args.product != 'ABI-L2-CMIPF'):
+        parser.error('Durable partial checkpoints require the shared native CMIPF pipeline')
     if args.storage_cap_gb is not None and args.storage_cap_gb <= 0:
         parser.error('storage-cap-gb must be positive')
     from .goes_shared import config_from_args
@@ -270,6 +276,7 @@ def main(argv=None):
     if args.pipeline=='shared' and args.product=='ABI-L2-CMIPF':
         if args.dry_run:
             print(json.dumps({'monthly_runs':[{k:v for k,v in row.items() if k!='command'} for row in plan],'global_config':shared_config.manifest(),
+                'durable_checkpoints':{'directory':args.checkpoint_dir,'fraction':args.checkpoint_fraction},
                 'scope':'one store-owner process per month; separate C02 tail slots'},indent=2))
             return 0
         return run_shared(plan,args,shared_config)
@@ -418,9 +425,18 @@ def run_shared(plan,args,config):
     from .jobs_mrms import preflight
     preflight(args.destination)
     output=Path(args.output);output.mkdir(parents=True,exist_ok=True)
+    if args.checkpoint_dir:
+        checkpoint_root=Path(args.checkpoint_dir).resolve()
+        checkpoint_root.mkdir(parents=True,exist_ok=True)
+        os.environ['ECORE_GOES_CHECKPOINT_ROOT']=str(checkpoint_root)
+        os.environ['ECORE_GOES_CHECKPOINT_FRACTION']=str(args.checkpoint_fraction)
+    else:
+        os.environ.pop('ECORE_GOES_CHECKPOINT_ROOT',None)
+        os.environ.pop('ECORE_GOES_CHECKPOINT_FRACTION',None)
     from .goes_limits import configure, IntentionalPause
     try:
-        configure(args.destination, os.getenv('ECORE_DURABLE_STATE', str(output)), args.scratch, args.storage_cap_gb)
+        configure(args.destination, os.getenv('ECORE_DURABLE_STATE', str(output)), args.scratch, args.storage_cap_gb,
+                  extra_roots=[args.checkpoint_dir] if args.checkpoint_dir else [])
     except IntentionalPause as exc:
         write_json(output/'paused.json', {'status':'paused','reason':str(exc),'completed_months':0})
         return 75
@@ -437,7 +453,9 @@ def run_shared(plan,args,config):
         'global_config':config.manifest(),'begin_month':args.begin_month,
         'stop_after_month':args.stop_after_month,'start_order':'ascending half-year stages',
         'start':plan[0]['start'],'end_excluded':plan[-1]['end_excluded'],
-        'storage_cap_gb':args.storage_cap_gb,'resolved_profile':args.shared_profile})
+        'storage_cap_gb':args.storage_cap_gb,'resolved_profile':args.shared_profile,
+        'checkpoint_dir':args.checkpoint_dir,'checkpoint_fraction':args.checkpoint_fraction,
+        'maximum_hours':args.max_hours,'minimum_drain_minutes':args.drain_minutes})
     started=time.perf_counter();completed=[];requests=[];metadata={};segments_done={};durations=[]
     deadline=time.monotonic()+args.max_hours*3600
     def checkpoint(month):return output/'checkpoints'/month['stage']/f"{month['start']}.json"
@@ -493,22 +511,42 @@ def run_shared(plan,args,config):
             'verified_months':len(stage_rows),'expected_months':expected,
             'status':'complete' if len(stage_rows)==expected else 'partial','months':stage_rows})
     def paused():
-        allowance=max(args.drain_minutes*60, 1.3*max(durations,default=0))
-        return (output/'pause.request').exists() or time.monotonic() >= deadline-allowance
+        allowance=args.drain_minutes*60 if args.checkpoint_dir else max(args.drain_minutes*60, 1.3*max(durations,default=0))
+        if (output/'pause.request').exists():return 'explicit pause.request; draining admitted months'
+        remaining=deadline-time.monotonic()
+        if remaining <= allowance:
+            policy='configured drain interval with durable partial checkpoints' if args.checkpoint_dir else '130% of longest completed month, with configured minimum'
+            return f'wall-time admission cutoff; {remaining/3600:.2f} hours remain, drain allowance {allowance/3600:.2f} hours ({policy})'
+        return False
     try:
         result=fetch_contexts(requests,args.destination,config,args.scratch,True,paused,finished,deadline=deadline)
     except BaseException as exc:
         if 'GOES intentional pause:' in str(exc):
-            write_json(output/'paused.json',{'status':'paused','reason':str(exc),'completed_months':len(completed)})
+            detail={'status':'paused','reason':str(exc),'completed_months':len(completed),
+                'elapsed_seconds':time.perf_counter()-started,'maximum_hours':args.max_hours,
+                'checkpoint_dir':args.checkpoint_dir,
+                'recovery':'Verified monthly archives and published partial checkpoints survive; uncheckpointed node-local work does not'}
+            print(f'GOES intentionally paused: {detail["reason"]}',flush=True)
+            write_json(output/'paused.json',detail)
             return 75
         write_json(output/'failure.json',{'status':'failed','error':f'{type(exc).__name__}: {exc}'})
         raise
     summary={'status':'paused' if result['paused'] or args.stop_after_month else 'complete',
-        'completed_months':len(completed),'months':sorted(completed,key=lambda r:r['start']),
+        'completed_months':len(completed),
+        'months':[{'start':r['start'],'end_excluded':r['end_excluded'],'status':r['status'],
+                   'archives':len(r.get('archives',[])), 'read_bytes':r.get('read_bytes',0),
+                   'stored_bytes':r.get('stored_bytes',0),'wall_seconds':r.get('wall_seconds',0)}
+                  for r in sorted(completed,key=lambda r:r['start'])],
         'elapsed_seconds':time.perf_counter()-started,'global_config':config.manifest(),
         'global_metrics':result['global_metrics'],'pause_reason':result.get('pause_reason')}
     write_json(output/'summary.json',summary)
-    if summary['status']=='paused':write_json(output/'paused.json',summary);return 75
+    if summary['status']=='paused':
+        detail={k:v for k,v in summary.items() if k not in ('months','global_metrics')}
+        detail['reason']=result.get('pause_reason') or 'requested stop-after-month boundary'
+        detail.update(checkpoint_dir=args.checkpoint_dir,summary_path=str(output/'summary.json'))
+        print(f'GOES intentionally paused: {detail["reason"]}',flush=True)
+        write_json(output/'paused.json',detail)
+        return 75
     return 0
 
 if __name__ == "__main__":

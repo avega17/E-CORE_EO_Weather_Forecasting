@@ -130,6 +130,12 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                     raise IOError("Existing monthly archive hash mismatch")
         rows = _archive_rows(selection, assets, prior)
         if rows and all(row["kind"] == "old" for row in rows):
+            if selection.source == 'goes' and os.getenv('ECORE_GOES_CHECKPOINT_ROOT'):
+                # An interrupted cleanup must not retain duplicate recovery
+                # data after the final ZIP itself has passed reuse validation.
+                identity = hashlib.sha256(json.dumps({'target': str(target.resolve()),
+                    'ids': [r['asset_id'] for r in rows]}, sort_keys=True).encode()).hexdigest()[:24]
+                shutil.rmtree(Path(os.environ['ECORE_GOES_CHECKPOINT_ROOT']) / f'goes-cmipf-{identity}', ignore_errors=True)
             return {"path": str(target / "raw.zarr.zip"), "status": "reused",
                     "observations": len(rows), "stored_bytes": prior.get("stored_bytes", 0),
                     "read_bytes": 0, "write_seconds": 0, "assets": prior.get("assets", [])}
@@ -147,10 +153,19 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                   if resumable else Path(tempfile.mkdtemp(prefix="ecore-month-", dir=scratch)))
         parent.mkdir(parents=True, exist_ok=True)
         saved = {}
+        durable = None
         if resumable:
             from .checkpoint_recovery import recover
             recovery=recover(parent,rows)
             if recovery:print(f"Recovered scratch: {recovery}",flush=True)
+        if native and os.getenv('ECORE_GOES_CHECKPOINT_ROOT'):
+            from .durable_checkpoints import DurableBatches
+            durable = DurableBatches(os.environ['ECORE_GOES_CHECKPOINT_ROOT'], parent, rows,
+                float(os.getenv('ECORE_GOES_CHECKPOINT_FRACTION', '.25')))
+            restored = durable.restore()
+            if restored:
+                recover(parent, rows)
+                print(f'Restored {restored}/{len(rows)} GOES C{band:02} scans from Eagle checkpoints', flush=True)
         if resumable:
             for batch_path in sorted(parent.glob("batch-*.json")):
                 batch = json.loads(batch_path.read_text())
@@ -162,6 +177,7 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
         metrics = json.loads((parent / "progress.json").read_text()) if resumable and (parent / "progress.json").is_file() else {}
         metrics = {k:v for k,v in metrics.items() if k not in ("asset_ids","next_index","product","band")}
         metrics.update(attempt_started_at=time.time())
+        if durable:metrics['durable_checkpoint_observations']=durable.count
         initial_read_bytes = metrics.get('read_bytes', 0)
         success = False
         directory, packed = parent / "raw.zarr", parent / "raw.zarr.zip"
@@ -324,6 +340,14 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                             "target":str(target), "month":rows[0]["time"][:7], "selected":len(rows), **metrics})
                         if checkpoint_callback:
                             checkpoint_callback([r["asset_id"] for r in actual_rows[begin:index+1]])
+                        if durable:
+                            checkpoint_started = time.perf_counter()
+                            if durable.publish(index+1):
+                                metrics['durable_checkpoint_observations'] = durable.count
+                                metrics['durable_checkpoint_seconds'] = metrics.get('durable_checkpoint_seconds', 0) + time.perf_counter()-checkpoint_started
+                                print(f'Durable GOES C{band:02} checkpoint: {durable.count}/{len(rows)} scans', flush=True)
+                                state=json.loads((parent/'progress.json').read_text())
+                                _checkpoint(parent/'progress.json',{**state, **metrics})
                         if read_mode == "async_pipeline":
                             from .goes_staging import retire_committed
                             retire_committed(parent/"source-cache", [r["asset_id"] for r in actual_rows[begin:index+1]])
@@ -362,6 +386,8 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                          actual_rows, selection, target, band, prior)
             metrics.update(finalizer(*arguments) if finalizer else _finalize_archive(*arguments))
             success = True
+            if durable:
+                durable.discard_after_completion()
             metrics.update(peak_rss_bytes=memory.peak,writer_cpu_seconds=time.process_time()-cpu_started,
                 timing_scope="write_seconds includes source acquisition, packing and verification; per-writer lineage RSS")
             return {"path": str(target / "raw.zarr.zip"), "status": "saved", **metrics,
@@ -376,6 +402,15 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
             memory.__exit__()
             if io is not None and hasattr(io, "close"):
                 io.close()
+            if durable and not success and (parent/'progress.json').is_file():
+                # A supported cancellation can save the latest verified batch,
+                # even before the next quarter. Sudden node loss still falls
+                # back to the last fully published durable part.
+                try:
+                    count=json.loads((parent/'progress.json').read_text())['next_index']
+                    durable.publish(count,force=True)
+                except Exception as exc:
+                    print(f'Partial checkpoint could not advance: {type(exc).__name__}: {exc}; previous durable parts retained',flush=True)
             if success or not resumable:
                 shutil.rmtree(parent, ignore_errors=True)
 

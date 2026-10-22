@@ -1,12 +1,16 @@
 # NOAA radar and satellite subsets for Puerto Rico
 
-> GOES is paused after verified December 2022 archives. Its next chronological
+> Workstation GOES is paused after verified December 2022 archives. Its next chronological
 > continuation uses two normal month owners plus one C02-only tail. See
 > [current operating settings](docs/goes_parallel_pipeline.md).
 
 For Polaris startup failures or empty PBS output, use the
 [short interactive debugging procedure](docs/study_jobs.md#debugging-a-goes-job-that-ends-without-output).
 PBS jobs do not require commit checks or a clean Git checkout.
+Polaris GOES now uses three normal month owners and durable incremental partial
+checkpoints, so a later allocation can restore verified partial work. See
+[walltime and resubmission](docs/study_jobs.md#capacity-walltime-and-resubmission).
+
 Source [the Polaris configuration](jobs/polaris.env.sh) for non-sensitive job
 settings and an automatically refreshed project-quota estimate.
 

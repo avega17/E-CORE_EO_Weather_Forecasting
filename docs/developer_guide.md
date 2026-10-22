@@ -132,6 +132,16 @@ checks remain required. See the setup and submission commands in
 
 ## PBS date handling and GOES portability
 
+GOES study jobs now use three normal month owners plus one C02-only tail on
+Polaris. Global download/read limits remain unchanged; workstation defaults are
+separate. The PBS wrapper enables `--checkpoint-dir` with
+`--checkpoint-fraction .25` for incremental recovery files on Eagle. Restoring
+them verifies file hashes and source-array checksums before new NOAA reads.
+They assume the current unsharded one-frame chunks and never claim monthly
+completion. Do not reuse this mechanism for partial shards without revising
+and testing the checkpoint format. See [resubmission](study_jobs.md#capacity-walltime-and-resubmission)
+for the updated deadline policy and compact pause records.
+
 The GOES runner accepts explicit `--start`/`--end` UTC bounds; combining these
 with a specific half-year phase is rejected. It clips both boundary months and
 checks interval, bands and ROI before reusing a run checkpoint. Archive identity
