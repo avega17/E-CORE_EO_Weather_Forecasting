@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import statistics
 import tempfile
 import time
 
@@ -107,6 +108,81 @@ def duration(seconds):
     return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
 
 
+def aggregate_bandwidth(data, cache, now, scope='all'):
+    """Combine bytes over shared elapsed time, never add per-band rates.
+
+    Run averages require current-attempt counters. Medians use at most sixty
+    fresh snapshot intervals; repeated/stale snapshots add no fake zero rates.
+    """
+    tasks=data.get('tasks',[])
+    ids={t.get('run_id') for t in tasks}
+    runs=[r for r in data.get('runs',[]) if r['run_id'] in ids]
+    if not runs:
+        data['aggregate_bandwidth']={'scope':'No matching run counters available'}
+        return
+    run=max(runs,key=lambda r:r.get('started_at') or r.get('heartbeat') or 0)
+    current={}
+    complete=True
+    for task in tasks:
+        if task.get('run_id')!=run['run_id'] or task['status']=='queued':continue
+        metric=task.get('metrics',{})
+        started=metric.get('attempt_started_at')
+        if started is not None and run.get('started_at') is not None and started<run['started_at']:
+            continue  # A recovered, not-yet-admitted previous attempt.
+        value=metric.get('attempt_read_bytes')
+        if task['status']=='complete':value=metric.get('read_bytes')
+        if value is None:
+            complete=False
+            value=metric.get('read_bytes')  # Deltas remain usable; run total does not.
+        if value is not None:
+            previous=current.get(task['task_id'])
+            row={'bytes':value,'started_at':started,'updated_at':task.get('updated_at',0)}
+            if previous is None or row['updated_at']>=previous['updated_at']:current[task['task_id']]=row
+    stamp=data.get('snapshot_at',now)
+    until=min(stamp,run['ended_at']) if run.get('ended_at') is not None else stamp
+    elapsed=until-run['started_at'] if run.get('started_at') is not None else 0
+    result={'run_id':run['run_id'],'scope':'matching displayed tasks, current run; returned NOAA bytes, not NIC traffic',
+        'run_average_mbps':sum(r['bytes'] for r in current.values())*8/elapsed/1e6 if complete and current and elapsed>0 else None}
+    windows=cache.setdefault('aggregate_windows',{})
+    old=windows.get(scope)
+    if old is None or old['run_id']!=run['run_id']:
+        old={'run_id':run['run_id'],'stamp':stamp,'counters':current,'intervals':[]}
+        windows[scope]=old
+    elif stamp>old['stamp'] and current:
+        before=old['counters'];delta=0;reset=bool(set(before)-set(current))
+        for key,row in current.items():
+            if key in before:
+                change=row['bytes']-before[key]['bytes']
+                if change<0:reset=True
+                delta+=max(0,change)
+            elif row['started_at'] is not None and row['started_at']>=old['stamp']:
+                delta+=row['bytes']
+            else:reset=True  # Unknown initial bytes must not inflate a rate.
+        if reset:old['intervals']=[]
+        else:old['intervals']=(old['intervals']+[{'seconds':stamp-old['stamp'],'bytes':delta}])[-60:]
+        old.update(stamp=stamp,counters=current)
+    intervals=old['intervals'];seconds=sum(r['seconds'] for r in intervals)
+    result.update(window_seconds=seconds,intervals=len(intervals),
+        recent_average_mbps=sum(r['bytes'] for r in intervals)*8/seconds/1e6 if seconds else None,
+        recent_median_mbps=statistics.median(r['bytes']*8/r['seconds']/1e6 for r in intervals) if intervals else None)
+    data['aggregate_bandwidth']=result
+    if len(windows)>4:
+        cache['aggregate_windows']=dict(sorted(windows.items(),key=lambda r:r[1]['stamp'])[-4:])
+
+
+def _save_cache(cachefile,cache):
+    temporary=None
+    try:
+        cachefile.parent.mkdir(parents=True,exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w',dir=cachefile.parent,delete=False) as file:
+            temporary=Path(file.name)
+            json.dump(cache,file,separators=(',',':'),allow_nan=False)
+        os.replace(temporary,cachefile)
+    except OSError as exc:return str(exc)
+    finally:
+        if temporary is not None:temporary.unlink(missing_ok=True)
+
+
 def completed_manifest_status(source=None, roots=None):
     """Read compact durable month receipts when no index snapshot is available.
 
@@ -153,6 +229,12 @@ def completed_manifest_status(source=None, roots=None):
 def render(data, now):
     stamp=datetime.fromtimestamp(now,timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     lines=[f'Fetch status | {stamp}']
+    memory=data.get('memory',{})
+    if memory.get('latest'):
+        sample=memory['latest'];gib=1024**3
+        age=max(0,now-sample['sampled_at'])
+        lines.append(f'Memory: summed RSS {sample["rss_bytes"]/gib:.1f} GiB; sampled peak {memory["sampled_peak_rss_bytes"]/gib:.1f} GiB; '
+            f'node available {sample["node_available_bytes"]/gib:.1f} GiB; sample {int(age)}s old (shared pages may be counted twice).')
     for run in data.get('runs',[])[:5]:
         age=max(0,now-(run.get('heartbeat') or now))
         started=run.get('started_at')
@@ -192,6 +274,15 @@ def render(data, now):
         'watch = time and byte change since monitoring began, including waits. Not summed parallel download time.',
         'Returned GiB: attempt bytes, or cumulative build counter for watch/unavailable. Watch rates use its change.',
         'Counts and counters may lag up to 30s. Date filters select whole intersecting months; end is exclusive.'])
+    aggregate=data.get('aggregate_bandwidth')
+    if aggregate:
+        def rate(key):
+            value=aggregate.get(key)
+            return f'{value:,.1f} Mb/s' if value is not None else '--'
+        lines.extend(['',f'Aggregate returned-data rate: run average {rate("run_average_mbps")}; recent median {rate("recent_median_mbps")}.',
+            f'Recent average {rate("recent_average_mbps")} over {aggregate.get("intervals",0)} fresh snapshot intervals / '
+            f'{duration(aggregate.get("window_seconds",0))}. Includes waits; not NIC traffic.'])
+        if not aggregate.get('intervals'):lines.append('Median needs at least two fresh snapshots; leave watch running. Counter/run changes restart its window.')
     return '\n'.join(lines)
 
 
@@ -208,10 +299,14 @@ def main(argv=None, *, index_path=None, source=None):
     from .index import database_path
     from .jobs import status
     filename=database_path(index_path)
-    cachefile=Path(args.cache) if args.cache else filename.with_name('status-monitor.json')
+    scope=json.dumps([source,args.start,args.end,args.product,args.band])
+    if args.progress and not args.cache:
+        key=hashlib.sha256((str(Path(args.progress).resolve())+scope).encode()).hexdigest()[:16]
+        cachefile=Path(tempfile.gettempdir())/f'ecore-status-{getattr(os,"getuid",lambda:0)()}-{key}.json'
+    else:cachefile=Path(args.cache) if args.cache else filename.with_name('status-monitor.json')
     try:cache=json.loads(cachefile.read_text())
     except (OSError,ValueError):cache={}
-    identity=hashlib.sha256(str(filename).encode()).hexdigest()
+    identity=hashlib.sha256((str(filename)+'|'+str(args.progress)).encode()).hexdigest()
     if cache.get('index_identity')!=identity:cache={'index_identity':identity}
     now=time.time()
     if args.progress:
@@ -226,7 +321,11 @@ def main(argv=None, *, index_path=None, source=None):
                 if run.get('status')=='running':run['status']='unknown'
         data=observe(data,cache,now)
         data['tasks']=filter_tasks(data.get('tasks',[]),source,args.start,args.end,args.product,args.band)
+        aggregate_bandwidth(data,cache,now,scope)
+        error=_save_cache(cachefile,cache)
+        if error:data['cache_warning']=error
         print(json.dumps(data,indent=2,default=str) if args.json else render(data,now))
+        if error and not args.json:print('Monitor cache unavailable; use a writable --cache path for aggregate median: '+error)
         return 0
     data=status(index_path)
     if data.get('status')=='index_unavailable':
@@ -239,18 +338,12 @@ def main(argv=None, *, index_path=None, source=None):
     else:
         data=observe(data,cache,now)
         cache.update(snapshot=data,snapshot_at=now)
-        temporary=None
-        try:
-            cachefile.parent.mkdir(parents=True,exist_ok=True)
-            with tempfile.NamedTemporaryFile(mode='w',dir=cachefile.parent,delete=False) as file:
-                temporary=Path(file.name)
-                json.dump(cache,file,separators=(',',':'),allow_nan=False)
-            os.replace(temporary,cachefile)
-        except OSError as exc:data['cache_warning']=str(exc)
-        finally:
-            if temporary is not None:temporary.unlink(missing_ok=True)
     try:data['tasks']=filter_tasks(data.get('tasks',[]),source,args.start,args.end,args.product,args.band)
     except ValueError as exc:parser.error(str(exc))
+    if data.get('status')!='index_unavailable':
+        aggregate_bandwidth(data,cache,now,scope)
+        error=_save_cache(cachefile,cache)
+        if error:data['cache_warning']=error
     print(json.dumps(data,indent=2,default=str) if args.json else render(data,now))
     if data.get('cache_warning') and not args.json:print('Monitor cache unavailable; averages require a writable --cache path.')
     return 0

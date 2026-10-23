@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from ecore_weather.job_status import observe,filter_tasks,render,main
+from ecore_weather.job_status import observe,filter_tasks,render,main,aggregate_bandwidth
 
 
 def data(counter=100_000_000,state='checkpointed',run_id='run'):
@@ -119,3 +119,82 @@ def test_old_failed_attempt_waits_when_new_run_owns_same_month():
     current=data(run_id='new')
     snapshot['runs']+=current['runs'];snapshot['tasks']+=current['tasks']
     assert observe(snapshot,{},100)['tasks'][0]['display_status']=='waiting'
+
+
+def bandwidth_data(stamp,first,second,state='checkpointed'):
+    from copy import deepcopy
+    snapshot=data(first,state=state)
+    snapshot.update(snapshot_at=stamp)
+    snapshot['runs'][0]['started_at']=0
+    snapshot['tasks'][0]['metrics'].update(attempt_started_at=1,attempt_read_bytes=first)
+    other=deepcopy(snapshot['tasks'][0]);other.update(task_id='second',band=13)
+    other['metrics'].update(read_bytes=second,attempt_read_bytes=second)
+    snapshot['tasks'].append(other)
+    return snapshot
+
+
+def test_aggregate_uses_common_elapsed_time_and_median_of_fresh_intervals():
+    cache={}
+    first=bandwidth_data(100,100_000_000,100_000_000)
+    aggregate_bandwidth(first,cache,100)
+    assert first['aggregate_bandwidth']['run_average_mbps']==16
+    assert first['aggregate_bandwidth']['recent_median_mbps'] is None
+    next_=bandwidth_data(110,110_000_000,120_000_000)
+    aggregate_bandwidth(next_,cache,110)
+    assert next_['aggregate_bandwidth']['recent_average_mbps']==24
+    assert next_['aggregate_bandwidth']['recent_median_mbps']==24
+    # Refreshing the same durable snapshot is not an interval of zero transfer.
+    aggregate_bandwidth(next_,cache,115)
+    assert next_['aggregate_bandwidth']['intervals']==1
+    final=bandwidth_data(120,130_000_000,140_000_000,state='complete')
+    aggregate_bandwidth(final,cache,120)
+    assert final['aggregate_bandwidth']['recent_median_mbps']==28
+    assert final['aggregate_bandwidth']['recent_average_mbps']==28
+    assert 'run average' in render(final,120)
+
+
+def test_aggregate_resets_on_counter_reset_and_does_not_mix_resumed_attempts():
+    cache={}
+    for stamp,value in [(100,100_000_000),(110,110_000_000)]:
+        snapshot=bandwidth_data(stamp,value,value);aggregate_bandwidth(snapshot,cache,stamp)
+    reset=bandwidth_data(120,1,1);aggregate_bandwidth(reset,cache,120)
+    assert reset['aggregate_bandwidth']['intervals']==0
+    assert reset['aggregate_bandwidth']['recent_median_mbps'] is None
+    previous=data();previous['tasks'][0]['metrics'].update(attempt_started_at=10,attempt_read_bytes=1_000_000)
+    previous['runs'][0]['started_at']=200
+    aggregate_bandwidth(previous,{},210)
+    assert previous['aggregate_bandwidth']['run_average_mbps'] is None
+
+
+def test_aggregate_deduplicates_physical_task_and_ignores_historical_attempt_metrics():
+    from copy import deepcopy
+    snapshot=bandwidth_data(100,100_000_000,100_000_000,'complete')
+    snapshot['tasks'][0]['attempt_metrics']={'read_bytes':10**15,'write_seconds':1}
+    snapshot['tasks'].append(deepcopy(snapshot['tasks'][0]))
+    aggregate_bandwidth(snapshot,{},100)
+    assert snapshot['aggregate_bandwidth']['run_average_mbps']==16
+
+
+def test_remote_progress_cache_persists_between_watch_invocations(tmp_path,monkeypatch,capsys):
+    progress=tmp_path/'progress.json';cache=tmp_path/'monitor.json'
+    for stamp,value in [(100,100_000_000),(110,110_000_000)]:
+        progress.write_text(json.dumps(bandwidth_data(stamp,value,value)))
+        monkeypatch.setattr('ecore_weather.job_status.time.time',lambda:stamp)
+        assert main(['--progress',str(progress),'--cache',str(cache),'--json'],
+                    index_path=tmp_path/'index.duckdb',source='goes')==0
+        result=json.loads(capsys.readouterr().out)
+    assert cache.is_file() and not (tmp_path/'index.duckdb').exists()
+    assert result['aggregate_bandwidth']['recent_median_mbps']==16
+
+
+def test_aggregate_new_task_has_no_counter_jump_and_history_is_bounded():
+    cache={}
+    for stamp in range(100,180):
+        snapshot=bandwidth_data(stamp,stamp*1_000_000,stamp*1_000_000)
+        aggregate_bandwidth(snapshot,cache,stamp)
+    assert snapshot['aggregate_bandwidth']['intervals']==60
+    extra=data()['tasks'][0].copy();extra.update(task_id='unknown-start',metrics={'read_bytes':10**12})
+    snapshot['tasks'].append(extra);snapshot['snapshot_at']=180
+    aggregate_bandwidth(snapshot,cache,180)
+    assert snapshot['aggregate_bandwidth']['intervals']==0
+    assert snapshot['aggregate_bandwidth']['run_average_mbps'] is None

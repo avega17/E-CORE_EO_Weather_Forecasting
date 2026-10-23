@@ -307,7 +307,10 @@ with **three normal month owners and one C02 tail**, **64 global asynchronous
 full-file downloads**, **eight local HDF5 crop processes** and **sixteen C02
 range-reader processes**. Two workers finalize closed stores. The global ROI
 budget is 4 GiB and staged-source capacity is 32 GiB; the summed job-process RSS
-ceiling is 64 GiB. These limits share the whole job, not each band or month.
+allowance is 384 GiB, with warnings at 256 GiB and a checkpointed pause for
+sustained memory pressure. The bounded pilot retains a strict 64 GiB ceiling.
+See [the RAM policy and measurements](study_jobs.md#goes-memory-protection-and-recovery).
+These limits share the whole job, not each band or month.
 
 This exposes more work to the 32-core/64-thread Polaris node. It is not a claim
 that 64 downloads use 64 CPU cores, or that a dataset's size proves the benefit

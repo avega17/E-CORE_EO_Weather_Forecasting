@@ -1,3 +1,33 @@
+# Polaris GOES memory stop — October 23, 2026
+
+The user-supplied tail for **7776485** shows complete eight-band archives for
+May–July 2021 and admission of August–October. It ended with **exit 1** when
+summed process RSS exceeded a self-imposed 64 GiB ceiling by about 1.05 MiB.
+There is no node-OOM or PBS memory-limit evidence in that excerpt. It contains
+no exact durable partial counts for the newly admitted months.
+
+Production now permits 384 GiB summed RSS, warns at 256 GiB, and uses a
+checkpointed pause for sustained pressure or critically low available node RAM.
+One bounded atomic `memory.json` and the durable status snapshot report node
+availability and the largest processes. Pilot and benchmark ceilings remain
+strict. The concurrency, source arrays, archive layout, Eagle budget and
+workstation settings are unchanged. No remote restart or long-run RAM result
+is claimed from local implementation tests. See [policy and recovery commands](study_jobs.md#goes-memory-protection-and-recovery).
+
+The status footer also reports run aggregate average and recent average/median
+returned-data rates. Remote `--progress` monitoring now persists its bounded
+local sampling cache across `watch` invocations; duplicated snapshots and prior
+attempt counters cannot manufacture a speed. These are application byte-counter
+measurements, not NIC bandwidth or a whole-study median.
+
+Local validation: **169 passed, one skipped** across RAM-policy/PBS controls,
+aggregate bandwidth/status, exact native archives, shared scheduling and durable
+recovery. Tests reproduce the supplied 64 GiB crossing with synthetic counters,
+exercise sustained and transient pressure, then cancel a real local writer and
+resume verified data with fresh scratch and zero extra sample downloads.
+Shell syntax and Python compilation also passed. No new network benchmark or
+Polaris submission ran during this correction.
+
 # GOES pause and cross-job recovery — October 22, 2026
 
 The user-supplied `7770028` pause record reports all 32 January–April 2021

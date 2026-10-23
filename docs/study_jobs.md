@@ -430,7 +430,10 @@ See the [pipeline explanation](goes_parallel_pipeline.md) and
 `jobs/goes_polaris.json` uses three normal month owners plus one C02-only
 owner, 64 global async downloads, eight local HDF5 readers, sixteen C02 range
 readers and two finalizers. ROI queues share 4,096 MiB; staging shares 32,768 MiB.
-The job-process RSS ceiling is 64 GiB. These limits do not multiply by month or
+The production summed-RSS allowance is now 384 GiB, with a warning at 256 GiB
+and checkpointed handling of sustained pressure; the bounded pilot retains its
+strict 64 GiB ceiling. See [memory protection](#goes-memory-protection-and-recovery).
+These limits do not multiply by month or
 band. Async requests are not CPU threads. Independent HDF5 reader processes,
 writers and finalizers also use the node's CPU resources.
 
@@ -560,6 +563,26 @@ snapshot is published after each verified band and at shutdown; no live DuckDB
 WAL is copied to Eagle. Status can report a stale remote heartbeat without
 pretending a compute-node PID is accessible on the login node.
 
+The bottom of the status table now reports **aggregate returned-data bandwidth**:
+the current run's average, plus a recent average and median. The run average
+divides the displayed tasks' current-attempt bytes by elapsed time since that
+run started. It excludes old attempts and does not add per-band average rates.
+When current-attempt counters are unavailable, the run average stays blank.
+
+The recent statistics need at least two different progress snapshots. Leave
+`watch` running: they use at most 60 fresh snapshot intervals. The recent
+average is total byte change divided by total interval time; the median is the
+middle interval rate. Re-reading the same snapshot adds no artificial zero
+sample. Counter resets, unknown newly appearing counters and changed runs
+restart the recent window. Date/product/band filters limit the aggregate to
+the displayed tasks. These rates include idle, cropping and writing time;
+they are not a NIC measurement or a median over the whole study.
+
+For `--progress`, one small monitor cache defaults to the login node's temporary
+directory, separate from Eagle research data and the live DuckDB file. Use
+`--cache /path/to/writable/monitor.json` for an explicit location. Deleting that
+cache only resets the recent statistics; it cannot affect fetching or archives.
+
 ### Capacity, walltime and resubmission
 
 The **400 decimal GB cap** covers GOES arrays and GOES state on Eagle, including
@@ -632,6 +655,87 @@ checkpoint options; an already queued job holds its earlier script. Do not pull
 changes into a checkout while another fetch is using it. Keep the same dates
 to reuse January–April automatically. Quota checks still apply to both recovery
 parts and final archives.
+
+### GOES memory protection and recovery
+
+Job **7776485** ended with exit **1**, not an intentional pause: our application
+raised `MemoryError` at 68,720,574,464 bytes of summed RSS, only **1.05 MiB**
+above its old 64 GiB ceiling. This was an application limit carried into
+production, not evidence that the node exhausted its RAM or that PBS killed it.
+The supplied log shows May, June and July 2021 completed all eight band archives
+before August–October were admitted. The Zarr metadata warnings were unrelated
+to that exception. Exact unfinished counts require the saved checkpoints.
+
+**RSS (resident set size)** is the physical RAM mapped by a process. Our total
+adds the coordinator and its descendants; it includes Python, Torch, HDF5,
+compression, metadata and queued arrays, not only image pixels. Shared library
+pages can be counted in several processes. Therefore this total can exceed
+the unique RAM used by the job. It is also separate from GPU VRAM and from the
+4 GiB ROI queue. The [psutil explanation](https://psutil.io/glossary/#rss) covers
+this distinction. [Polaris nodes have 512 GiB RAM](https://docs.alcf.anl.gov/polaris/#polaris-compute-nodes).
+
+The revised `jobs/goes_polaris.json` keeps the existing concurrency and queues:
+
+| Production condition | Response |
+| --- | --- |
+| Summed RSS reaches 256 GiB | Warn and continue; retain a memory sample |
+| Summed RSS stays above 384 GiB for 60 seconds | Request checkpointed shutdown, exit 75 |
+| Node-available RAM stays below 32 GiB for 60 seconds | Request checkpointed shutdown, exit 75 |
+| Node-available RAM drops below 8 GiB | Request checkpointed shutdown immediately |
+| A brief spike above 384 GiB that recovers | Continue; reset the pressure timer |
+
+These are starting safety margins, not measured optimal settings. The 384 GiB
+allowance leaves substantial room below the node's installed memory. Available
+RAM includes memory the OS can reclaim; it is more useful than completely free
+RAM when file caching is heavy. Readings are node-wide, not a promise about an
+independently imposed PBS/OS memory limit. A single supplied RSS value cannot
+establish whether there is a memory leak or which process consumes most memory.
+
+Samples are taken every five seconds. One atomically replaced
+`state/goes/study/memory.json` contains the latest/peak sampled summed RSS,
+available/total node RAM, twelve recent aggregate samples and the twelve largest
+processes. It contains no command arguments or credentials. The same compact
+data appears in `progress.json`, and the normal `dataset_jobs.py status goes
+--progress ...` table now prints RAM use and available node memory above the
+archive rows. Direct CLI study runs also load the profile's memory settings;
+explicit benchmark limits take precedence.
+
+When a production memory threshold is reached, the coordinator cancels further
+reads and lets writers attempt to publish the latest verified eight-scan prefix
+to Eagle. Earlier durable parts and completed archives remain protected. A
+sudden kill or slow shutdown can still lose work after the last published part.
+This does not turn a real corrupt-array, disk or network error into success.
+The bounded pilot still fails at its separate 64 GiB RSS limit, and scheduler
+benchmarks retain their existing 48 GiB budget; they do not inherit the relaxed
+production policy.
+
+Other stop conditions were reviewed: the **400 decimal GB Eagle cap** remains
+the agreed storage budget, and temporary checkpoint/publication copies must fit
+within it. The 32 GiB staging limit concerns disk, and the 4 GiB ROI limit bounds
+queued arrays rather than total process RAM. Neither is increased simply because
+the node has more RAM. The actual PBS walltime, four-minute shutdown reserve,
+fifteen-minute admission cutoff and scientific integrity checks remain in force.
+
+For a quick list of durable partial counts, without reading image arrays:
+
+```bash
+"$ECORE_PYTHON" - <<'PY'
+import json, os, pathlib, zipfile
+root = pathlib.Path(os.environ['ECORE_PROJECT_ROOT']) / 'ecore-weather/state/goes/study/partial-archives'
+print('Month    Band  Durable scans / selected')
+for path in sorted(root.glob('*/checkpoint.json')):
+    receipt = json.loads(path.read_text())
+    with zipfile.ZipFile(path.parent / receipt['parts'][-1]['file']) as archive:
+        progress = json.loads(archive.read('progress.json'))
+    print(f"{progress['month']}  C{progress['band']:02}  {receipt['next_index']:,} / {receipt['selected']:,}")
+PY
+```
+
+These are recorded durable counts, not a fresh array-integrity audit. Restoration
+checks the ZIP hashes and source-pixel checksums before reusing them. Reuse the
+same dates, destination and state on resubmission. Pull only when no active job
+uses that checkout, and submit a **fresh PBS wrapper** for the new environment
+settings; releasing an older queued script retains its old exported RSS limit.
 
 ### Debugging a GOES job that ends without output
 

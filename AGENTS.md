@@ -152,6 +152,17 @@ Keep explanations readable for researchers inheriting the work.
   The manual four-context pilot has a 32 GiB transfer ceiling; this sprint does
   not submit it. GOES study dates are 2021-01-01 to 2023-01-01, end excluded,
   with a 400 decimal GB cap for GOES Eagle data/state. MRMS PBS requests six hours.
+- Polaris GOES production RAM protection is separate from benchmark ceilings:
+  warn at 256 GiB summed RSS; pause after 60 seconds above 384 GiB RSS or below
+  32 GiB node-available RAM; below 8 GiB available, pause without the grace delay.
+  Sample every five seconds into one bounded memory.json and progress snapshot.
+  Summed RSS includes shared pages more than once; do not call it unique RAM,
+  VRAM, or the 4 GiB ROI queue. Memory pressure requests checkpointed exit 75,
+  not a benchmark MemoryError. Pilot/scheduler benchmark limits remain strict.
+- Status aggregate bandwidth is returned-data throughput over common elapsed
+  time, not a sum of per-band rates or NIC speed. Recent average/median use at
+  most sixty fresh snapshot intervals in the monitor's small local cache.
+  Repeated snapshots add no zero samples; run/counter changes reset the window.
 - GOES PBS study jobs publish incremental compressed partial checkpoints to
   Eagle approximately every 25% of a band-month (rounded to verified eight-scan
   batches). Restore them into local scratch on resubmission; never mark them as

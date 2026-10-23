@@ -425,6 +425,8 @@ def run_shared(plan,args,config):
     from .jobs_mrms import preflight
     preflight(args.destination)
     output=Path(args.output);output.mkdir(parents=True,exist_ok=True)
+    from .goes_memory import configure_study,MemoryGuard
+    configure_study(args.shared_profile,output/'memory.json')
     if args.checkpoint_dir:
         checkpoint_root=Path(args.checkpoint_dir).resolve()
         checkpoint_root.mkdir(parents=True,exist_ok=True)
@@ -455,6 +457,9 @@ def run_shared(plan,args,config):
         'start':plan[0]['start'],'end_excluded':plan[-1]['end_excluded'],
         'storage_cap_gb':args.storage_cap_gb,'resolved_profile':args.shared_profile,
         'checkpoint_dir':args.checkpoint_dir,'checkpoint_fraction':args.checkpoint_fraction,
+        'memory_policy':MemoryGuard.from_environment().summary()['policy'],
+        'rss_limit_bytes':int(os.getenv('ECORE_RSS_LIMIT_BYTES','0')),
+        'memory_report':os.getenv('ECORE_GOES_MEMORY_REPORT'),
         'maximum_hours':args.max_hours,'minimum_drain_minutes':args.drain_minutes})
     started=time.perf_counter();completed=[];requests=[];metadata={};segments_done={};durations=[]
     deadline=time.monotonic()+args.max_hours*3600
@@ -525,6 +530,7 @@ def run_shared(plan,args,config):
             detail={'status':'paused','reason':str(exc),'completed_months':len(completed),
                 'elapsed_seconds':time.perf_counter()-started,'maximum_hours':args.max_hours,
                 'checkpoint_dir':args.checkpoint_dir,
+                'memory_report':os.getenv('ECORE_GOES_MEMORY_REPORT'),
                 'recovery':'Verified monthly archives and published partial checkpoints survive; uncheckpointed node-local work does not'}
             print(f'GOES intentionally paused: {detail["reason"]}',flush=True)
             write_json(output/'paused.json',detail)

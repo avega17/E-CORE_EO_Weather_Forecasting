@@ -98,7 +98,8 @@ def test_empty_listing_is_distinguished_from_network_failure(monkeypatch):
 def isolate_limits(monkeypatch):
     names=('ECORE_GOES_LIMIT_LEDGER','ECORE_GOES_ACCOUNTING_ROOTS',
            'ECORE_SHARED_GOES','ECORE_GOES_PROGRESS','ECORE_GOES_CHECKPOINT_ROOT',
-           'ECORE_GOES_CHECKPOINT_FRACTION')
+           'ECORE_GOES_CHECKPOINT_FRACTION','ECORE_RSS_LIMIT_BYTES',
+           'ECORE_GOES_MEMORY_POLICY','ECORE_GOES_MEMORY_REPORT')
     for name in names:monkeypatch.delenv(name, raising=False)
     yield
     # configure() sets os.environ directly, including when the variable was
@@ -173,7 +174,16 @@ def test_goes_profile_is_global_and_not_mrms_threads():
     config=profile['global_config']
     assert (config['month_writers'],config['tail_months'])==(3,1)
     assert (config['download_concurrency'],config['local_readers'],config['range_readers'])==(64,8,16)
-    assert profile['job_memory_gib']==64
+    assert profile['job_memory_gib']==384 and profile['pilot_memory_gib']==64
+    assert profile['memory_policy']['mode']=='checkpoint_pause'
+
+
+@pytest.mark.parametrize('mode,limit,policy',[('study',384,'checkpoint_pause'),('pilot',64,'strict')])
+def test_goes_pbs_exports_distinct_memory_settings(pbs_environment,mode,limit,policy):
+    env={**pbs_environment,'ECORE_PBS_MODE':mode}
+    result=subprocess.run(['bash','jobs/polaris_goes.pbs'],env=env,capture_output=True,text=True,check=True)
+    assert f'Memory protection | RSS limit {limit} GiB' in result.stdout
+    assert f'"mode": "{policy}"' in result.stdout
 
 
 def test_pbs_scripts_parse_and_mrms_uses_six_hours():
@@ -333,6 +343,8 @@ def test_manual_pilot_four_contexts_reuses_and_cleans_own_archives(tmp_path,monk
     def fetch(requests,destination,config,scratch,*args,**kwargs):
         calls.append(len(requests));reports=[]
         assert len(requests)==4 and config.month_writers==3
+        assert int(os.environ['ECORE_RSS_LIMIT_BYTES'])==64*1024**3
+        assert json.loads(os.environ['ECORE_GOES_MEMORY_POLICY'])['mode']=='strict'
         for key,selection,_ in requests:
             archives=[]
             for band in goes.STORMSCOPE_BANDS:

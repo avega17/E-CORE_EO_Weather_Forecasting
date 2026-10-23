@@ -154,6 +154,7 @@ def main(argv=None):
     budget=Budget(output/'budget.json',int(args.budget_gib*1024**3))
     os.environ['ECORE_TRANSFER_BUDGET']=str(budget.path)
     os.environ['ECORE_RSS_LIMIT_BYTES']=str(48*1024**3)
+    os.environ['ECORE_GOES_MEMORY_POLICY']='{"mode":"strict"}'
     if args.handoff_only:
         from .goes_rollout import launch
         if json.loads((output/'suite.json').read_text()).get('status')!='complete':

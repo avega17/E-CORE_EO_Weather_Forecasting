@@ -52,7 +52,9 @@ def main(argv=None):
     if budget.summary()['limit'] != int(args.budget_gib*1024**3):
         parser.error('Existing pilot transfer ledger has a different limit; do not reset failed-attempt accounting')
     previous_rss=os.environ.get('ECORE_RSS_LIMIT_BYTES')
-    os.environ['ECORE_RSS_LIMIT_BYTES']=str(int(profile_data.get('job_memory_gib',64)*1024**3))
+    os.environ['ECORE_RSS_LIMIT_BYTES']=str(int(profile_data.get('pilot_memory_gib',64)*1024**3))
+    previous_policy=os.environ.get('ECORE_GOES_MEMORY_POLICY')
+    os.environ['ECORE_GOES_MEMORY_POLICY']='{"mode":"strict"}'
     previous=os.environ.get('ECORE_TRANSFER_BUDGET')
     os.environ['ECORE_TRANSFER_BUDGET']=str(ledger)
     selections=[]
@@ -113,6 +115,8 @@ def main(argv=None):
                                         'budget':budget.summary()})
         raise
     finally:
+        if previous_policy is None:os.environ.pop('ECORE_GOES_MEMORY_POLICY',None)
+        else:os.environ['ECORE_GOES_MEMORY_POLICY']=previous_policy
         if previous_rss is None:os.environ.pop('ECORE_RSS_LIMIT_BYTES',None)
         else:os.environ['ECORE_RSS_LIMIT_BYTES']=previous_rss
         if previous is None:os.environ.pop('ECORE_TRANSFER_BUDGET',None)

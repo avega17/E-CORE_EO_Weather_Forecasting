@@ -10,6 +10,9 @@ PBS jobs do not require commit checks or a clean Git checkout.
 Polaris GOES now uses three normal month owners and durable incremental partial
 checkpoints, so a later allocation can restore verified partial work. See
 [walltime and resubmission](docs/study_jobs.md#capacity-walltime-and-resubmission).
+Production RAM protection is separate from bounded benchmark limits; see
+[the RSS explanation and recovery guide](docs/study_jobs.md#goes-memory-protection-and-recovery)
+after job 7776485's application-imposed 64 GiB stop.
 
 Source [the Polaris configuration](jobs/polaris.env.sh) for non-sensitive job
 settings and an automatically refreshed project-quota estimate.

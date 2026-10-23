@@ -110,7 +110,7 @@ def launch(choice_path, output='results/study-goes-native', scratch='results/stu
     session='ecore_goes_chronological'
     if subprocess.run(['tmux','has-session','-t',session],capture_output=True).returncode==0:
         raise RuntimeError('Existing chronological session must exit before launch')
-    shell='unset ECORE_TRANSFER_BUDGET ECORE_RSS_LIMIT_BYTES; exec '+shlex.join(command)
+    shell='unset ECORE_TRANSFER_BUDGET ECORE_RSS_LIMIT_BYTES ECORE_GOES_MEMORY_POLICY ECORE_GOES_MEMORY_REPORT; exec '+shlex.join(command)
     subprocess.run(['tmux','new-session','-d','-s',session,'-c',str(Path.cwd()),shell],check=True)
     pid=int(subprocess.check_output(['tmux','display-message','-p','-t',session,'#{pane_pid}'],text=True).strip())
     record={'status':'launched','launched_at':time.time(),'snapshot':str(root),

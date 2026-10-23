@@ -48,7 +48,10 @@ if test -f "$state_root/archive_index.duckdb"; then
 fi
 export ECORE_GOES_ACCOUNTING_ROOTS="[\"$ECORE_PROJECT_ROOT/ecore_eo_datasets/goes\",\"$ECORE_PROJECT_ROOT/ecore-weather/goes-pilot-archives/goes\",\"$ECORE_PROJECT_ROOT/ecore-weather/state/goes\"]"
 if ! test -r "$profile"; then ecore_fail "GOES profile is not readable: $profile"; fi
-export ECORE_RSS_LIMIT_BYTES="$("$ECORE_PYTHON" -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["job_memory_gib"]*1024**3))' "$profile")"
+export ECORE_RSS_LIMIT_BYTES="$("$ECORE_PYTHON" -c 'import json,sys; p=json.load(open(sys.argv[1])); print(int(p.get("pilot_memory_gib",64) if sys.argv[2]=="pilot" else p["job_memory_gib"])*1024**3)' "$profile" "$ECORE_PBS_MODE")"
+export ECORE_GOES_MEMORY_POLICY="$("$ECORE_PYTHON" -c 'import json,sys; p=json.load(open(sys.argv[1])); print(json.dumps({"mode":"strict"} if sys.argv[2]=="pilot" else p.get("memory_policy",{})))' "$profile" "$ECORE_PBS_MODE")"
+export ECORE_GOES_MEMORY_REPORT="$state_root/memory.json"
+ecore_note "Memory protection | RSS limit $((ECORE_RSS_LIMIT_BYTES/1073741824)) GiB | $ECORE_GOES_MEMORY_POLICY"
 "$ECORE_PYTHON" - "$profile" "$destination" "$scratch_root" <<'PY'
 import json, os, shutil, sys
 from pathlib import Path

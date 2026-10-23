@@ -252,6 +252,44 @@ def test_verified_batch_resume_uses_same_identity_with_new_topology(tmp_path,mon
     assert report['read_bytes']==0 and report['monthly_archives'][0]['status']=='saved'
 
 
+def test_memory_pause_retains_verified_data_across_fresh_scratch(tmp_path,monkeypatch):
+    import json,shutil
+    from ecore_weather import goes_shared
+    from ecore_weather.goes_memory import MemoryGuard,MemoryPolicy,GIB
+    from ecore_weather.goes_limits import IntentionalPause
+    _,assets,_=fake_sources(monkeypatch,tmp_path)
+    real=goes_shared.SharedReads
+    monkeypatch.setattr(goes_shared,'SharedReads',lambda c,ctx:real(c,ctx,pool_class=ThreadPoolExecutor))
+    monkeypatch.setenv('ECORE_GOES_CHECKPOINT_ROOT',str(tmp_path/'durable'))
+    selection=Selection('goes','ABI-L2-CMIPF',assets[0].time,'2022-09-18T13:00:00Z',(-70,14,-62,22),
+        [a for a in assets if 'C13_' in a.key],bands=(13,),satellite=16)
+    scratch=tmp_path/'scratch'
+    from ecore_weather import monthly_stream
+    finalize=monthly_stream._finalize_archive;sampled=threading.Event()
+    def wait_for_sample(*args):
+        assert sampled.wait(10), 'Memory sampling should observe the verified batch before publication'
+        return finalize(*args)
+    monkeypatch.setattr(monthly_stream,'_finalize_archive',wait_for_sample)
+    def sample():
+        pressure=bool(list(scratch.glob('*/batch-*.json')))
+        if pressure:sampled.set()
+        return {'sampled_at':time.time(),'rss_bytes':(385 if pressure else 64)*GIB,
+            'node_available_bytes':400*GIB,'node_total_bytes':512*GIB,
+            'process_count':1,'largest_processes':[]}
+    guard=MemoryGuard(384*GIB,MemoryPolicy(mode='checkpoint_pause'),sampler=sample)
+    monkeypatch.setattr(MemoryGuard,'from_environment',classmethod(lambda cls:guard))
+    config=SharedConfig(roi_budget_mib=8,staging_mib=8)
+    with pytest.raises(IntentionalPause,match='memory pressure'):
+        goes_shared.fetch(selection,tmp_path/'dest',config,scratch,index_results=False)
+    receipts=list((tmp_path/'durable').glob('*/checkpoint.json'))
+    completed=list((tmp_path/'dest').rglob('complete.json'))
+    assert completed or receipts and json.loads(receipts[0].read_text())['next_index']==8
+    shutil.rmtree(scratch)
+    monkeypatch.setattr(MemoryGuard,'from_environment',classmethod(lambda cls:MemoryGuard()))
+    resumed=goes_shared.fetch(selection,tmp_path/'dest',config,scratch,index_results=False)
+    assert resumed['read_bytes']==0 and resumed['monthly_archives'][0]['observations']==8
+
+
 def test_pause_drains_admitted_month_and_does_not_load_next(tmp_path,monkeypatch):
     ds,assets,activity=fake_sources(monkeypatch,tmp_path)
     from ecore_weather import goes_shared

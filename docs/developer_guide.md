@@ -167,6 +167,17 @@ cover the four-context GOES pilot, progress snapshots, quotas and resubmission.
 
 GOES storage reservations are a disposable node-local resource ledger. Scientific
 provenance stays in native archives; the shared database copy is always closed.
+`goes_memory` separates production memory-pressure pauses from strict benchmark
+ceilings. Summed RSS is not unique RAM: shared pages can be counted more than
+once. The Polaris study allows 384 GiB, warns at 256 GiB, and samples node
+availability alongside per-process RSS every five seconds. Pressure normally
+has a 60-second grace period; critically low available RAM bypasses that delay.
+The atomic `memory.json` is one bounded snapshot, not per-object logging.
+Do not relabel RSS-based benchmark measurements as unique RAM or GPU VRAM.
+Status aggregate bandwidth uses current-attempt byte counters over shared
+elapsed time. Recent average/median rates use a bounded local monitor cache
+and fresh snapshot timestamps, including for `--progress`; do not sum per-band
+rates or invent rates from repeated cached snapshots.
 The publication guard checks actual packed candidate bytes before copying, and
 progress snapshots serialize coordinator/heartbeat writes to the same path.
 A storage/admission pause or application deadline preserves verified archives;

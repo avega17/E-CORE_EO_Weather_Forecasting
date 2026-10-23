@@ -469,6 +469,8 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
     context=mp.get_context('spawn');events=context.Queue();slots=MonthSlots(config.month_writers,config.tail_months)
     iterator=iter(requests);exhausted=False;admission_paused=False;pause_reason=None;active={};reports=[];failures=[];started=time.perf_counter()
     completed_observations=0
+    from .goes_memory import MemoryGuard
+    memory_guard=MemoryGuard.from_environment()
     def notify_progress(status='checkpointed'):
         if not progress:return
         count=completed_observations
@@ -483,6 +485,12 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
         heartbeat=0
         try:
             while active or not exhausted:
+                if broker.error:raise OSError(f'Global GOES pipeline failed: {broker.error}')
+                # Production samples every five seconds; benchmark policy
+                # remains strict. Record the actual node headroom as well as
+                # summed process RSS, which can double-count shared pages.
+                memory_guard.check(roles={os.getpid():'coordinator',
+                    **{entry['process'].pid:f'month {key}' for key,entry in active.items()}})
                 if deadline is not None and time.monotonic() >= deadline:
                     from .goes_limits import IntentionalPause
                     raise IntentionalPause('hard wall-time deadline; verified band archives retained')
@@ -598,13 +606,9 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                 for key,entry in active.items():
                     if entry['process'].exitcode is not None and entry['process'].exitcode!=0:
                         raise RuntimeError(f'Month writer {key} exited {entry["process"].exitcode}; scratch retained')
-                rss_limit=int(os.getenv('ECORE_RSS_LIMIT_BYTES','0'))
-                if rss_limit:
-                    import psutil
-                    root=psutil.Process();rss=sum(p.memory_info().rss for p in [root,*root.children(recursive=True)] if p.is_running())
-                    if rss>rss_limit:raise MemoryError(f'GOES job RSS {rss} exceeds benchmark ceiling {rss_limit}')
                 if broker.error:raise OSError(f'Global GOES pipeline failed: {broker.error}')
         finally:
+            memory_guard.publish()
             # Notify waiters before joining so a failed reader cannot strand writers.
             if active:
                 broker.error=broker.error or RuntimeError('Coordinator stopping after an incomplete month')
@@ -618,7 +622,7 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
             events.close()
         metrics=broker.snapshot()
     return {'reports':reports,'interrupted':bool(failures),'wall_s':time.perf_counter()-started,
-            'global_metrics':{k:v for k,v in metrics.items() if k!='bands'},'global_config':config.manifest(),
+            'global_metrics':{**{k:v for k,v in metrics.items() if k!='bands'},'memory':memory_guard.summary()},'global_config':config.manifest(),
             'paused':admission_paused, 'pause_reason':pause_reason}
 
 

@@ -8,6 +8,13 @@ preservation and interfaces are defined in [storage](storage_and_data_management
 
 ## Current work
 
+- Supplied job 7776485 output shows May–July 2021 complete, then an application
+  `MemoryError` just 1.05 MiB above the old 64 GiB RSS ceiling. Production now
+  has a separate 384 GiB allowance and checkpointed handling of sustained memory
+  pressure, with node availability and bounded process-level evidence. Preserve
+  the three-month profile and the 400 GB Eagle budget. See [memory recovery](study_jobs.md#goes-memory-protection-and-recovery)
+  before resubmission; exact August–October recovery counts remain unverified.
+
 - GOES job 7770028's supplied pause record confirms January–April 2021 complete
   (32 archives) in 8:24:40, not a sixteen-hour timeout. The old whole-month drain
   allowance stopped further admissions. The new Polaris profile has three normal

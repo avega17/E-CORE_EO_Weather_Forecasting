@@ -147,6 +147,10 @@ def publish_progress(source, destination, index_path=None):
         if data.get('status') == 'index_unavailable':
             return
         data.update(snapshot_at=time.time(), source=source, pbs_job_id=os.getenv('PBS_JOBID'))
+        memory_path=os.getenv('ECORE_GOES_MEMORY_REPORT') if source=='goes' else None
+        if memory_path:
+            try:data['memory']=json.loads(Path(memory_path).read_text())
+            except (OSError,ValueError):pass
         write_json(destination, data)
 
 
