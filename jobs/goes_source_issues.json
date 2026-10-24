@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "source_issues": [
+    {
+      "status": "confirmed_corrupt_source",
+      "asset_id": "2aebfb5e2978ac0a8860",
+      "source_url": "https://noaa-goes16.s3.amazonaws.com/ABI-L2-CMIPF/2023/286/14/OR_ABI-L2-CMIPF-M6C02_G16_s20232861420209_e20232861429518_c20232861429575.nc",
+      "time": "2023-10-13T14:20:20.900000Z",
+      "etag": "b20a0dc5633c4a8e0054621ee0af4058-49",
+      "source_bytes": 402921900,
+      "product": "ABI-L2-CMIPF",
+      "region": [-70.24, 14.36, -62.56, 22.04],
+      "error": "Can't synchronously read data (filter returned failure during read)",
+      "integrity_evidence": {
+        "verification": "full-object-size-and-multipart-etag-md5",
+        "download_bytes": 402921900,
+        "etag": "b20a0dc5633c4a8e0054621ee0af4058-49",
+        "part_size": 8388608,
+        "parts": 49,
+        "error": "OSError: Can't synchronously read data (filter returned failure during read)"
+      }
+    }
+  ]
+}

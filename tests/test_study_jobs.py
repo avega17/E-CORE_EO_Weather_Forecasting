@@ -43,3 +43,42 @@ def test_operational_handoff_keeps_satellite_stores_separate():
     assert segments[0]['command'][-1]=='16' and segments[1]['command'][-1]=='19'
     assert segments[0]['report_dir']!=segments[1]['report_dir']
     assert month['command'][-1]=='auto'
+
+
+def test_unlimited_time_is_local_shared_only(tmp_path,monkeypatch):
+    import pytest
+    from ecore_weather import jobs_goes
+    args=['--start','2023-03-01','--end','2023-04-01','--max-hours','0',
+          '--dry-run','--output',str(tmp_path),'--destination',str(tmp_path)]
+    monkeypatch.delenv('PBS_JOBID',raising=False)
+    assert jobs_goes.main(args)==0
+    monkeypatch.setenv('PBS_JOBID','123.polaris')
+    with pytest.raises(SystemExit):jobs_goes.main(args)
+    monkeypatch.delenv('PBS_JOBID')
+    with pytest.raises(SystemExit):jobs_goes.main([*args,'--pipeline','legacy'])
+
+
+def test_unlimited_shared_run_has_no_deadline(tmp_path,monkeypatch):
+    from ecore_weather import jobs_goes,jobs_mrms,goes_shared
+    monkeypatch.delenv('PBS_JOBID',raising=False)
+    monkeypatch.setattr(jobs_mrms,'preflight',lambda _:None)
+    seen=[]
+    def fetch(*args,**kwargs):
+        seen.append(kwargs['deadline'])
+        assert args[5]() is False
+        return {'paused':False,'global_metrics':{}}
+    monkeypatch.setattr(goes_shared,'fetch_contexts',fetch)
+    assert jobs_goes.main(['--start','2023-03-01','--end','2023-04-01',
+        '--output',str(tmp_path),'--destination',str(tmp_path),
+        '--scratch',str(tmp_path/'scratch'),'--max-hours','0'])==0
+    assert seen==[None]
+
+
+def test_documented_empty_selection_reuses_unavailable_month():
+    from ecore_weather.jobs_goes import checkpoint_matches,BANDS
+    month={'start':'2023-03-01','end_excluded':'2023-04-01'}
+    saved={**month,'status':'unavailable','product':'ABI-L2-CMIPF','bands':BANDS,
+           'selected_assets':0,'archives':[],'coverage':[{'files':0}]}
+    assert checkpoint_matches(saved,'ABI-L2-CMIPF',month)
+    saved['coverage']=[]
+    assert not checkpoint_matches(saved,'ABI-L2-CMIPF',month)

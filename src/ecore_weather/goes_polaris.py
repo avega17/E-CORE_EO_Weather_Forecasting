@@ -64,7 +64,7 @@ def main(argv=None):
         for month in (1,4,7,10):
             left=begin.replace(month=month,day=1)
             right=left+(stop-begin)
-            selection=goes.discover(iso(left),iso(right),satellite=16,bands=goes.STORMSCOPE_BANDS)
+            selection=goes.discover(iso(left),iso(right),satellite='auto',bands=goes.STORMSCOPE_BANDS)
             picked=[]
             for band in goes.STORMSCOPE_BANDS:
                 assets=[a for a in selection.assets if f'C{band:02d}_' in a.key]
@@ -97,10 +97,10 @@ def main(argv=None):
             'peak_job_rss_bytes':memory.peak,'budget':budget.summary(),
             'global_metrics':result['global_metrics'],'verified_archives':32,
             'verified_observations':256,'completed_reuse_no_downloads':True,
-            'selections':[{'start':s.start,'end_excluded':s.end,'asset_identity_sha256':hashlib.sha256('\n'.join(a.id for a in s.assets).encode()).hexdigest()} for s in selections],
+            'selections':[{'start':s.start,'end_excluded':s.end,'satellite':s.satellite,'asset_identity_sha256':hashlib.sha256('\n'.join(a.id for a in s.assets).encode()).hexdigest()} for s in selections],
             'archives':[{'band':a['band'],'month':a.get('month'),'archive_sha256':json.loads((Path(a['path']).parent/'complete.json').read_text())['archive_sha256'],
                          'stored_bytes':a['stored_bytes']} for a in archives],
-            'scope':'Four seasonal GOES-16 contexts; eight scans per band; initial profile, not an optimum'}
+            'scope':'Four seasonal GOES-East contexts; satellite selected by observation dates; eight scans per band; initial profile, not an optimum'}
         save(output/'pilot-summary.json',report)
         closed_snapshot(output/'archive_index.duckdb')
         # Delete only this isolated successful pilot's files, not study archives.

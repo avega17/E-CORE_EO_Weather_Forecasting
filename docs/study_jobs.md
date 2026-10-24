@@ -9,15 +9,16 @@ mentor's pixel grid, not square kilometres.
 
 Default native CMIPF, all available scans, eight bands C01/C02/C03/C07/C08/C09/C10/C13.
 Selected operating profile: **two normal month writers plus one C02-only tail writer**,
-32 global async downloads, two local readers, eight C02 range readers, 2 GiB ROI
-memory and 16 GiB source staging. [Pipeline guide](goes_parallel_pipeline.md)
+32 global async downloads, two local readers, eight C02 range readers, 8 GiB ROI
+memory and 64 GiB source staging on Linux disk. [Pipeline guide](goes_parallel_pipeline.md)
 explains which steps overlap. These settings preserve separate native band ZIPs.
 
 ```bash
 python scripts/dataset_jobs.py resume goes --pipeline shared --phase all \
   --destination /mnt/p/ecore_eo_datasets --output results/study-goes-native \
   --scratch /path/to/linux-scratch --shared-profile jobs/goes_workstation.json \
-  --max-hours 12
+  --max-hours 0 --backup-after-complete \
+  --backup-work-dir /path/to/linux-yearly-work
 watch -n 30 -t 'python scripts/dataset_jobs.py status goes --start 2021-10-01'
 python scripts/dataset_jobs.py pause goes --output results/study-goes-native
 ```
@@ -25,6 +26,46 @@ python scripts/dataset_jobs.py pause goes --output results/study-goes-native
 Do not start a second coordinator. A supported pause stops new month admissions
 and drains every already admitted month to verified completion. Exit 75 is an
 intentional pause. Resume reuses matching completed months and verified scan batches.
+
+`--max-hours 0` removes the time cutoff for a local shared-pipeline job. It is
+rejected inside PBS, where the application must stop within its allocation.
+The command above covers 2021-01-01 through 2026-07-01, end excluded. Completed
+CMIPF months are checked when their chronological turn is reached; January and
+February 2026 are reused even if earlier years still need fetching. Keep the
+same scratch directory when resuming verified batches. Do not use RAM-backed
+`/tmp` for this long-running job or for annual working ZIPs.
+
+### Local fetch followed by annual HF backup
+
+`--backup-after-complete` waits for the **entire study** before it contacts HF
+for packaging/upload. A pause, failure, clipped interval or stop-after request
+cannot authorize annual backups. It verifies all 66 monthly checkpoints and
+their native-band archive records before admitting the first year. Missing
+NOAA observations remain documented gaps; they never become synthetic pixels.
+
+Each annual bundle contains all eight bands and any GOES-16/19 satellite paths
+needed that year. January–June is the final 2026 bundle. One year is packaged,
+uploaded and read back at a time; monthly ZIPs are already compressed and are
+copied into the outer ZIP without recompression. HF transfers use one publisher
+and bounded multipart requests. Monthly research archives are never deleted.
+
+The normal status table also reports annual backup phase, year and transferred
+bytes. Compact receipts and one current backup progress record live under
+`results/study-goes-native/backups/`; large working files live at
+`--backup-work-dir` (default `~/.cache/ecore-weather/goes-yearly`). Successful
+annual work ZIPs are removed after remote hash verification. Failed work remains
+available for retry:
+
+```bash
+python scripts/dataset_jobs.py backup goes --year 2023 \
+  --source-root /mnt/p/ecore_eo_datasets \
+  --study-output results/study-goes-native \
+  --work-dir /path/to/linux-yearly-work
+```
+
+Omit `--year` to check/retry every year. Both forms require full-study completion.
+A verified remote receipt is checked again without rebuilding its annual ZIP;
+a failed upload reuses the retained, verified working bundle.
 
 To have a live GOES coordinator stop after a particular month, arm the
 month-checkpoint controller with that run's identifier:
@@ -274,8 +315,9 @@ implementation. Check PBS allocation and queue eligibility, `myprojectquotas`,
 and the project path before using the example values below. Do not assume the PBS account equals the
 storage directory name. The authenticated check on October 13, 2026 confirmed
 `lighthouse-upr` as the allocation and `/eagle/lighthouse-upr` (also
-`/lus/eagle/projects/lighthouse-upr`) as the project directory. At that check,
-149.4 GB of the 1 TB quota was used; refresh this value before submission.
+`/lus/eagle/projects/lighthouse-upr`) as the project directory. The user confirmed
+the increase to **10 TB** on October 24, 2026, effective the previous day. Refresh
+current usage before submission; the quota is shared with other project assets.
 
 ```bash
 export ECORE_PROJECT_ROOT=/eagle/lighthouse-upr
@@ -410,16 +452,21 @@ radar maps while the full-study PBS job is queued. Their validation and the
 first verified production month remain separate checks.
 
 
-## Polaris GOES: manual pilot and 2021–2022 study
+<a id="polaris-goes-manual-pilot-and-20212022-study"></a>
 
-The GOES PBS job is ready for **manual validation**; no GOES Polaris execution
-or speedup is claimed by the local tests. Reuse the prepared CPU ingestion
-environment. Jobs do not require Git metadata, a clean checkout or a pinned
+## Polaris GOES: pilot and full-study fetching
+
+Single-node GOES jobs have run on Polaris; the user reports the latest reached
+its requested 24-hour walltime. Exact completion and runtime measurements still
+come from its saved progress and PBS output. Reuse the prepared CPU ingestion
+environment. The three-node extension below is locally implemented and tested,
+but has not been submitted to Polaris. Jobs do not require Git metadata, a clean checkout or a pinned
 revision. Update the code only when no job is using it. Fetch jobs do not install GPU
 model dependencies or run inference.
 
 The study keeps eight native CMIPF bands, every available full-disk scan and the
-current Puerto Rico box. It defaults to 2021-01-01 through 2023-01-01, end excluded.
+current Puerto Rico box. The full study runs from 2021-01-01 through 2026-07-01,
+end excluded. The expanded project quota removes the earlier raw-study restriction.
 C02 uses range reads; the other seven bands share asynchronous whole-file staging.
 Full files are cropped locally and retired after verified scan checkpoints.
 See the [pipeline explanation](goes_parallel_pipeline.md) and
@@ -468,10 +515,11 @@ source jobs/polaris.env.sh
 
 This non-sensitive file exports the project/code/Python paths, allocation and
 default fetch dates. It preserves explicit overrides. It does not read `.env`,
-submit jobs or select pilot/study mode. Its initial GOES interval is **2021 only**
-(`2021-01-01` to `2022-01-01`, end excluded); set `PBS_GOES_END=2023-01-01`
-explicitly when ready for the full two-year selection. MRMS retains the full
-2021–June 2026 interval.
+submit jobs or select pilot/study mode. Both GOES and MRMS default to the full
+2021–June 2026 interval. Explicitly exported values remain unchanged when sourcing
+this file: reset an older `PBS_GOES_END` before extending a study. For the pending
+GOES work, start at 2022-01-01 and reuse verified 2022 months, then continue
+through 2026-07-01. The three-node date assignments below cover that same union.
 
 Sourcing runs the documented [project-quota command](https://docs.alcf.anl.gov/data-management/filesystem-and-storage/disk-quota/)
 and exports `ECORE_QUOTA_FREE_GIB` from the exact project/Eagle row. Call
@@ -482,10 +530,10 @@ submitting. The helper can use system Python 3 before the CPU environment exists
 The displayed `G`/`T` suffixes do not state decimal versus binary units. The
 parser honors explicit GB/GiB suffixes, otherwise takes the smaller free-space
 estimate under both conventions, rounds down and leaves 1 GiB for display
-rounding. The example `167.7G` used against `1T` yields a conservative **774 GiB**
-estimate. This is a submission-time estimate, not a space reservation or an exact
-byte quota; other jobs and queue delays can change availability. The separate
-400 decimal GB GOES cap and filesystem checks still apply during the fetch.
+rounding. This is a submission-time estimate, not a space reservation or an exact
+byte quota; other jobs and queue delays can change availability. The GOES wrapper
+no longer imposes an artificial dataset cap by default. Actual project quota,
+filesystem headroom and node-local scratch checks still apply.
 
 `ECORE_PBS_ENV_VARS` contains the common exported variable names, so submission
 commands can use `-v "$ECORE_PBS_ENV_VARS,..."` instead of typing each name.
@@ -534,7 +582,7 @@ with the profile, dates, destination, scratch and output arguments used by the P
 
 ```bash
 export ECORE_PBS_MODE=study
-export PBS_GOES_START=2021-01-01 PBS_GOES_END=2023-01-01
+export PBS_GOES_START=2022-01-01 PBS_GOES_END=2026-07-01
 qsub -A "$ECORE_PBS_ACCOUNT" \
   -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE,PBS_GOES_START,PBS_GOES_END" \
   jobs/polaris_goes.pbs
@@ -585,19 +633,23 @@ cache only resets the recent statistics; it cannot affect fetching or archives.
 
 ### Capacity, walltime and resubmission
 
-The **400 decimal GB cap** covers GOES arrays and GOES state on Eagle, including
-pilot data and temporary publication copies; it excludes MRMS, environments and
-node-local scratch. Saved workstation checkpoints for the 24 study months total
-311.4 GB; a 20% allowance gives 373.7 GB. This is historical evidence, not a
-new Polaris measurement or the much larger volume transferred from NOAA.
+The project now has a user-confirmed **10 TB Eagle quota**. The full native
+eight-band study is roughly **0.86 TB of compressed monthly archives**, or
+**1.03 TB with the historical 20% allowance**; see the assumptions in
+[storage and data management](storage_and_data_management.md#full-study-goes-storage-on-polaris).
+This does not estimate preprocessing, training/validation datasets or model assets.
+The wrapper now scales its historical monthly estimate to the selected interval,
+including partial months, rather than printing a fixed two-year estimate.
 
-Admission reserves estimated remaining native subsets. Before copying a closed,
-verified ZIP, the finalizer replaces that estimate with its actual size and
-checks the cap again. Existing physical files are counted once, with a 512 MiB
-allowance for changing progress/index metadata. Shared project quota and physical
-filesystem free space are checked independently. The larger profile also needs
-node-local space for open stores, staged inputs and simultaneous packed copies;
-insufficient space stops the job rather than redirecting to Eagle scratch.
+The default profile has `storage_cap_gb: null`. The wrapper omits `--storage-cap-gb`
+when no cap is configured. To constrain a specific job, export a positive
+`ECORE_GOES_STORAGE_CAP_GB` value and add that variable name to `qsub -v`; its
+value overrides a profile cap. Optional cap reservations count physical archives,
+recovery/state files and publication copies. They are not required for the normal
+full-study run. Project quota and physical filesystem headroom are checked at
+startup separately; the quota estimate does not reserve space against other jobs.
+Node-local SSD must also fit open stores, staged inputs and packed copies.
+Insufficient scratch does not redirect unfinished stores onto Eagle.
 
 The wrapper now enables incremental partial checkpoints under
 `state/goes/study/partial-archives/`. Roughly every quarter of a band-month,
@@ -605,8 +657,8 @@ the writer copies **only the newly committed compressed Zarr chunks**, their
 source metadata and verification records to an immutable ZIP on Eagle. It does
 not re-download source files or rewrite the growing final monthly ZIP. Copies
 are hashed and flushed before the small checkpoint receipt is replaced. These
-temporary recovery files count against the 400 GB cap and are removed only
-after the completed monthly ZIP passes destination verification.
+temporary recovery files consume real Eagle space and are removed only after
+the completed monthly ZIP passes destination verification.
 
 Resubmit with the same dates, archive destination and shared state directory.
 The runner first reuses completed archives, then restores matching partial
@@ -655,6 +707,173 @@ checkpoint options; an already queued job holds its earlier script. Do not pull
 changes into a checkout while another fetch is using it. Keep the same dates
 to reuse January–April automatically. Quota checks still apply to both recovery
 parts and final archives.
+
+<a id="three-node-goes-extension-proposed"></a>
+### Three-node GOES fetching
+
+`jobs/polaris_goes_multinode.pbs` runs three independent copies of the existing
+GOES pipeline. It follows ALCF's [multi-node ensemble pattern](https://docs.alcf.anl.gov/running-jobs/example-job-scripts/#multi-node-ensemble-calculations-example):
+one one-node hostfile and one `mpiexec` per application. Node setup happens on
+each assigned node; the worker then runs Python directly, without nested MPI.
+The readers, native grids, compression and monthly archive paths are unchanged.
+This is implemented and tested locally. **A real multi-node Polaris pilot and
+scaling measurement have not yet run.** Submission is manual.
+
+The [queue guide](https://docs.alcf.anl.gov/polaris/running-jobs/)
+allows three-node requests in `capacity` and `debug-scaling`; ordinary `debug`
+is limited to two nodes. Three nodes for 24 hours request 72 node-hours, and a
+larger allocation can wait longer in the queue. This exercises node allocation
+and independent ingestion, not distributed GPU training.
+
+#### Dates, ownership and resources
+
+The versioned `jobs/goes_polaris_partitions.json` controls **multi-node study
+dates**, rather than `PBS_GOES_START/END`. Those environment variables still
+control the single-node wrapper. The launcher supplies each worker's bounds:
+
+| Stable partition | Start | End excluded | Work |
+|---|---|---|---|
+| `part-0` | 2022-01-01 | 2024-01-01 | Reuse verified 2022; finish leftovers and 2023 |
+| `part-1` | 2024-01-01 | 2025-04-01 | 2024 and January–March 2025 |
+| `part-2` | 2025-04-01 | 2026-07-01 | Rest of 2025 and January–June 2026 |
+
+The launcher rejects duplicate labels, overlaps, gaps and boundaries that split
+a physical month. Keep labels stable when resubmitting. Adjust the split dates
+in the JSON before submission if the latest inventory suggests a better balance.
+The default assignment assumes 2021 is complete; confirm that separately. A node
+which finishes its static partition stays allocated until the job ends.
+
+Every node uses `jobs/goes_polaris.json`: three normal month owners, one C02 tail,
+64 async downloads, eight local HDF5 readers, sixteen C02 range readers, 4 GiB
+ROI queues and 32 GiB disk staging. These limits are **per node**, not per band
+or month. Three nodes permit 192 async downloads and 48 C02 readers. A shared
+outbound proxy or Eagle publication can limit scaling; no threefold speedup is
+claimed. Production memory protection remains 384 GiB summed RSS per node with
+available-memory checks; strict pilot limits are separate.
+
+Each worker owns Linux-local scratch and a writable DuckDB file. Its durable
+configuration, bounded `worker.log`, progress and closed snapshot are under:
+
+```text
+ecore-weather/state/goes/study/
+    ensemble.json                 # current allocation, placement and outcome
+    worker-exits.json             # each worker's exit status
+    merge.json                    # last verified database consolidation
+    partitions/part-0/            # similarly part-1 and part-2
+        progress.json
+        worker.log                # 4 MiB plus one rotated copy
+        fetch/                    # selections and monthly checkpoints
+        archive_index.duckdb      # temporary closed snapshot, removed after merge
+    partial-archives/             # existing durable scan batches, reused in place
+```
+
+All nodes publish to the same canonical archive destination, but their source
+months are disjoint. Recovery selections are copied from the earlier single-node
+`study/fetch` only when needed. Existing `partial-archives` are reused in place;
+verified monthly ZIPs are validated and reused normally. **Do not run an older
+single-node GOES job against these same months simultaneously.** The new launcher
+excludes another multi-node launcher using the same state directory.
+
+The known October 13, 2023 C02 source failure is carried in
+`jobs/goes_source_issues.json`. The owning node prepares the October selection
+and attaches that evidence only after matching the exact source identity, ETag,
+size and ROI. A changed NOAA object is read normally. No synthetic pixels or
+unproven skip list is introduced. Updating this small file with the Python code
+avoids having to transfer the workstation's entire ignored STAC directory.
+
+#### Submit and monitor
+
+First make the tested files available in the Polaris checkout and use the
+existing CPU environment. There are no Git revision or clean-checkout gates.
+Ensure any previous GOES job targeting these dates has stopped, then:
+
+```bash
+source jobs/polaris.env.sh       # refreshes actual quota; no credentials exported
+qsub -A "$ECORE_PBS_ACCOUNT" \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE=study" \
+  jobs/polaris_goes_multinode.pbs
+```
+
+This queues a three-node, 24-hour `capacity` job for the JSON partitions above.
+A local/mock test is not a successful Polaris pilot. For the manual bounded pilot
+instead, use the same script with:
+
+```bash
+qsub -A "$ECORE_PBS_ACCOUNT" -q debug-scaling -l walltime=01:00:00 \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE=pilot" \
+  jobs/polaris_goes_multinode.pbs
+```
+
+Pilot windows are explicit `pilot_start/end` fields in the partition JSON.
+Each node tests eight scans per band in four seasons, using GOES-East for the
+observation dates, including the GOES-19 transition where applicable. The limit
+is 32 GiB returned per node, **96 GiB combined**, including retries and failures.
+Pilot archives are isolated by partition and removed after successful equality
+and reuse checks. Inspect failure evidence before retrying a failed pilot.
+The pilot does not claim to validate the complete production dataset.
+
+To inspect the allocation use `qstat -f JOBID` and later `qstat -x -f JOBID`.
+To leave the readable per-partition tables running:
+
+```bash
+watch -n 30 -t -- "$ECORE_PYTHON" -m ecore_weather.jobs_multinode status \
+  --state "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study"
+```
+
+For a smaller table that fits a terminal, add `--partition part-0` and an
+intersecting window such as `--start 2023-01-01 --end 2023-04-01`. Each table
+retains the existing aggregate bandwidth estimates; these are returned-byte
+rates for that worker, not a sum of per-band rates or a measured NIC speed.
+
+A worker pause (75) or failure does not kill the other independent applications.
+The allocation returns 1 if any worker failed, otherwise 75 if any paused, or 0
+when all completed. Read `ensemble.json`, `worker-exits.json`, partition progress
+and the bounded worker logs. Resubmitting the same command restores the same
+partitions, verified ZIPs and published partial checkpoints, even on new hosts.
+The launcher reserves the final minutes for shutdown and database consolidation;
+PBS can still kill abruptly, so only published recovery files survive node loss.
+
+#### One operational database after the allocation
+
+After every application stops, one process merges the closed node snapshots,
+previous GOES/MRMS indices and any prior canonical database. It uses
+[read-only attachments](https://duckdb.org/docs/1.5/sql/statements/attach)
+and a fresh local output. Records are deduplicated by their schema keys;
+canonical archive paths are normalized. Archive size and completion-marker hash
+must agree. A verified archive wins over stale failed/partial task state;
+conflicting archive or immutable measurement evidence leaves the merge pending.
+Run history remains history: counters and concurrent task runtimes are not added
+as if they were disjoint work. Array equality was checked when each ZIP was
+published; consolidation does not download NOAA or rewrite raw arrays.
+
+The merger closes, reopens and validates its output, copies it to Eagle, validates
+that copy and atomically publishes **one project-wide operational database** at:
+
+```text
+ecore-weather/state/archive_index.duckdb
+```
+
+Only after success are redundant node snapshots removed. Previous single-node
+GOES/MRMS snapshots remain recovery inputs until deliberately retired; new jobs
+use the canonical index as their seed. Active coordinators never share a writable
+DuckDB. This respects DuckDB's [single-writer-process rule](https://duckdb.org/docs/1.5/connect/concurrency).
+
+If a snapshot is missing, evidence conflicts, or insufficient time remains,
+`ensemble.json` says `merge: pending` and all available inputs remain. After
+checking that **no fetch or snapshot publisher is running**, consolidate them
+from a short compute allocation using local SSD:
+
+```bash
+"$ECORE_PYTHON" -m ecore_weather.jobs_multinode merge \
+  --state "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study" \
+  --scratch /local/scratch/ecore-index-merge \
+  --destination "$ECORE_PROJECT_ROOT/ecore-weather/state/archive_index.duckdb"
+```
+
+The ordinary archive index rebuild remains available for discovery recovery;
+this merge operation also preserves run, task, benchmark and backup history.
+No research archives are deleted by consolidation. The workstation fetch and
+its database remain independent.
 
 ### GOES memory protection and recovery
 
@@ -709,9 +928,9 @@ The bounded pilot still fails at its separate 64 GiB RSS limit, and scheduler
 benchmarks retain their existing 48 GiB budget; they do not inherit the relaxed
 production policy.
 
-Other stop conditions were reviewed: the **400 decimal GB Eagle cap** remains
-the agreed storage budget, and temporary checkpoint/publication copies must fit
-within it. The 32 GiB staging limit concerns disk, and the 4 GiB ROI limit bounds
+Temporary checkpoint/publication copies still need physical space and remaining
+project quota; the old fixed dataset cap is no longer a default stop condition.
+The 32 GiB staging limit concerns disk, and the 4 GiB ROI limit bounds
 queued arrays rather than total process RAM. Neither is increased simply because
 the node has more RAM. The actual PBS walltime, four-minute shutdown reserve,
 fifteen-minute admission cutoff and scientific integrity checks remain in force.

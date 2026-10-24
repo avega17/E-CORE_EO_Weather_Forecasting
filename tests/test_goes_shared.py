@@ -136,20 +136,31 @@ def test_all_bands_shared_downloads_order_and_checkpoint_retirement(tmp_path,mon
     assert all(not list((tmp_path/f'C{b:02}').glob('*.nc')) for b in (1,3,7,8,9,10,13))
 
 
-def test_shared_pipeline_round_trip_real_month_process(tmp_path,monkeypatch):
+@pytest.mark.parametrize('confirmed_gap',[False,True])
+def test_shared_pipeline_round_trip_real_month_process(tmp_path,monkeypatch,confirmed_gap):
     ds,assets,activity=fake_sources(monkeypatch,tmp_path)
     from ecore_weather import goes_shared
     real=goes_shared.SharedReads
     monkeypatch.setattr(goes_shared,'SharedReads',lambda c,ctx:real(c,ctx,pool_class=ThreadPoolExecutor))
     selection=Selection('goes','ABI-L2-CMIPF',assets[0].time,'2022-09-18T13:00:00Z',(-70,14,-62,22),assets,bands=(1,2,3,7,8,9,10,13),satellite=16)
+    if confirmed_gap:
+        from ecore_weather import catalog,goes
+        bad=next(a for a in assets if 'C02_' in a.key)
+        issue=catalog.record_corrupt_source(selection,bad,goes.ConfirmedCorruptSourceError('fixture corrupt chunk',
+            {'verification':'full-object-size-and-single-part-etag-md5','download_bytes':bad.size,'md5':bad.etag}))
     config=SharedConfig(download_concurrency=16,roi_budget_mib=8,staging_mib=8)
     report=goes_shared.fetch(selection,tmp_path/'dest',config,tmp_path/'scratch',index_results=False)
     assert len(report['monthly_archives'])==8 and not report['interrupted']
     from ecore_weather.storage import open_raw
     for row in report['monthly_archives']:
         with open_raw(row['path']) as archived:
-            np.testing.assert_array_equal(archived[f'CMI_C{row["band"]:02}'].values,np.stack([ds.CMI.values]*8))
-            np.testing.assert_array_equal(archived[f'DQF_C{row["band"]:02}'].values,np.stack([ds.DQF.values]*8))
+            count=7 if confirmed_gap and row['band']==2 else 8
+            np.testing.assert_array_equal(archived[f'CMI_C{row["band"]:02}'].values,np.stack([ds.CMI.values]*count))
+            np.testing.assert_array_equal(archived[f'DQF_C{row["band"]:02}'].values,np.stack([ds.DQF.values]*count))
+    if confirmed_gap:
+        assert report['source_issues']==[issue]
+        record=next(r for r in report['records'] if r['asset_id']==bad.id)
+        assert record['status']=='corrupt_source' and record['url'] is None
     reused=goes_shared.fetch(selection,tmp_path/'dest',config,tmp_path/'scratch',index_results=False)
     assert all(row['status']=='reused' for row in reused['monthly_archives'])
 
@@ -163,8 +174,10 @@ def test_failure_wakes_all_waiters_and_keeps_staged_evidence(tmp_path,monkeypatc
         req,reply=broker.attach('failure');client=ReaderClient('failure',req,reply)
         sel=Selection('goes','ABI-L2-CMIPF',assets[0].time,'2022-09-18T13:00:00Z',(-70,14,-62,22),assets,bands=(1,),satellite=16)
         rows=[{'asset':a,'asset_id':a.id} for a in assets if 'C01_' in a.key]
-        with pytest.raises(OSError,match='corrupt HDF5'):
+        with pytest.raises(OSError,match='corrupt HDF5') as failure:
             list(client.reads('failure:C01',rows,sel,1,tmp_path/'failed',{}))
+        assert rows[0]['asset'].url in str(failure.value)
+        assert 'observation' in str(failure.value) and 'C01' in str(failure.value)
         client.close()
     assert list((tmp_path/'failed').glob('*.nc'))
 
@@ -176,7 +189,8 @@ def test_shared_cli_defaults_alias_conflict_and_legacy_profile_rejection(tmp_pat
     assert args.pipeline=='shared'
     config=config_from_args(args)
     assert config.month_writers==2 and config.tail_months==1 and config.local_readers==2 and config.range_readers==8
-    assert config.download_concurrency==32 and config.staging_mib==16384
+    assert config.download_concurrency==32 and config.staging_mib==65536
+    assert config.roi_budget_mib==8192
     with pytest.raises(SystemExit):parser('goes').parse_args(['--month-writers','2','--monthly-writers','4'])
     with pytest.warns(FutureWarning):
         assert config_from_args(parser('goes').parse_args(['--monthly-writers','4'])).month_writers==4

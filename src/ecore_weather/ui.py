@@ -125,9 +125,9 @@ def selection_controls(source):
         controls['read_profiles'] = widgets.Text(description='Profiles JSON', tooltip='Optional validated per-band settings file. Overrides reader settings for each band, never the number of writers.', layout=widgets.Layout(width='650px'))
         controls['download_concurrency'] = widgets.BoundedIntText(value=32,min=1,max=128,
             description='Async GETs',tooltip='Global full-object downloads shared by all active months and seven async bands.')
-        controls['staging_mib'] = widgets.BoundedIntText(value=16384,min=1,max=65536,
+        controls['staging_mib'] = widgets.BoundedIntText(value=65536,min=1,max=131072,
             description='Stage MiB',tooltip='Global full-object scratch capacity. An eight-scan batch reserves space before download.')
-        controls["prefetch_mib"] = widgets.BoundedIntText(value=2048, min=8, max=8192,
+        controls["prefetch_mib"] = widgets.BoundedIntText(value=8192, min=8, max=32768,
             description="Queue MiB", tooltip="Global ROI and IPC memory reservations across all active months and bands.")
         controls["block_size_kib"] = widgets.Dropdown(options=[256,1024,4096], value=1024,
             description="Range KiB", tooltip="Size of one cached NOAA S3 range-read block.")

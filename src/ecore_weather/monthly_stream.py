@@ -74,7 +74,7 @@ def _read_new(asset, selection, band, transport, block_size):
     return dataset, timing
 
 
-def _archive_rows(selection, assets, prior):
+def _archive_rows(selection, assets, prior, *, include_unavailable=False):
     matches = {row["asset_id"]: row for row in selection.hourly_matches}
     rows = [{**row, "kind": "old", "old_index": index}
             for index, row in enumerate(prior.get("assets", []))]
@@ -88,7 +88,42 @@ def _archive_rows(selection, assets, prior):
             "source_bytes": asset.size, "slot_time": match.get("slot_time") or "",
             "offset_seconds": match.get("offset_seconds")})
     rows.sort(key=lambda row: (utc(row["time"]), row["asset_id"]))
+    if selection.source == 'goes' and not include_unavailable:
+        from .catalog import confirmed_source_issues
+        issues = confirmed_source_issues(selection)
+        if any(row['kind']=='old' and row['asset_id'] in issues for row in rows):
+            raise IOError('Source issue conflicts with a verified archive; preserve it for inspection')
+        rows = [row for row in rows if row['asset_id'] not in issues]
     return rows
+
+
+def _prepare_source_gaps(parent, original_rows, rows):
+    """Remove confirmed, uncommitted source gaps without losing a saved prefix.
+
+    Scratch identity retains the complete requested source list. Only unfinished
+    array capacity and future timestamps change; verified pixels cannot move.
+    The operation is idempotent if interrupted between array metadata updates.
+    """
+    if len(rows) == len(original_rows) or not (parent/'raw.zarr').is_dir():return
+    import zarr
+    from .goes_monthly import _checkpoint
+    path=parent/'progress.json';state=json.loads(path.read_text()) if path.is_file() else {}
+    ids=[row['asset_id'] for row in rows];old_ids=[row['asset_id'] for row in original_rows]
+    saved_ids=state.get('asset_ids',old_ids);count=state.get('next_index',0)
+    if saved_ids not in (old_ids,ids) or saved_ids[:count] != ids[:count]:
+        raise IOError('A source gap would change the verified scratch prefix; preserve it for inspection')
+    times=np.asarray([np.datetime64(utc(row['time']).replace(tzinfo=None),'ns') for row in rows])
+    root=zarr.open_group(parent/'raw.zarr',mode='a',use_consolidated=False)
+    if not np.array_equal(root['time'][:count],times[:count]):
+        raise IOError('Saved observation timestamps differ before the source gap')
+    for name in root.array_keys():
+        array=root[name];dims=array.metadata.dimension_names or ()
+        if 'time' not in dims:continue
+        if dims[0] != 'time' or array.shape[0] not in (len(rows),len(original_rows)):
+            raise IOError('Unexpected time layout during source-gap recovery')
+        if array.shape[0] != len(rows):array.resize((len(rows),*array.shape[1:]))
+    root['time'][:]=times
+    if path.is_file():_checkpoint(path,{**state,'asset_ids':ids})
 
 
 def _write_one(selection, assets, target, band, workers=16, backend="obstore",
@@ -129,12 +164,13 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                 if _file_sha256(archive_path) != prior["archive_sha256"]:
                     raise IOError("Existing monthly archive hash mismatch")
         rows = _archive_rows(selection, assets, prior)
+        original_rows = _archive_rows(selection, assets, prior, include_unavailable=True)
         if rows and all(row["kind"] == "old" for row in rows):
             if selection.source == 'goes' and os.getenv('ECORE_GOES_CHECKPOINT_ROOT'):
                 # An interrupted cleanup must not retain duplicate recovery
                 # data after the final ZIP itself has passed reuse validation.
                 identity = hashlib.sha256(json.dumps({'target': str(target.resolve()),
-                    'ids': [r['asset_id'] for r in rows]}, sort_keys=True).encode()).hexdigest()[:24]
+                    'ids': [r['asset_id'] for r in original_rows]}, sort_keys=True).encode()).hexdigest()[:24]
                 shutil.rmtree(Path(os.environ['ECORE_GOES_CHECKPOINT_ROOT']) / f'goes-cmipf-{identity}', ignore_errors=True)
             return {"path": str(target / "raw.zarr.zip"), "status": "reused",
                     "observations": len(rows), "stored_bytes": prior.get("stored_bytes", 0),
@@ -148,13 +184,14 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
         native = selection.source == "goes" and selection.product == "ABI-L2-CMIPF"
         resumable = native or selection.source == "mrms"
         identity = hashlib.sha256(json.dumps({"target": str(target.resolve()),
-            "ids": [r["asset_id"] for r in rows]}, sort_keys=True).encode()).hexdigest()[:24]
+            "ids": [r["asset_id"] for r in original_rows]}, sort_keys=True).encode()).hexdigest()[:24]
         parent = (Path(scratch or scratch_root()) / f"{'goes-cmipf' if native else 'mrms'}-{identity}"
                   if resumable else Path(tempfile.mkdtemp(prefix="ecore-month-", dir=scratch)))
         parent.mkdir(parents=True, exist_ok=True)
         saved = {}
         durable = None
         if resumable:
+            _prepare_source_gaps(parent,original_rows,rows)
             from .checkpoint_recovery import recover
             recovery=recover(parent,rows)
             if recovery:print(f"Recovered scratch: {recovery}",flush=True)
@@ -356,6 +393,11 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                     close()
                 io = None
                 root = zarr.open_group(str(directory), mode="a")
+                if selection.source == 'goes':
+                    from .catalog import confirmed_source_issues
+                    issues=confirmed_source_issues(selection)
+                    source_issues=[issues[row['asset_id']] for row in original_rows if row['asset_id'] in issues]
+                    if source_issues:root.attrs['source_issues']=source_issues
                 for name, array in arrays.items():
                     root[name].attrs.update(_zarr_attrs(array))
                 for name, values in dimensions.items():
@@ -469,6 +511,12 @@ def _finalize_archive(directory, packed, checksums, dimensions, times, observed_
             "assets": actual_rows, "stored_bytes": packed.stat().st_size,
             "observations": len(actual_rows), "writer_backend": "earth2studio-zarr-backend",
             "updated_at": iso(datetime.now(timezone.utc))}
+        if selection.source == 'goes':
+            from .catalog import confirmed_source_issues
+            issues=confirmed_source_issues(selection)
+            from .monthly import _band
+            relevant=[issues[a.id] for a in selection.assets if a.id in issues and _band(a)==band]
+            if relevant:marker['source_issues']=relevant
         digest = hashlib.sha256()
         with packed.open("rb") as stream:
             for block in iter(lambda: stream.read(8*1024*1024), b""):

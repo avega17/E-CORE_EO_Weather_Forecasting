@@ -29,8 +29,8 @@ before local cropping. No ingestion-time interpolation or grid alignment occurs.
 | `--download-concurrency` | 32 | Global full-object downloads across both months/seven bands |
 | `--local-readers` | 2 | Global independent processes cropping downloaded HDF5 files |
 | `--range-readers` | 8 | Global independent processes reading C02 remote file sections |
-| `--roi-budget-mib` | 2,048 | Global reservations for returned arrays and copies between processes |
-| `--staging-mib` | 16,384 | Global scratch capacity for staged source files |
+| `--roi-budget-mib` | 8,192 | Global reservations for returned arrays and copies between processes |
+| `--staging-mib` | 65,536 | Global Linux-disk capacity for staged source files |
 | Range block size | 1 MiB | Cached remote block used by C02 readers |
 | Finalizers | 2 | Workers packing/verifying closed band stores |
 
@@ -38,6 +38,14 @@ These limits are global, not multiplied by month or band. Arrays move between
 reader, coordinator and writer processes; memory reservations account for copies.
 HDF5 caches, Python runtime and compression buffers also consume memory. Report
 measured total process memory separately from the queued-array budget.
+
+The larger workstation buffers accommodate its 96 GB WSL allocation; they are
+not a new measured throughput improvement. Exhausted reservations delay new work
+while completed checkpoints release capacity. Staging is disk space, not a
+64 GiB allocation of RAM. Production warns at 64 GiB summed RSS but does not stop
+on that number, which can include shared pages more than once. It pauses to save
+checkpoints only after available WSL RAM stays below 8 GiB for 60 seconds, or
+immediately below 4 GiB. Strict benchmark ceilings are unchanged.
 
 ## How work overlaps
 
@@ -60,6 +68,32 @@ not hold that file in RAM or invoke HDF5. Persistent anonymous connections are
 reused. Completed files can enter a local reader immediately while other downloads
 continue. A reader crops the native ROI, preserving packed data and metadata.
 C02 readers instead obtain remote file sections as HDF5 requests them.
+
+Range responses must contain exactly the requested number of bytes; incomplete
+responses are retried before HDF5 can consume them. If HDF5 reports a decompression
+or integrity error, the reader retries the observation up to three times, each
+time reopening both the remote byte cache and the HDF5 file. Retries contribute
+to source retry/transfer counters. An exhausted failure names the band, NOAA
+object and observation time and preserves the verified scan checkpoints.
+A failed range read alone is not evidence that NOAA's source is corrupt.
+
+A confirmed corrupt source needs stronger evidence: a complete-file download of
+the expected size, an exactly matching single-part or multipart MD5 ETag, and
+failure to decode the requested native pixels locally. Some
+[S3 ETags do not describe the whole-file MD5](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html);
+multipart confirmation checks the combined part digests instead, and unsupported
+encodings remain unconfirmed failures. `catalog.record_corrupt_source` records
+this evidence in the saved STAC selection without removing its source object.
+The native writer omits only that unreadable observation, retains its actual
+time as a documented gap, and copies the evidence into archive metadata and the
+completion record. No placeholder pixels or timestamps are created. Existing
+verified observations cannot be removed by this mechanism.
+
+If the gap is beyond a saved prefix, the writer keeps the original scratch
+location and adjusts only unfinished capacity and future coordinates. It checks
+the unchanged prefix again before continuing. Status counts available source
+observations and records the unavailable-object count separately. Annual backup
+validation requires those gap records to agree with the completed archives.
 
 Independent processes allow simultaneous HDF5 work; threads within one process
 are serialized by h5py's lock. Async request count is not CPU thread count. More
@@ -302,7 +336,7 @@ contextual margins and future training requirements.
 ## Separate Polaris GOES starting profile
 
 The workstation settings above remain the operating defaults for that machine.
-For the manually submitted 2021–2022 Polaris job, `jobs/goes_polaris.json` starts
+For Polaris study jobs, `jobs/goes_polaris.json` starts
 with **three normal month owners and one C02 tail**, **64 global asynchronous
 full-file downloads**, **eight local HDF5 crop processes** and **sixteen C02
 range-reader processes**. Two workers finalize closed stores. The global ROI
@@ -310,7 +344,9 @@ budget is 4 GiB and staged-source capacity is 32 GiB; the summed job-process RSS
 allowance is 384 GiB, with warnings at 256 GiB and a checkpointed pause for
 sustained memory pressure. The bounded pilot retains a strict 64 GiB ceiling.
 See [the RAM policy and measurements](study_jobs.md#goes-memory-protection-and-recovery).
-These limits share the whole job, not each band or month.
+These limits share one node's pipeline, not each band or month. The planned
+three-node extension would run one such pipeline per node; the limits would
+therefore apply independently on each node.
 
 This exposes more work to the 32-core/64-thread Polaris node. It is not a claim
 that 64 downloads use 64 CPU cores, or that a dataset's size proves the benefit
@@ -321,7 +357,7 @@ stores. The proxy and source response times can still limit throughput.
 The bounded manual pilot exercises four seasonal contexts and all eight bands,
 checks archive publication/reuse and records effective concurrency and process
 memory. It does not establish an optimum or replace a full-month measurement.
-Keep the [manual PBS procedure](study_jobs.md#polaris-goes-manual-pilot-and-20212022-study)
+Keep the [manual PBS procedure](study_jobs.md#polaris-goes-pilot-and-full-study-fetching)
 and its compact pilot summary with any target-machine comparisons. The supplied
 7770028 record used the earlier four-month profile; the revised three-month
 setting still needs a production comparison.

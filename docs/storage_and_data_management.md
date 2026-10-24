@@ -241,6 +241,25 @@ NOAA download. For MRMS, each annual ZIP contains one product's verified monthly
 ZIPs, their completion records and `year_manifest.json`, which lists the months
 and their checksums. A partial study year includes only its available months.
 
+For native GOES, an annual ZIP contains **all eight study bands**, retaining
+their separate monthly grids and satellite directories. A 2025 bundle can
+contain both GOES-16 and GOES-19; the 2026 bundle covers January–June. This groups
+files for transfer without aligning arrays or changing packed values. GOES
+backup begins only after the full local study has completed. Its remote layout is:
+
+```text
+yearly-v1/goes/ABI-L2-CMIPF/roi-70.24W-14.36N-62.56W-22.04N/<year>/
+    ├── <annual backup ZIP>
+    ├── year_manifest.json
+    └── complete.json
+```
+
+The portable year manifest lists monthly members, native band/satellite identity,
+coverage and checksums. Source-object provenance remains in the included monthly
+completion records. Successful upload and full remote SHA-256 read-back precede
+the completion record. Large temporary annual ZIPs are removed afterward; DAS
+monthly originals stay in place. See [local backup commands](study_jobs.md#local-fetch-followed-by-annual-hf-backup).
+
 ```text
 hf://buckets/<namespace>/<bucket>/noaa-subsets/
 └── yearly-v1/mrms/<NOAA product>/<year>/
@@ -249,7 +268,7 @@ hf://buckets/<namespace>/<bucket>/noaa-subsets/
 ```
 
 Annual grouping simplifies transfers without merging the monthly arrays or
-changing their values. Notebook 03 can list backups and restore a selected month.
+changing their values. Notebook 03 can list MRMS backups and restore a selected month.
 Because the annual ZIP does not compress its entries again, the reader can
 retrieve one monthly ZIP without downloading the other months. It checks the
 restored file's checksum and reuses a verified local copy on later visits.
@@ -278,6 +297,18 @@ copies can be removed only with a retained verification receipt and matching
 monthly originals. Deleting research archives from the DAS is a separate,
 explicit decision. Optional direct monthly HF writes are not the study's usual
 local-acquisition and annual-backup workflow.
+
+**Long-term ALCF storage is Eagle:** acquired datasets, model weights and related
+project assets belong there. The user confirmed the project's **10 TB quota** on
+October 24, 2026; it had taken effect the previous day. This removes the original
+constraint on storing our raw GOES study. It is a project-wide quota, not a report
+of currently free space, so refresh `myprojectquotas` before submitting jobs.
+
+HF provides backup and transfer copies. A future GOES restore command could
+retrieve a year or selected monthly band archives into Polaris SSD scratch,
+verify them and open their Zarr arrays. With expanded Eagle storage, that would
+be an optional transfer/cache facility. It is not required for this raw-study
+fetch and is not implemented yet.
 
 ## Storage totals and housekeeping
 
@@ -329,28 +360,45 @@ resumable aggregate counts stay under `results/dataset-report/`. Figure files
 are derived views and never replace the raw scientific archives.
 
 
-## Bounded GOES storage on Polaris
+## Full-study GOES storage on Polaris
 
-The initial manual Polaris study requests 2021–2022 with a **400 decimal GB**
-cap on GOES Eagle archives and GOES job state. Existing MRMS data and Conda
-environments are outside that cap. The prior workstation checkpoints report
-311.4 GB for these 24 months; 373.7 GB includes a 20% allowance. This is retained
-subset size, not the much larger source transfer volume.
+For the existing ROI, native eight-band CMIPF selection and monthly compression,
+24 completed workstation months occupied **311.4 GB**. Scaling that observation
+to the full 66-month study gives approximately **0.86 TB**, or **1.03 TB with a
+20% allowance**. These are decimal units and rough estimates of the retained
+monthly Zarr ZIPs, not the much larger NOAA transfer volume. Satellite and
+seasonal differences can change the final size. The PBS wrapper scales this
+historical monthly rate to the selected date interval, including partial months;
+already completed archives are included in the estimate and can be reused.
 
-Before admitting a month, the coordinator reserves estimated candidate ZIPs.
-Before copying each verified candidate, its actual size replaces the estimate.
-Existing ZIPs, temporary replacement copies and shared state are counted once;
-a replacement must fit alongside the old verified archive until publication
-succeeds. A 512 MiB allowance protects changing state/index metadata. Physical
-filesystem free space and remaining shared project quota are separate checks.
+This raw-study estimate fits comfortably within the confirmed 10 TB project
+quota. It does **not** estimate space for analysis-ready preprocessing, 1 km
+training grids, training/validation copies, model weights or training checkpoints.
+Those need a separate budget before model work. Existing project data and
+environments also consume the shared quota.
 
-Open stores, staged source files and packing candidates stay on node-local SSD.
-The GOES study also saves incremental partial checkpoints to Eagle roughly
-every quarter of each band-month. These contain new compressed chunks and the
-records needed to verify and restore them into a later node's scratch. They
-are recovery files, not complete datasets for analysis. They count against the
-same storage cap and are removed after the final monthly ZIP has been verified.
-This temporarily keeps both local working data and durable recovery data;
-source NetCDF files are not backed up. Sudden node loss can lose work since
-the last published checkpoint. Earlier jobs without this option protected only
-completed archives. See the [PBS instructions](study_jobs.md#capacity-walltime-and-resubmission).
+The former small dataset cap is disabled in `jobs/goes_polaris.json` and is no
+longer passed automatically by the PBS wrapper. Physical free space, remaining
+project quota and node-local scratch are still checked at startup. An explicit
+positive dataset cap remains available for a bounded job; see the
+[submission guide](study_jobs.md#capacity-walltime-and-resubmission). Free-space
+checks and a submission-time quota estimate are not a project-wide reservation.
+
+Open stores, staged NOAA files and packing copies stay on node-local SSD.
+Verified monthly ZIPs and incremental recovery checkpoints go to Eagle.
+The recovery checkpoints contain new compressed chunks and their verification
+records, published roughly every quarter of a band-month. They are not complete
+datasets for analysis and are removed only after the final monthly archive has
+verified. Allow space for these temporary copies alongside final archives;
+source NetCDF files are retired after their observations commit.
+
+A three-node job keeps the same archive layout. Each node owns
+non-overlapping months and its own live index, scratch and progress files.
+After all node writers stop, a single process merges their closed snapshots
+and the existing GOES/MRMS records into **one operational DuckDB database** at
+`ecore-weather/state/archive_index.duckdb` on Eagle. Future writers copy it to
+local SSD rather than write the shared file in parallel. Temporary node
+snapshots remain until the consolidated database passes validation. A missing
+snapshot or conflict leaves consolidation pending without deleting its inputs.
+See the [three-node commands and merge rules](study_jobs.md#three-node-goes-fetching).
+The implementation has local fixture tests; target-machine validation is still pending.

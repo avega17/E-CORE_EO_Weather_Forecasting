@@ -8,11 +8,44 @@ preservation and interfaces are defined in [storage](storage_and_data_management
 
 ## Current work
 
+- The user confirmed the project Eagle quota is now **10 TB**, effective
+  October 23, 2026. Extend Polaris GOES to the full study through June 2026.
+  The PBS default dataset cap is removed; actual quota, filesystem and scratch
+  checks remain. Native compressed GOES is roughly 0.86 TB, or 1.03 TB with the
+  historical allowance. Preprocessing, validation datasets and model assets
+  remain unestimated. The local workstation continuation remains unchanged.
+- The [three-node GOES job](study_jobs.md#three-node-goes-fetching) is implemented
+  with independent date partitions, node-local setup and private writable indices.
+  It reuses existing selections/checkpoints and carries the known October 2023
+  corrupt-source evidence. After workers stop, closed snapshots and previous
+  GOES/MRMS records merge into one verified project index; failed merges retain
+  inputs. Local tests cover ownership, bounds, independent exits and consolidation.
+  A manual three-node pilot, target-machine placement/proxy checks and scaling
+  measurements remain pending. No PBS job has been submitted in this update.
+
+- The native GOES local continuation completed March–August 2023 and restarted
+  at September after a C02 HDF5 range-read failure (see [status](status.md)).
+  Saved September/October scan batches remain reusable. Source-specific errors
+  identified a checksum-confirmed corrupt C02 file at 2023-10-13 14:20:20.9 UTC.
+  It remains in STAC with its evidence and becomes an explicit observation gap,
+  with no fabricated pixels or changes to saved measurements. Fresh-handle HDF5
+  retries and incomplete-response checks handle transient failures; unconfirmed
+  persistent failures still stop for inspection.
+  It uses two normal months and one
+  C02 tail, 8 GiB queued ROI and 64 GiB disk staging. Warn at 64 GiB summed RSS
+  without an RSS stop; sustained available RAM below 8 GiB (60 seconds), or an
+  immediate drop below 4 GiB, requests a checkpointed pause. Local `--max-hours 0`
+  removes the twelve-hour cutoff. After all 66 months verify, sequential annual
+  HF backups retain all eight native bands and satellite paths. Keep monthly DAS
+  originals. Future GOES HF restoration to Polaris scratch is documentation-only
+  and optional; expanded Eagle storage removes the original raw-study constraint.
+  Eagle remains the long-term project data/model home.
+
 - Supplied job 7776485 output shows May–July 2021 complete, then an application
   `MemoryError` just 1.05 MiB above the old 64 GiB RSS ceiling. Production now
   has a separate 384 GiB allowance and checkpointed handling of sustained memory
   pressure, with node availability and bounded process-level evidence. Preserve
-  the three-month profile and the 400 GB Eagle budget. See [memory recovery](study_jobs.md#goes-memory-protection-and-recovery)
+  the three-month per-node profile and real shared-quota checks. See [memory recovery](study_jobs.md#goes-memory-protection-and-recovery)
   before resubmission; exact August–October recovery counts remain unverified.
 
 - GOES job 7770028's supplied pause record confirms January–April 2021 complete
@@ -29,9 +62,9 @@ preservation and interfaces are defined in [storage](storage_and_data_management
   allocations; the subsequent 7770028 record above supersedes that run's
   completion counts. Details and user-reported historical counts are in
   [the recovery guide](study_jobs.md#recovery-after-goes-job-7765036).
-- Workstation GOES has drained to a verified pause after December 2022. Its next fetch
-  stage should resume chronologically with two normal month owners and one
-  C02-only tail, reusing completed native-band archives.
+- Workstation GOES records include verified archives through August 2023,
+  plus January–February 2026. Continue chronologically from September with two
+  normal month owners and one C02-only tail, reusing completed native archives.
 - Keep current MRMS four-product full-study checkpoints and verified DAS archives.
 - The [2022 full-CARIB MRMS RQI/reflectivity figure](mrms_roi_and_radar_coverage.md)
   is complete. Its one-day source-to-archive check and monthly aggregate
@@ -77,9 +110,11 @@ figures are now complete and validated; 2022 reused its cached summary. Polaris 
 with both reflectivity products archived through June 2026. Remote CPU
 setup and two pilots passed on `4db62f1`; tuning passed on `1f017e0`.
 Production job `7743827` used `2038b86` and has no unfinished product-months.
-The next manual rollout is the 2021–2022 GOES PBS job with a 400 GB retained-data
-cap and a separate, higher-concurrency Polaris starting profile. It needs its
-bounded four-context pilot; no Polaris GOES performance result is claimed.
+Single-node GOES has since run on Polaris; the user reports its latest job
+reached the requested 24-hour walltime. The next proposed rollout is three nodes
+covering unfinished 2022 through June 2026. Validate the multi-node launcher and
+closed-index consolidation with a bounded pilot before submission; no three-node
+execution or scaling result is claimed.
 The scripts use explicit ISO PBS date variables. MRMS now requests six hours.
 See the operational guide for manual submission and the StormScope notes for
 model/data requirements, including internally computed solar zenith at inference.
@@ -112,4 +147,5 @@ conservative quota estimate from `myprojectquotas` without reading credentials.
 The debug sequence separately checks local setup, a real one-hour NOAA listing
 and the existing download/storage pilot. A full-day fetch is deferred until the
 pilot succeeds. The configuration defaults to the requested first year of GOES
-data; the two-year study interval remains an explicit later override.
+data. That was the earlier limited interval; current defaults cover the full
+study. Explicitly reset old exported dates before extending a submission.

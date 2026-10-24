@@ -214,6 +214,9 @@ class Transport:
                     self.bytes += len(data)
                     self.requests += 1
                     self.seconds += time.perf_counter() - before
+                if start is not None and len(data) != end-start:
+                    raise IOError(f'Incomplete NOAA range response for {asset.url}: '
+                                  f'expected {end-start} bytes, received {len(data)}')
                 return data
             except Exception:
                 if budget and reservation is not None:budget.settle(reservation)

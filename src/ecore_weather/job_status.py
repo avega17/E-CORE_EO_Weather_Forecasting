@@ -139,6 +139,7 @@ def aggregate_bandwidth(data, cache, now, scope='all'):
             row={'bytes':value,'started_at':started,'updated_at':task.get('updated_at',0)}
             if previous is None or row['updated_at']>=previous['updated_at']:current[task['task_id']]=row
     stamp=data.get('snapshot_at',now)
+    if run.get('fetch_ended_at') is not None:stamp=min(stamp,run['fetch_ended_at'])
     until=min(stamp,run['ended_at']) if run.get('ended_at') is not None else stamp
     elapsed=until-run['started_at'] if run.get('started_at') is not None else 0
     result={'run_id':run['run_id'],'scope':'matching displayed tasks, current run; returned NOAA bytes, not NIC traffic',
@@ -240,6 +241,13 @@ def render(data, now):
         started=run.get('started_at')
         elapsed=(run.get('ended_at') or now)-started if started is not None else None
         lines.append(f"Run {run['run_id'][:12]}  {run['status']}  PID {run['pid']}  elapsed {duration(elapsed)}  heartbeat {int(age)}s ago")
+        if run.get('phase')=='preflight':lines.append('GOES startup: validating mounted storage and available capacity before fetching')
+        if run.get('backup'):
+            backup=run['backup']
+            done=backup.get('verified_bytes',backup.get('uploaded_bytes'))
+            size=backup.get('total_bytes')
+            count=f" | {done/1024**3:.2f}/{size/1024**3:.2f} GiB" if done is not None and size else ''
+            lines.append(f"GOES annual backup: {run.get('phase','backup')} | year {backup.get('year','all')}{count}")
     if data.get('status')=='index_unavailable':
         lines.append('Index temporarily unavailable: '+data.get('reason',''))
     if data.get('cached_at') is not None:

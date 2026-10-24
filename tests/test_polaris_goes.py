@@ -23,6 +23,7 @@ def test_quota_matches_project_filesystem_and_handles_printed_units():
     assert quota_free_gib('p Project eagle 167.7GiB 1TiB -','p')==855
     assert quota_free_gib('p Project /lus/eagle 2T 1T -','p')==0
     assert quota_free_gib('p Project eagle 0 1GiB -','p')==0
+    assert quota_free_gib('p Project /lus/eagle 1T 10T -','p')==8380
 
 
 @pytest.mark.parametrize('text', [
@@ -176,6 +177,7 @@ def test_goes_profile_is_global_and_not_mrms_threads():
     assert (config['download_concurrency'],config['local_readers'],config['range_readers'])==(64,8,16)
     assert profile['job_memory_gib']==384 and profile['pilot_memory_gib']==64
     assert profile['memory_policy']['mode']=='checkpoint_pause'
+    assert profile['storage_cap_gb'] is None
 
 
 @pytest.mark.parametrize('mode,limit,policy',[('study',384,'checkpoint_pause'),('pilot',64,'strict')])
@@ -192,6 +194,28 @@ def test_pbs_scripts_parse_and_mrms_uses_six_hours():
     script=Path('jobs/polaris_mrms.pbs').read_text()
     assert '#PBS -l walltime=06:00:00' in script
     assert 'PBS_MRMS_START' in script and 'start_date=2021-01-01' not in script
+
+
+def test_goes_worker_runs_without_nested_mpi_and_isolates_paths(pbs_environment):
+    env={**pbs_environment,'ECORE_GOES_NODE_ONLY':'1','ECORE_GOES_PARTITION':'part-1',
+         'ECORE_GOES_STATE_ROOT':str(Path(pbs_environment['ECORE_PROJECT_ROOT'])/'isolated'),
+         'ECORE_DRY_RUN':'1'}
+    result=subprocess.run(['bash','jobs/polaris_goes.pbs'],env=env,capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    assert 'directly on assigned node | partition part-1' in result.stdout
+    assert not Path(env['CAPTURE']).exists(), 'Node worker must not call another mpiexec'
+    assert (Path(env['ECORE_GOES_STATE_ROOT'])/'startup.log').exists()
+    assert any(p.name.endswith('-part-1') for p in Path(env['ECORE_NODE_SCRATCH']).iterdir())
+
+
+def test_multinode_pbs_dry_run_uses_partition_dates_without_fetch(pbs_environment,tmp_path):
+    nodefile=tmp_path/'nodes';nodefile.write_text('node-a\nnode-b\nnode-c\n')
+    env={**pbs_environment,'PBS_NODEFILE':str(nodefile),'ECORE_DRY_RUN':'1'}
+    result=subprocess.run(['bash','jobs/polaris_goes_multinode.pbs'],env=env,capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    assert '2022-01-01' in result.stdout and '2026-07-01' in result.stdout
+    assert 'part-2' in result.stdout and 'node-c' in result.stdout
+    assert not Path(env['CAPTURE']).exists()
 
 
 def test_checkpoint_dates_checked_before_opening_archives():
@@ -223,7 +247,7 @@ def pbs_environment(tmp_path):
          'ECORE_PROJECT_ROOT':str(tmp_path/'project'),'ECORE_PYTHON':str(python),
          'ECORE_QUOTA_FREE_GIB':'800','ECORE_PBS_MODE':'study',
          'ECORE_NODE_SCRATCH':str(tmp_path/'scratch'),'CAPTURE':str(tmp_path/'args')}
-    for name in ('ECORE_REVISION','ECORE_CODE_ROOT','ECORE_RECORD_CODE_IDENTITY'):
+    for name in ('ECORE_REVISION','ECORE_CODE_ROOT','ECORE_RECORD_CODE_IDENTITY','ECORE_GOES_STORAGE_CAP_GB'):
         env.pop(name,None)
     for source in ('GOES','MRMS'):
         env[f'PBS_{source}_START']='2021-01-01'
@@ -233,7 +257,7 @@ def pbs_environment(tmp_path):
 
 
 @pytest.mark.parametrize('source,mode,start,end', [
-    ('goes','study','2021-01-01','2023-01-01'),
+    ('goes','study','2021-01-01','2026-07-01'),
     ('mrms','study','2021-01-01','2026-07-01'),
     ('mrms','pilot','2022-09-18T12:00:00Z','2022-09-18T12:40:00Z')])
 def test_mocked_pbs_passes_dates_and_deadline_without_fetch(tmp_path,pbs_environment,source,mode,start,end):
@@ -245,7 +269,45 @@ def test_mocked_pbs_passes_dates_and_deadline_without_fetch(tmp_path,pbs_environ
     assert args[args.index('--end')+1].startswith(end[:10])
     hours=float(args[args.index('--max-hours')+1])
     assert 5<hours<6
-    if source=='goes':assert args[args.index('--storage-cap-gb')+1]=='400'
+    if source=='goes':assert '--storage-cap-gb' not in args
+
+
+def test_explicit_optional_cap_is_passed_to_goes(pbs_environment):
+    env={**pbs_environment,'ECORE_GOES_STORAGE_CAP_GB':'2500'}
+    subprocess.run(['bash','jobs/polaris_goes.pbs'],env=env,check=True,capture_output=True,text=True)
+    args=Path(env['CAPTURE']).read_text().splitlines()
+    assert float(args[args.index('--storage-cap-gb')+1])==2500
+
+
+@pytest.mark.parametrize('value',['0','-5','nan','not-a-number'])
+def test_invalid_explicit_cap_stops_before_application(pbs_environment,value):
+    env={**pbs_environment,'ECORE_GOES_STORAGE_CAP_GB':value}
+    result=subprocess.run(['bash','jobs/polaris_goes.pbs'],env=env,capture_output=True,text=True)
+    assert result.returncode!=0 and 'positive finite GB' in result.stderr
+    assert not Path(env['CAPTURE']).exists()
+
+
+@pytest.mark.parametrize('end,cap,quota,error,expected_size',[
+    ('2026-07-01','',9000,None,'1027.7'),
+    ('2021-01-02','2',9000,None,'0.5'),
+    ('2026-07-01','400',9000,'Selected interval estimate',None),
+    ('2026-07-01','',1,'project quota headroom',None),
+])
+def test_real_goes_storage_preflight_uses_requested_dates(tmp_path,monkeypatch,capsys,end,cap,quota,error,expected_size):
+    import shutil,sys
+    from types import SimpleNamespace
+    script=Path('jobs/polaris_goes.pbs').read_text().split("<<'PY'\n",1)[1].split('\nPY\n',1)[0]
+    monkeypatch.setattr(shutil,'disk_usage',lambda path:SimpleNamespace(free=100*1024**4))
+    monkeypatch.setenv('ECORE_QUOTA_FREE_GIB',str(quota))
+    monkeypatch.setattr(sys,'argv',['-','jobs/goes_polaris.json',str(tmp_path),str(tmp_path),
+        '2021-01-01T00:00:00Z',end+'T00:00:00Z',cap])
+    if error:
+        with pytest.raises(SystemExit,match=error):exec(compile(script,'polaris-storage-preflight','exec'),{})
+    else:
+        exec(compile(script,'polaris-storage-preflight','exec'),{})
+        output=capsys.readouterr().out
+        assert f'{expected_size} GB' in output
+        assert ('GOES dataset cap: none' if not cap else 'Optional GOES dataset cap: 2 GB') in output
 
 
 @pytest.mark.parametrize('source',['goes','mrms'])

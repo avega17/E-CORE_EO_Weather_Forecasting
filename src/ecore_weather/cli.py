@@ -74,7 +74,8 @@ def parser(source):
                        help='Legacy native CMIPF read mode; shared pipeline uses C02 ranges plus seven async bands')
         p.add_argument('--download-concurrency', type=int, default=32,
                        help='Global async whole-object downloads for the shared GOES pipeline')
-        p.add_argument('--staging-mib', type=int, default=16384,
+        from .goes_shared import default_config
+        p.add_argument('--staging-mib', type=int, default=default_config().staging_mib,
                        help='Global staged full-object capacity in MiB')
         p.add_argument("--block-size-kib", type=int, default=1024,
                        help="NOAA HDF5 range-read cache block size, in KiB")

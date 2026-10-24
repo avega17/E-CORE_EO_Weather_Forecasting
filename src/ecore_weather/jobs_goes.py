@@ -114,6 +114,13 @@ def satellite_segments(month):
 
 def checkpoint_matches(saved, product, month=None):
     """Old checkpoints may omit product, but every marker and ZIP must prove it."""
+    if saved.get('status') == 'unavailable':
+        coverage=saved.get('coverage',[])
+        return bool(month and saved.get('product')==product and saved.get('selected_assets')==0
+            and not saved.get('archives') and set(saved.get('bands',[]))==set(BANDS)
+            and utc(saved.get('start','1900-01-01'))==utc(month['start'])
+            and utc(saved.get('end_excluded','1900-01-01'))==utc(month['end_excluded'])
+            and coverage and all(r.get('files')==0 for r in coverage))
     if saved.get("status") != "complete" or not saved.get("archives"):
         return False
     if saved.get("product") not in (None, product):
@@ -176,14 +183,16 @@ def main(argv=None):
     parser.add_argument("--read-processes", type=int, default=2)
     parser.add_argument('--read-mode', choices=['range','async_full','async_pipeline'], default='range')
     parser.add_argument('--download-concurrency', type=int, default=32)
-    parser.add_argument('--staging-mib', type=int, default=16384)
+    from .goes_shared import default_config
+    parser.add_argument('--staging-mib', type=int, default=default_config().staging_mib)
     parser.add_argument("--prefetch-mib", type=int, default=512)
     parser.add_argument("--block-size-kib", type=int, default=1024)
     parser.add_argument("--reuse-cmipf-2km-from", metavar="ARCHIVE_ROOT",
                         help="Build a separately labeled 2 km hybrid using matching CMIPF bands")
     parser.add_argument("--stop-after-month", help="Pause with exit 75 after the verified YYYY-MM month")
     parser.add_argument("--begin-month", help="Begin at this YYYY-MM month in the staged order")
-    parser.add_argument("--max-hours",type=float,default=12.)
+    parser.add_argument("--max-hours",type=float,default=12.,
+                        help="Maximum run hours; 0 disables the time cutoff for local jobs (not PBS)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     requested = None
@@ -193,8 +202,10 @@ def main(argv=None):
         from .pbs import interval
         try: requested = interval(args.start, args.end)
         except ValueError as exc: parser.error(str(exc))
-    if args.max_hours <= 0 or args.drain_minutes < 0:
-        parser.error('Positive max-hours and nonnegative drain-minutes required')
+    if args.max_hours < 0 or args.drain_minutes < 0:
+        parser.error('Nonnegative max-hours and drain-minutes required')
+    if args.max_hours == 0 and (os.getenv('PBS_JOBID') or args.pipeline != 'shared'):
+        parser.error('--max-hours 0 is supported only for local shared-pipeline jobs')
     if not 0 < args.checkpoint_fraction <= 1:
         parser.error('checkpoint-fraction must be greater than zero and at most one')
     if args.checkpoint_dir and (args.pipeline != 'shared' or args.product != 'ABI-L2-CMIPF'):
@@ -462,7 +473,7 @@ def run_shared(plan,args,config):
         'memory_report':os.getenv('ECORE_GOES_MEMORY_REPORT'),
         'maximum_hours':args.max_hours,'minimum_drain_minutes':args.drain_minutes})
     started=time.perf_counter();completed=[];requests=[];metadata={};segments_done={};durations=[]
-    deadline=time.monotonic()+args.max_hours*3600
+    deadline=time.monotonic()+args.max_hours*3600 if args.max_hours else None
     def checkpoint(month):return output/'checkpoints'/month['stage']/f"{month['start']}.json"
     def monthly_requests():
         # Validate completed months when chronological admission reaches them,
@@ -495,7 +506,9 @@ def run_shared(plan,args,config):
         row={'status':'complete' if archives else 'unavailable','product':args.product,
             'stage':month['stage'],'start':month['start'],'end_excluded':month['end_excluded'],
             'bands':BANDS,'selected_assets':sum(r.get('selection_summary',{}).get('files',0) for r in reports),
+            'coverage':[r.get('selection_summary',{}) for r in reports],
             'archives':archives,'available_bands':bands,'missing_bands':sorted(set(BANDS)-set(bands)),
+            'source_issues':[issue for r in reports for issue in r.get('source_issues',[])],
             'read_bytes':sum(r.get('read_bytes',0) for r in reports),
             'stored_bytes':sum(r.get('stored_bytes',0) for r in reports),
             'wall_seconds':max((r.get('wall_s',0) for r in reports),default=0),
@@ -518,6 +531,7 @@ def run_shared(plan,args,config):
     def paused():
         allowance=args.drain_minutes*60 if args.checkpoint_dir else max(args.drain_minutes*60, 1.3*max(durations,default=0))
         if (output/'pause.request').exists():return 'explicit pause.request; draining admitted months'
+        if deadline is None:return False
         remaining=deadline-time.monotonic()
         if remaining <= allowance:
             policy='configured drain interval with durable partial checkpoints' if args.checkpoint_dir else '130% of longest completed month, with configured minimum'

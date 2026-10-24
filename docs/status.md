@@ -1,3 +1,105 @@
+# Three-node GOES implementation — October 24, 2026
+
+The user confirms the project's **10 TB Eagle quota** took effect October 23.
+The latest Polaris GOES job reached its requested 24-hour walltime; its exact
+completed-month inventory has not been inspected remotely in this update.
+The native raw GOES study estimate is about 0.86 TB, or 1.03 TB with its historical
+20% allowance. Preprocessing, validation datasets and model assets remain
+unestimated; the quota is shared, not an amount of currently free space.
+
+The PBS default cap has been removed and new GOES date defaults extend through
+June 2026. Optional explicit caps and real quota/scratch checks remain supported.
+Local orchestration, PBS, profile, memory, native-array, source-integrity and
+recovery checks passed **196 tests, one skipped**, plus shell syntax and Python
+compilation. These used fixture data, without NOAA reads or Polaris submission.
+The active workstation source/profile were not changed.
+
+The [three-node extension and final DuckDB consolidation](study_jobs.md#three-node-goes-fetching)
+are now implemented. Each node owns separate months and a private writable index;
+one later process merges closed snapshots and prior GOES/MRMS records into one
+canonical project operational DB. Existing partial recovery files and verified
+archives are reused; the known October 2023 source-gap evidence is now portable
+in `jobs/goes_source_issues.json`. The versioned date partitions cover remaining
+2022 work through June 2026, assuming 2021 is complete.
+
+Local tests include three independent subprocesses, distinct hostfiles/state,
+preserved exit 75, source-gap identity checks and atomic database consolidation.
+The running workstation pipeline was left unchanged. No PBS submission, live
+three-node pilot, network comparison or Polaris performance claim was made.
+Historical smaller-quota limits below describe earlier runs only.
+
+# Local GOES read-error recovery — October 24, 2026
+
+The local run completed all eight native bands for **March–August 2023** before
+an HDF5 decompression failure stopped the two next months. The old error lacked
+a filename. Fresh-handle retries and source-specific error reporting exposed a
+corrupt GOES-16 C02 object at **2023-10-13 14:20:20.9 UTC**. Its complete 402.9 MB
+download matches the multipart S3 ETag but still cannot decode the requested
+pixels. The four immediately following observations read successfully.
+Earlier probes had missed the offending file; they did not establish a network
+fault. Bounded diagnostic probes returned 1.75 GB within their 2 GiB budget;
+the production restart attempts have separate transfer counters in their run records.
+
+Range reads now reject incomplete byte responses and retry recognized HDF5
+errors three times with fresh handles. The confirmed corrupt object stays in
+STAC with its integrity evidence. Its unreadable C02 observation is absent from
+the raw array and explicitly documented as a gap; no pixels are invented.
+Unconfirmed failures still stop for investigation. A gap beyond the verified
+prefix reuses the existing scratch store and preserves committed measurements,
+coordinates and metadata. Archive and annual-backup coverage retain the evidence.
+The checks passed **228 tests, with one skipped**.
+
+Startup checks found **34 complete native months**, totaling **439.95 GB**, and
+enough DAS and Linux scratch capacity. The first recovery attempt preserved all
+9,704 previously checkpointed band observations and advanced all sixteen bands
+before reaching the corrupt source. Those additional batches are also reusable.
+Research archives are unchanged. Recovery evidence and current launch details
+are in `results/study-goes-native/recovery.json` and `launch.json` respectively.
+Restart validation reads local arrays before new source requests; the finer C02
+grid and larger saved prefix can take several minutes to validate.
+
+**Recovery verified:** run `2a70cc2bbde94e43bca155cc3e5087de`, PID `26615`,
+in tmux `ecore_goes_local` has advanced all sixteen band-month checkpoints.
+October C02 passed the corrupt scan and committed at least 1,816 observations.
+Both month owners and the configured reader processes are alive, with a fresh
+heartbeat and no run error. The prior twelve-minute failure is retained under
+run `d972a56b6be9442fba693642c8e7737e`; it is not the current attempt. Fetching
+continues through June 2026, followed by the existing full-study HF backup gate.
+The temporary 402.9 MB diagnostic source file was removed after retaining its
+checksum/error evidence. Completed archives and partial recovery stores remain.
+
+Monitor the resumed months with:
+
+```bash
+watch -n 30 -t 'python scripts/dataset_jobs.py status goes --progress results/study-goes-native/progress.json --start 2023-09-01'
+```
+
+# Local GOES continuation and annual backups — October 23, 2026
+
+Implementation and local validation are complete: **240 tests passed, one skipped**;
+all four Jupytext pairs match. Workstation buffers are now 8 GiB ROI and 64 GiB
+Linux-disk staging, with the same two normal months, one C02 tail and shared read
+pools. Production memory protection uses actual available WSL RAM rather than a
+hard RSS ceiling. `--max-hours 0 --backup-after-complete` supports a continuous
+local study followed by sequential, remotely verified annual GOES backups.
+
+Local completion records cover January 2021–February 2023 and January–February
+2026: 224 native band ZIPs, 359.34 GB. The 2021 and 2022 checkpoint inventories
+each contain 96 monthly band archives. The DAS write/read/delete probe and a
+real Earth2Studio write–reopen–value check passed; the capacity estimate allows
+approximately 688 GB additional DAS output with margin and 177 GB Linux working
+space. HF S3 configuration is present; no annual GOES upload has started.
+
+The first launch after the user power-cycled P: verified advancing March/April
+checkpoints. That attempt subsequently completed March–August before the
+read-error recovery above. Continuous local fetching still runs through June
+2026 without a twelve-hour cutoff. Annual HF backups start only after full-study
+completion; none has started. The running Polaris job was not accessed or changed.
+
+Eagle remains the intended long-term home for datasets and model weights.
+Future GOES restoration from HF into Polaris scratch remains optional transfer
+functionality. The original raw-study quota restriction has since been removed.
+
 # Polaris GOES memory stop — October 23, 2026
 
 The user-supplied tail for **7776485** shows complete eight-band archives for
@@ -125,7 +227,8 @@ and its explicit-date dry run selected exactly 24 study months. The wrapper is
 for **manual pilot and study submission**, not an already launched job. The initial Polaris profile uses four normal months plus
 one C02 tail, 64 async downloads, eight local readers and sixteen range readers.
 It is unmeasured on Polaris. The intended dates are 2021-01-01 through 2023-01-01,
-end excluded, with a 400 GB GOES-only cap. See the [manual procedure](study_jobs.md#polaris-goes-manual-pilot-and-20212022-study).
+end excluded, under the earlier limited allocation. The current full-study
+scope supersedes that restriction; see the [manual procedure](study_jobs.md#polaris-goes-pilot-and-full-study-fetching).
 
 The annual workstation figures are complete and validated for 2021–2025 and
 January–June 2026: twelve maps, each in PNG and SVG. All five new source pilots

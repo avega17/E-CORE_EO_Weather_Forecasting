@@ -11,6 +11,47 @@ import pystac
 from .common import Asset, Selection, utc, write_json
 
 
+def record_corrupt_source(selection, asset, error):
+    """Attach exceptional scientific coverage evidence; keep the STAC object.
+
+    A range failure, missing file or arbitrary error is insufficient. The caller
+    must have decoded a complete object whose MD5 ETag was independently matched.
+    """
+    from .goes import ConfirmedCorruptSourceError
+    if not isinstance(error, ConfirmedCorruptSourceError) or asset not in selection.assets:
+        raise ValueError('A selected, checksum-confirmed corrupt source is required')
+    fact = {'status':'confirmed_corrupt_source', 'asset_id':asset.id,
+        'source_url':asset.url, 'time':asset.time, 'etag':asset.etag,
+        'source_bytes':asset.size, 'product':selection.product,
+        'region':list(selection.bbox), 'error':str(error),
+        'integrity_evidence':error.evidence}
+    selection.discovery_facts = dict(getattr(selection, 'discovery_facts', {}))
+    facts = selection.discovery_facts.setdefault('source_issues', [])
+    facts[:] = [row for row in facts if row.get('asset_id') != asset.id]
+    facts.append(fact)
+    confirmed_source_issues(selection)  # Reject incomplete or unscoped evidence.
+    return fact
+
+
+def confirmed_source_issues(selection):
+    """Return only exact-source, exact-ROI confirmed corruption records."""
+    assets = {asset.id:asset for asset in selection.assets}
+    issues = {}
+    for issue in getattr(selection, 'discovery_facts', {}).get('source_issues', []):
+        if issue.get('status') != 'confirmed_corrupt_source':continue
+        asset = assets.get(issue.get('asset_id'));evidence=issue.get('integrity_evidence', {})
+        proof_etag=evidence.get('etag') if evidence.get('verification') == 'full-object-size-and-multipart-etag-md5' else evidence.get('md5')
+        if (asset is None or issue.get('source_url') != asset.url or issue.get('etag') != asset.etag
+                or issue.get('source_bytes') != asset.size or issue.get('time') != asset.time
+                or issue.get('product') != selection.product or issue.get('region') != list(selection.bbox)
+                or evidence.get('download_bytes') != asset.size or proof_etag != asset.etag.strip('"').lower()
+                or evidence.get('verification') not in (
+                    'full-object-size-and-single-part-etag-md5', 'full-object-size-and-multipart-etag-md5')):
+            raise ValueError('Corrupt-source evidence does not match the selected source and ROI')
+        issues[asset.id] = issue
+    return issues
+
+
 def save_selection(selection: Selection, directory, index_results=True, compressed=True):
     directory = Path(directory)
     request = asdict(selection)

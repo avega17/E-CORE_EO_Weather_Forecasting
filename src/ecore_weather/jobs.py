@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import threading
+import time
 from .runlog import Run,scratch_root,task_progress,closed_snapshot,BoundedStream,queue_saved_selections
 
 
@@ -15,10 +16,11 @@ def _option(arguments,name,default):
     except ValueError:return default
 
 
-def run_fetch(source,arguments,index_path=None,durable_state=None):
+def run_fetch(source,arguments,index_path=None,durable_state=None,backup_options=None):
     from . import jobs_goes,jobs_mrms
     module=jobs_goes if source=='goes' else jobs_mrms
     if '--dry-run' in arguments:return module.main(arguments)
+    print(f'E-CORE {source.upper()} job starting',flush=True)
     output=Path(_option(arguments,'--output',f'results/study-{source}-native' if source=='goes' else 'results/study-mrms'))
     scratch=Path(_option(arguments,'--scratch',str(scratch_root())))
     if '--scratch' not in arguments:arguments=[*arguments,'--scratch',str(scratch)]
@@ -37,9 +39,11 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
             pass  # Optional code metadata cannot prevent the requested fetch.
     import platform,importlib.metadata
     environment={'python':__import__('sys').version,'platform':platform.platform(),'packages':{name:importlib.metadata.version(name) for name in ('earth2studio','zarr','duckdb','obstore','h5py','xarray','numpy')}}
-    run=Run({'environment':environment,'code_snapshot':identity,'source':source,'arguments':arguments,'index':index_path,'scratch':str(scratch),
+    run=Run({'environment':environment,'code_snapshot':identity,'source':source,'arguments':arguments,'index':str(index_path) if index_path else None,'scratch':str(scratch),
         'pbs_job_id':os.getenv('PBS_JOBID')},output=os.getenv('ECORE_RUN_ROOT','results/runs'),index_path=index_path)
     os.environ['ECORE_RUN_ID']=run.id
+    # A previous in-process run must not select this attempt's progress/exit mode.
+    os.environ.pop('ECORE_SHARED_GOES',None)
     stop=threading.Event()
     def publish_progress():
         progress = _option(arguments, '--durable-progress', None)
@@ -51,7 +55,8 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
     def heartbeat():
         while not stop.wait(30):
             try:
-                if source=='goes':queue_saved_selections(run,output,_option(arguments,'--destination','/mnt/p/ecore_eo_datasets'))
+                if source=='goes' and run.state.get('phase','fetch')=='fetch':
+                    queue_saved_selections(run,output,_option(arguments,'--destination','/mnt/p/ecore_eo_datasets'))
                 
                 if os.getenv('ECORE_SHARED_GOES')!='1':task_progress(run,scratch)
                 run.update()
@@ -65,12 +70,24 @@ def run_fetch(source,arguments,index_path=None,durable_state=None):
     import sys
     stdout=BoundedStream(sys.stdout,run.output/'run.log');stderr=BoundedStream(sys.stderr,run.output/'run.log',handler=stdout.handler)
     try:
-        with contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):code=module.main(arguments)
+        with contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):
+            if backup_options:
+                from .goes_backup import local_preflight
+                run.update(phase='preflight')
+                print('GOES local preflight: checking mounted storage, capacity and existing archives',flush=True)
+                run.update(local_preflight=local_preflight(arguments))
+                run.update(phase='fetch')
+            code=module.main(arguments)
+            if code == 0 and backup_options:
+                from .goes_backup import after_fetch
+                run.update(phase='backup',fetch_ended_at=time.time())
+                code=after_fetch(arguments, backup_options, pause, run.update)
         if source=='goes' and code and code!=75 and pause.exists() and os.getenv('ECORE_SHARED_GOES')!='1':
             run.state['interrupted_exit_code']=code
             code=75
         return code
     except Exception as exc:
+        code=1
         run.state['error']=f'{type(exc).__name__}: {exc}'
         if source=='goes' and pause.exists() and os.getenv('ECORE_SHARED_GOES')!='1':
             code=75
@@ -128,6 +145,9 @@ def status(index_path=None, *, coordinator=False):
             elif __import__('time').time()-heartbeat>120:resolved='unknown'
         runs.append({'run_id':rid,'recorded_status':state,'status':resolved,'host':host,
                      'pid':pid,'process_alive':alive,'heartbeat':heartbeat,
+                     'phase':json.loads(payload).get('phase','fetch'),
+                     'backup':json.loads(payload).get('backup'),
+                     'fetch_ended_at':json.loads(payload).get('fetch_ended_at'),
                      'started_at':json.loads(payload).get('started_at'),
                      'ended_at':json.loads(payload).get('ended_at')})
     return {'runs':runs,'tasks':tasks}
@@ -138,6 +158,9 @@ def main(argv=None):
     p.add_argument('operation',choices=['fetch','resume','status','pause','stop-after','estimate','benchmark','backup','cleanup','index','snapshot','handoff'])
     p.add_argument('--index-path',help='Linux-local DuckDB path')
     p.add_argument('--durable-state',help='Destination for a closed index snapshot')
+    p.add_argument('--backup-after-complete',action='store_true',help='GOES only: back up annual bundles after the entire study verifies')
+    p.add_argument('--backup-work-dir',help='Linux disk for one temporary annual GOES bundle at a time')
+    p.add_argument('--backup-remote-root',help='Optional HF bucket yearly-backup prefix')
     import sys
     inputs=list(sys.argv[1:] if argv is None else argv)
     source=inputs.pop(1) if len(inputs)>1 and inputs[1] in ('goes','mrms') else None
@@ -146,6 +169,16 @@ def main(argv=None):
     if args.index_path:os.environ['ECORE_INDEX_PATH']=args.index_path
     if args.operation in ('fetch','resume'):
         if args.source not in ('goes','mrms'):p.error('Choose goes or mrms')
+        backup=None
+        if args.backup_after_complete:
+            if args.source!='goes':p.error('--backup-after-complete currently supports GOES only')
+            from .goes_backup import validate_fetch_arguments
+            try:validate_fetch_arguments(remaining)
+            except ValueError as exc:p.error(str(exc))
+            backup={'work_dir':args.backup_work_dir,'remote_root':args.backup_remote_root}
+        elif args.backup_work_dir or args.backup_remote_root:
+            p.error('Backup options require --backup-after-complete')
+        if backup:return run_fetch(args.source,remaining,args.index_path,args.durable_state,backup_options=backup)
         return run_fetch(args.source,remaining,args.index_path,args.durable_state)
     if args.operation=='status':
         from .job_status import main as monitor
@@ -168,7 +201,10 @@ def main(argv=None):
     elif args.operation=='estimate':
         from .jobs_estimate import main as handler
     elif args.operation=='backup':
-        from .jobs_backup import main as handler
+        if args.source=='goes':
+            from .goes_backup import main as handler
+        else:
+            from .jobs_backup import main as handler
     elif args.operation=='handoff':
         if args.source!='goes':p.error('handoff currently supports GOES only')
         from .goes_rollout import main as handler

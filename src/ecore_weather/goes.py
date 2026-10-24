@@ -35,6 +35,52 @@ class ConfirmedCorruptSourceError(OSError):
         super().__init__(str(error))
         self.evidence = evidence
 
+    def __reduce__(self):
+        return type(self), (str(self), self.evidence)
+
+
+def _verified_object_evidence(path, asset):
+    """Require a matching whole-object or multipart MD5 ETag, not size alone.
+
+    Some S3 ETags are not MD5 checksums. Unsupported encodings or part sizes
+    deliberately return no confirmation instead of calling a source corrupt.
+    """
+    path = Path(path)
+    if path.stat().st_size != asset.size:return None
+    etag = asset.etag.strip('"').lower()
+    if re.fullmatch(r'[0-9a-f]{32}', etag):
+        with path.open('rb') as stream:
+            checksum = hashlib.file_digest(stream, 'md5').hexdigest()
+        if checksum == etag:
+            return {'verification':'full-object-size-and-single-part-etag-md5',
+                    'download_bytes':asset.size, 'md5':checksum}
+    match = re.fullmatch(r'([0-9a-f]{32})-([1-9][0-9]*)', etag)
+    if match:
+        count = int(match[2])
+        for part_mib in (5, 8, 16, 32, 64, 128):
+            part_size = part_mib*1024**2
+            if (asset.size+part_size-1)//part_size != count:continue
+            with path.open('rb') as stream:
+                parts = [hashlib.md5(block).digest()
+                         for block in iter(lambda: stream.read(part_size), b'')]
+            actual = hashlib.md5(b''.join(parts)).hexdigest()+f'-{len(parts)}'
+            if actual == etag:
+                return {'verification':'full-object-size-and-multipart-etag-md5',
+                        'download_bytes':asset.size, 'etag':actual,
+                        'part_size':part_size, 'parts':len(parts)}
+    return None
+
+
+def _read_full_source(path, asset, bbox, bands, allow_missing=False):
+    try:
+        with xr.open_dataset(path, engine='h5netcdf', decode_cf=False, mask_and_scale=False) as ds:
+            return subset_dataset(ds, bbox, bands, allow_missing)
+    except Exception as exc:
+        if hdf_integrity_error(exc) and (evidence := _verified_object_evidence(path, asset)):
+            raise ConfirmedCorruptSourceError(exc, {**evidence,
+                'error':f'{type(exc).__name__}: {exc}'}) from exc
+        raise
+
 
 def east_satellite(start, end):
     # NOAA OSPO reports GOES-19 became operational East at 15:00 UTC.
@@ -247,32 +293,30 @@ def read(asset, bbox=PR_BBOX, bands=(8, 13), transport=None, full_file=False,
             path.write_bytes(transport.read(asset))
             if path.stat().st_size != asset.size:
                 raise IOError("Incomplete source download.")
-            try:
-                with xr.open_dataset(path, engine="h5netcdf", decode_cf=False, mask_and_scale=False) as ds:
-                    subset = subset_dataset(ds, bbox, bands, allow_missing)
-            except Exception as exc:
-                # Only classify HDF corruption after verifying the complete
-                # object's content, not a failed range request or partial download.
-                if hdf_integrity_error(exc):
-                    checksum = hashlib.md5()
-                    with path.open('rb') as stream:
-                        for block in iter(lambda: stream.read(4 * 1024**2), b''):
-                            checksum.update(block)
-                    if checksum.hexdigest() == asset.etag.strip('"').lower():
-                        raise ConfirmedCorruptSourceError(exc, {
-                            'verification': 'full-object-size-and-single-part-etag-md5',
-                            'download_bytes': path.stat().st_size,
-                            'md5': checksum.hexdigest(),
-                            'error': f'{type(exc).__name__}: {exc}'}) from exc
-                raise
+            subset = _read_full_source(path, asset, bbox, bands, allow_missing)
     else:
-        with remote_file(asset, transport, block_size=block_size) as source:
-            with xr.open_dataset(source, engine="h5netcdf", decode_cf=False, mask_and_scale=False) as ds:
-                subset = subset_dataset(ds, bbox, bands, allow_missing)
+        # A successful HTTP request can still leave an HDF5 read unable to
+        # decompress its chunks. Reopen both the bounded byte cache and HDF5
+        # handle on retry; never reuse a failed decoder/cache or fabricate pixels.
+        for attempt in range(3):
+            try:
+                with remote_file(asset, transport, block_size=block_size) as source:
+                    with xr.open_dataset(source, engine="h5netcdf", decode_cf=False, mask_and_scale=False) as ds:
+                        subset = subset_dataset(ds, bbox, bands, allow_missing)
+                break
+            except Exception as exc:
+                if not hdf_integrity_error(exc):raise
+                if attempt == 2:
+                    raise OSError(f'GOES range read failed after 3 fresh HDF5 attempts; '
+                        f'asset {asset.id}, observation {asset.time}, source {asset.url}: {exc}') from exc
+                if hasattr(transport,'retries'):
+                    with transport._lock:transport.retries += 1
+                time.sleep(.5 * 2**attempt)
     elapsed = time.perf_counter() - before
     subset.attrs.update(source_url=asset.url, source_etag=asset.etag,
                         observation_time=asset.time, scan_end=asset.end_time, requested_bbox=list(bbox))
-    return subset, {"read_decode_crop_s": elapsed}
+    return subset, {"read_decode_crop_s": elapsed,
+                    "hdf_read_retries": attempt if not full_file else 0}
 
 
 def decode(ds):

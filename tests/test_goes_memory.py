@@ -137,3 +137,32 @@ def test_polari_goes_wrapper_separates_study_and_pilot_policy():
     script=Path('jobs/polaris_goes.pbs').read_text()
     assert 'pilot_memory_gib' in script and 'ECORE_GOES_MEMORY_POLICY' in script
     assert 'ECORE_GOES_MEMORY_REPORT="$state_root/memory.json"' in script
+
+
+def test_workstation_warns_on_rss_but_pauses_only_for_actual_ram_pressure(tmp_path,capsys):
+    configure_study('jobs/goes_workstation.json',tmp_path/'memory.json')
+    guard=MemoryGuard.from_environment()
+    assert guard.limit==0 and guard.policy.warning_gib==64
+    values=snapshot(rss=110,available=20)  # Shared pages can inflate RSS.
+    guard.sampler=lambda:values
+    guard.check(now=0);guard.check(now=65)
+    assert 'memory warning' in capsys.readouterr().out
+    values['node_available_bytes']=7*GIB
+    guard.check(now=70);guard.check(now=125)
+    with pytest.raises(IntentionalPause,match='available RAM'):guard.check(now=130)
+
+
+def test_workstation_critical_ram_pressure_has_no_grace(tmp_path):
+    configure_study('jobs/goes_workstation.json',tmp_path/'memory.json')
+    guard=MemoryGuard.from_environment();guard.sampler=lambda:snapshot(30,3)
+    with pytest.raises(IntentionalPause,match='critical available RAM'):guard.check(now=0)
+
+
+def test_workstation_buffers_are_global_and_staging_is_not_ram():
+    from ecore_weather.goes_shared import SharedConfig
+    data=json.loads(Path('jobs/goes_workstation.json').read_text())['global_config']
+    data={k:v for k,v in data.items() if k in SharedConfig.__dataclass_fields__}
+    config=SharedConfig(**data).validate()
+    assert (config.roi_budget_mib,config.staging_mib)==(8192,65536)
+    assert (config.month_writers,config.tail_months,config.download_concurrency)==(2,1,32)
+    assert (config.local_readers,config.range_readers)==(2,8)

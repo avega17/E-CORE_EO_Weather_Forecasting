@@ -37,6 +37,17 @@ Do not run another workstation fetch while the production study is active.
 [Study jobs](study_jobs.md) gives resumable full-period commands and an independent
 MRMS shell wrapper. The Polaris PBS wrapper and authenticated pilot procedure are documented there. Reuse one command per source across wall-time-limited resumptions.
 
+For local GOES, `--max-hours 0 --backup-after-complete` keeps the shared study
+running until completion or an explicit/safety pause, then packages and verifies
+one HF annual backup at a time. It does not start backups on exit 75 or failure.
+Use the workstation profile for its 8 GiB ROI budget, 64 GiB disk staging and
+available-RAM safeguards; the Polaris profile is separate. See [annual backup
+commands](study_jobs.md#local-fetch-followed-by-annual-hf-backup). Future GOES
+restoration into Polaris scratch is optional future transfer/cache functionality;
+the expanded Eagle quota removes the original raw-study storage constraint.
+Eagle is the intended long-term home for datasets and model weights. Storage for
+preprocessed arrays, validation datasets and model assets remains unestimated.
+
 ## Where changes belong
 
 | Area | Modules |
@@ -48,7 +59,7 @@ MRMS shell wrapper. The Polaris PBS wrapper and authenticated pilot procedure ar
 | Operational records and index | `runlog`, `index`, `job_status` |
 | Notebook controls and CLI | `ui`, `cli`, `viewer`, `report_ui`, `report_cli` |
 | Quality/reporting | `diagnostics`, `dataset_report`, `report_views`, `mrms_radar_figures` |
-| HF backup/restore | `jobs_backup`, `hf_storage`, `view_backup` |
+| HF backup/restore | `goes_backup`, `jobs_backup`, `hf_storage`, `view_backup` (MRMS restoration) |
 
 Keep scripts thin: `scripts/dataset_jobs.py` for operations and
 `scripts/dataset_report.py` for diagnostics/exports. Avoid new one-off watchers.
@@ -80,6 +91,28 @@ validating them through a clone; do not call a different revision local validati
 Restart a notebook kernel after package changes and rerun setup/control cells.
 
 ## Recovery decisions
+
+For a GOES HDF5 decompression/integrity error, first inspect the source identity
+in the failure. Range reads now make up to three attempts with fresh file/cache
+handles and reject incomplete HTTP range bodies. A persistent error still stops
+the job with its checkpoints intact; never classify it as missing pixels or
+remove it from the selection without source-integrity evidence. Resume using the
+same saved selection and scratch directory after investigating the named object.
+For a complete, checksum-confirmed object that also fails local decoding, use
+`goes._read_full_source` to obtain `ConfirmedCorruptSourceError`, then
+`catalog.record_corrupt_source(selection, asset, error)` and
+`catalog.save_selection(selection, original_directory, index_results=False)`
+while the job is stopped. This retains the requested object and explicit evidence
+in STAC. Only its unreadable observation is absent from the array; archive
+metadata, the completion marker and backup coverage retain the gap. Unsupported
+checksums or ordinary read errors cannot authorize an exclusion.
+
+A resumed band first reads its saved arrays and checks their recorded checksums.
+It can therefore show an unchanged observation count and no new download bytes
+while doing useful local recovery work. A large C02 checkpoint takes longer
+because its native pixels are finer. Other bands may already be fetching while
+C02 is still validating. Preserve the scratch directory; use the live heartbeat,
+process activity and subsequent checkpoint updates to assess recovery.
 
 | Situation | Next step |
 |---|---|
@@ -162,8 +195,41 @@ archive validation. A full day is a later bounded test, not a dry run.
 The startup correction also passed 117 local regression checks (one mock-only
 case skipped). Both wrappers report entry, failing phase and final exit status;
 one small source/mode `startup.log` is overwritten for each attempt.
-[Manual testing instructions](study_jobs.md#polaris-goes-manual-pilot-and-20212022-study)
+[Manual testing instructions](study_jobs.md#polaris-goes-pilot-and-full-study-fetching)
 cover the four-context GOES pilot, progress snapshots, quotas and resubmission.
+The default GOES interval now extends through June 2026, with no artificial
+dataset cap. Explicit exported dates still override defaults, so reset an older
+`PBS_GOES_END` when extending a resumed study. An optional positive dataset cap
+can be set through `ECORE_GOES_STORAGE_CAP_GB`; pass its name explicitly with
+`qsub -v` only when it is set. Actual quota and scratch checks remain required.
+The [three-node extension](study_jobs.md#three-node-goes-fetching)
+keeps existing readers/writers, isolates state per date partition, and merges
+closed node databases only after fetching stops. `jobs_multinode` and
+`index_merge` provide the orchestration and consolidation without changing the
+active workstation pipeline. The multi-node PBS wrapper starts three independent
+one-node MPI applications; each invokes the existing wrapper with node-only setup,
+so it never starts nested MPI. Local fixture tests do not establish Polaris
+placement, external access or a production speedup.
+
+Run the focused orchestration checks with:
+
+```bash
+python -m pytest -q tests/test_goes_multinode.py tests/test_polaris_goes.py
+bash -n jobs/polaris_goes_multinode.pbs jobs/polaris_goes.pbs
+```
+
+Each node's writable DB stays on SSD. Closed Eagle snapshots are merger inputs,
+not databases to open for writing. Consolidation uses current completion markers
+and physical ZIP sizes; it does not repeat the original array/hash read-back of
+every archive. The merge leaves inputs intact on conflict or missing snapshots.
+Keep the small confirmed source-gap file in `jobs/` with the code: ignored
+workstation STAC selections do not otherwise travel to Polaris.
+
+The October 24 implementation passed 196 local checks (one skipped), including
+native/source metadata, checkpoint recovery, independent process exits, index
+consolidation and PBS mocks. Shell syntax and compilation also passed. This
+does not substitute for the manual multi-node pilot or measure shared-proxy
+scaling on Polaris.
 
 GOES storage reservations are a disposable node-local resource ledger. Scientific
 provenance stays in native archives; the shared database copy is always closed.

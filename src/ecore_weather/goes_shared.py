@@ -163,7 +163,8 @@ class SharedReads:
                 raise MemoryError('One eight-scan checkpoint exceeds global staging capacity')
         metrics = {k:0 for k in ('read_bytes','range_requests','source_retries','failed_requests',
             'transfer_task_seconds','download_cache_seconds','cached_full_source_files',
-            'read_decode_crop_seconds','reader_cpu_seconds','reader_seconds','active_downloads','peak_active_downloads')}
+            'read_decode_crop_seconds','reader_cpu_seconds','reader_seconds','active_downloads','peak_active_downloads',
+            'hdf_read_retries')}
         self.states[key] = {**message, 'directory': directory, 'cursor':0, 'batch':None,
             'files':{}, 'dispatched':set(), 'held':{}, 'payload':None, 'metrics':metrics}
         self.order.append(key)
@@ -191,6 +192,7 @@ class SharedReads:
                 dataset,timing = await loop.run_in_executor(self.range_pool,range_read,asset,state['bbox'],band,self.config.block_size)
                 for key in ('read_bytes','range_requests','source_retries','failed_requests','transfer_task_seconds'):
                     state['metrics'][key] += timing[key]
+                state['metrics']['hdf_read_retries'] += timing.get('hdf_read_retries',0)
             else:
                 dataset,timing = await loop.run_in_executor(self.local_pool,local_read,asset,state['files'][index],state['bbox'],band)
             # Account for reader IPC, broker payload and writer IPC simultaneously.
@@ -203,6 +205,10 @@ class SharedReads:
             state['metrics']['reader_cpu_seconds'] += timing.get('reader_cpu_seconds',0)
             self._reply(state, {'op':'result','index':index,'result':(dataset,timing),
                                 'metrics':dict(state['metrics'])})
+        except Exception as exc:
+            raise OSError(f'GOES {state["month"]} C{band:02d} source read failed; '
+                f'asset {asset.id}, observation {asset.time}, source {asset.url}: '
+                f'{type(exc).__name__}: {exc}') from exc
         finally:
             if state['payload'] is None or reservation == self.config.roi_budget_mib*MIB:
                 self.probes = max(0,self.probes-1)
@@ -442,9 +448,11 @@ def _progress(active,broker,index_results):
                 'read_bytes':task.get('initial_read_bytes',0)+attempt_bytes,
                 'writer_role':context['role'],'global_limits':broker.config.manifest(),
                 'global_roi_reserved_bytes':snap['roi_reserved_bytes'],
-                'global_scratch_reserved_bytes':snap['scratch_reserved_bytes']}
+                'global_scratch_reserved_bytes':snap['scratch_reserved_bytes'],
+                'listed_source_objects':len(assets),
+                'unavailable_source_objects':len(assets)-len(context['requested_indices'][band])}
             updates.append([str(Path(target)/'raw.zarr.zip'),os.getenv('ECORE_RUN_ID','shared-goes'),
-                'goes',context['selection'].product,assets[0].time[:7],band,len(assets),
+                'goes',context['selection'].product,assets[0].time[:7],band,len(context['requested_indices'][band]),
                 sum(i<task.get('next_index',0) for i in context['requested_indices'][band]),0,'checkpointed' if task.get('next_index') else 'fetching',
                 time.time(),json.dumps(data,default=str)])
     if index_results:
@@ -475,7 +483,7 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
         if not progress:return
         count=completed_observations
         for entry in active.values():
-            requested={band:len(assets) for (_,band),assets in entry['groups']}
+            requested={band:len(entry['requested_indices'][band]) for (_,band),assets in entry['groups']}
             count+=sum(requested[band] if band in entry['verified'] else
                 sum(i<task.get('next_index',0) for i in entry['requested_indices'][band])
                 for band,task in entry['task_progress'].items())
@@ -533,8 +541,9 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                         rows=_archive_rows(selection,assets,prior)
                         selected_ids={asset.id for asset in assets}
                         requested_indices[band]=[i for i,row in enumerate(rows) if row['asset_id'] in selected_ids]
+                        original_rows=_archive_rows(selection,assets,prior,include_unavailable=True)
                         identity=hashlib.sha256(json.dumps({'target':str(Path(target).resolve()),
-                            'ids':[r['asset_id'] for r in rows]},sort_keys=True).encode()).hexdigest()[:24]
+                            'ids':[r['asset_id'] for r in original_rows]},sort_keys=True).encode()).hexdigest()[:24]
                         path=scratch/f'goes-cmipf-{identity}'/'progress.json'
                         data=json.loads(path.read_text()) if path.is_file() else {}
                         tasks[band]={**data,'progress_path':str(path),'initial_read_bytes':data.get('read_bytes',0)}
@@ -578,9 +587,12 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                         results=message['results'];sel=entry['selection']
                         by_band={r['band']:r for r in results}
                         from .monthly import _band,_identity
+                        from .catalog import confirmed_source_issues
+                        source_issues=confirmed_source_issues(sel)
                         records=[{'asset_id':a.id,'time':a.time,'source_url':a.url,'source_bytes':a.size,
                             'etag':a.etag,'product':sel.product,'band':_band(a),
-                            'url':by_band[_band(a)]['path'],'status':'reused' if by_band[_band(a)]['status']=='reused' else 'archived',
+                            'url':None if a.id in source_issues else by_band[_band(a)]['path'],
+                            'status':'corrupt_source' if a.id in source_issues else 'reused' if by_band[_band(a)]['status']=='reused' else 'archived',
                             'subset_id':_identity(sel,_band(a))} for a in sel.assets] if retain_records else []
                         report={'source':'goes','selection_id':entry['selection_id'],'selection_summary':sel.summary(),
                             'root':destination,'destination':destination,'records':records,
@@ -588,6 +600,8 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                             'stored_bytes':sum(r.get('stored_bytes',0) for r in results),
                             'wall_s':time.time()-entry['started_at'],'interrupted':any(r['status']=='failed' for r in results),
                             'global_config':config.manifest(),'storage_layout':'monthly native-grid Earth2Studio Zarr v3 ZIP'}
+                        issues=list(source_issues.values())
+                        if issues:report['source_issues']=issues
                         if entry['report_dir']:save(Path(entry['report_dir'])/f'{sel.id}-monthly.json',report)
                         if not retain_records:
                             from .runlog import compact
@@ -634,13 +648,20 @@ def fetch(selection,destination,config=None,scratch=None,report_dir=None,index_r
     requests=[]
     for (bucket,month),assets in sorted(groups.items(),key=lambda pair:(pair[0][1],pair[0][0])):
         satellite=int(bucket.removeprefix('noaa-goes'))
-        requests.append((f'{month}-goes{satellite}',replace(selection,assets=assets,satellite=satellite),None))
+        segment=replace(selection,assets=assets,satellite=satellite)
+        if hasattr(selection,'discovery_facts'):
+            ids={asset.id for asset in assets}
+            segment.discovery_facts={**selection.discovery_facts,
+                'source_issues':[issue for issue in selection.discovery_facts.get('source_issues',[])
+                                 if issue.get('asset_id') in ids]}
+        requests.append((f'{month}-goes{satellite}',segment,None))
     result=fetch_contexts(requests,str(Path(destination).resolve()),config,scratch,index_results,progress=progress,retain_records=True,progress_total=len(selection.assets))
     reports=result.pop('reports')
     report={**result,'source':'goes','selection_id':selection.id,'selection_summary':selection.summary(),
         'destination':destination,'root':str(Path(destination).resolve()),
         'monthly_archives':[a for r in reports for a in r['monthly_archives']],
         'records':[a for r in reports for a in r['records']],
+        'source_issues':[issue for r in reports for issue in r.get('source_issues',[])],
         'read_bytes':sum(r['read_bytes'] for r in reports),'stored_bytes':sum(r['stored_bytes'] for r in reports)}
     if report_dir:
         from .runlog import save
@@ -668,7 +689,7 @@ def add_arguments(parser):
     parser.add_argument('--tail-months',type=int,default=defaults.tail_months,help='Additional C02-only monthly owners; share global readers and budgets')
     parser.add_argument('--local-readers',type=int,default=defaults.local_readers,help='Global local HDF5 crop processes')
     parser.add_argument('--range-readers',type=int,default=defaults.range_readers,help='Global C02 range-read processes, one source call each')
-    parser.add_argument('--roi-budget-mib',type=int,default=2048,help='Global queued ROI and IPC reservation budget')
+    parser.add_argument('--roi-budget-mib',type=int,default=defaults.roi_budget_mib,help='Global queued ROI and IPC reservation budget')
     parser.add_argument('--pipeline',choices=['shared','legacy'],default='shared',help='Concurrent native-band monthly pipelines with global download and reader limits; legacy is retained for comparisons')
 
 

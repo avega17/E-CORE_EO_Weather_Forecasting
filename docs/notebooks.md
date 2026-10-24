@@ -22,6 +22,11 @@ adjust download, decoder and queue limits independently. Workstation defaults
 are four product-month writers, eight downloads each and one decoder each. See
 [the pipeline guide](goes_parallel_pipeline.md).
 
+GOES workstation controls now start at 8 GiB queued ROI and 64 GiB source staging.
+Staging uses persistent Linux disk space; it is not a RAM allocation. The study
+runner can finish the full period before creating annual HF backups; notebook
+construction never starts that job automatically.
+
 Hugging Face is the configured remote option; study acquisition uses the mounted
 DAS. Choose an explicit local destination for an independent small test. Avoid
 starting notebook fetches alongside the production study. Source files are
@@ -44,9 +49,13 @@ Find. Filter start/end dates and times, choose the dataset, then choose a GOES b
 for a single map, or a bounded day/date range for animation. Longer animations
 load more frames; they are not streaming Zarr tiles. Save options export PNG/HTML.
 
-HF annual ZIPs are backup containers. The explorer inspects their manifest and
+HF annual ZIPs are backup containers. For MRMS, the explorer inspects their manifest and
 restores a selected verified month to a local cache before opening it. Network
 transfer and cache space are required. Local completed archives are directly readable.
+The new GOES annual bundles preserve native band/month paths, but a Polaris GOES
+restore workflow is future work and optional. The confirmed 10 TB Eagle quota
+removes the original raw-study constraint; long-term datasets and model weights
+belong on Eagle. Future preprocessing and validation-data storage still need estimates.
 
 ```bash
 python notebooks/03_explore_datasets.py /path/to/archives \

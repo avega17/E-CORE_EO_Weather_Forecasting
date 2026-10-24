@@ -23,6 +23,10 @@ from ecore_weather.storage import configured_bucket
 BLOCK_BYTES = 8 * 1024 * 1024
 
 
+def _year_months(year):
+    return range(1, 7 if year == 2026 else 13)
+
+
 def _sha256(path):
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -58,8 +62,7 @@ def _collect_year(year, source_root, study_output):
     grouped = {product: {} for product in mrms.DEFAULT_PRODUCTS}
     selections = {product: [] for product in mrms.DEFAULT_PRODUCTS}
     # The study ends at 2026-07-01, so its final year bundle covers H1 only.
-    month_count = 6 if year == 2026 else 12
-    for month in range(1, month_count + 1):
+    for month in _year_months(year):
         month_key = f"{year}-{month:02d}"
         for product in mrms.DEFAULT_PRODUCTS:
             checkpoint = study_output / "months" / month_key / f"{product}.json"
@@ -139,7 +142,8 @@ def _collect_year(year, source_root, study_output):
     return grouped, selections
 
 
-def _build_bundle(year, product, entries, selections, output_dir, source_root):
+def _build_bundle(year, product, entries, selections, output_dir, source_root,
+                  *, source="mrms", region_id=None, coverage=None, selection_sha256=None):
     if not entries:
         raise ValueError(f"No local archives were selected for {product} in {year}")
     output_dir = Path(output_dir)
@@ -156,22 +160,31 @@ def _build_bundle(year, product, entries, selections, output_dir, source_root):
                         archive_info["sha256"] != entry["marker"]["archive_sha256"]):
                     raise IOError(f"Monthly ZIP differs from its verified marker: {entry['archive']}")
                 marker_info = _write_stored_member(bundle, entry["marker_path"], entry["marker_member"])
+                if entry.get('marker_sha256') and marker_info['sha256']!=entry['marker_sha256']:
+                    raise IOError(f'Monthly completion record changed while packaging: {entry["marker_path"]}')
                 members.extend((archive_info, marker_info))
-                archive_rows.append({"local_path": relative, "member": entry["member"],
+                row = {"local_path": relative, "member": entry["member"],
                     "marker_member": entry["marker_member"], "selected_by": entry["selected_by"],
                     "observations": entry["marker"]["observations"],
-                    "asset_ids": entry["marker"]["asset_ids"],
-                    "stored_bytes": archive_info["size"], "sha256": archive_info["sha256"]})
+                    "stored_bytes": archive_info["size"], "sha256": archive_info["sha256"]}
+                if source == "mrms":row["asset_ids"] = entry["marker"]["asset_ids"]
+                else:
+                    row.update({key:entry["marker"].get(key) for key in ("band","satellite","region")})
+                archive_rows.append(row)
             for selection in selections:
                 info = _write_stored_member(bundle, selection["path"], selection["member"])
                 members.append(info)
             period_end = f"{year}-07-01T00:00:00Z" if year == 2026 else f"{year+1}-01-01T00:00:00Z"
-            manifest = {"schema": "ecore-mrms-year-bundle-v1", "source": "mrms",
+            manifest = {"schema": f"ecore-{source}-year-bundle-v1", "source": source,
                 "year": year, "product": product,
                 "requested_study_period": [f"{year}-01-01T00:00:00Z", period_end],
                 "local_source_root": str(Path(source_root).resolve()),
                 "archive_count": len(archive_rows), "archives": archive_rows,
                 "members": members}
+            if source == "goes":
+                manifest.pop("local_source_root")
+                manifest.update(region_id=region_id, coverage=coverage or [],
+                                selection_sha256=selection_sha256)
             manifest_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
             bundle.writestr("year_manifest.json", manifest_bytes,
                             compress_type=zipfile.ZIP_DEFLATED)
@@ -187,32 +200,38 @@ def _build_bundle(year, product, entries, selections, output_dir, source_root):
         temporary.unlink(missing_ok=True)
         raise
     digest = _sha256(final)
-    return {"source": "mrms", "year": year, "product": product,
+    return {"source": source, "year": year, "product": product,
         "path": str(final.resolve()), "size": final.stat().st_size,
         "sha256": digest, "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
         "archive_count": len(archive_rows), "observation_count": sum(x["observations"] for x in archive_rows),
         "archives": archive_rows, "member_count": len(members) + 1,
-        "container_compression": "ZIP_STORED for already-compressed monthly ZIPs"}
+        "container_compression": "ZIP_STORED for already-compressed monthly ZIPs",
+        **({"region_id":region_id,"selection_sha256":selection_sha256} if source=="goes" else {})}
 
 
-def _upload_one(bundle, remote_root):
+def _upload_one(bundle, remote_root, progress=None):
     from boto3.s3.transfer import TransferConfig
 
     writer = BucketWriter(remote_root)
     product = bundle["product"]
     year = bundle["year"]
-    relative = f"mrms/{product}/{year}/{product}-{year}-{bundle['sha256'][:16]}.zip"
-    marker_relative = f"mrms/{product}/{year}/complete.json"
-    marker = {"schema": "ecore-mrms-year-backup-v1", "source": "mrms",
+    source = bundle.get("source", "mrms")
+    prefix = f"{source}/{product}/" + (f"{bundle['region_id']}/" if source == "goes" else "") + str(year)
+    relative = f"{prefix}/{product}-{year}-{bundle['sha256'][:16]}.zip"
+    marker_relative = f"{prefix}/complete.json"
+    marker = {"schema": f"ecore-{source}-year-backup-v1", "source": source,
         "product": product, "year": bundle["year"], "raw_path": relative.rsplit("/", 1)[-1],
         "archive_count": bundle["archive_count"], "observation_count": bundle["observation_count"],
         "stored_bytes": bundle["size"], "archive_sha256": bundle["sha256"],
         "manifest_sha256": bundle["manifest_sha256"], "updated_at": datetime.now(timezone.utc).isoformat()}
+    if source == "goes":
+        marker.update(region_id=bundle['region_id'],selection_sha256=bundle['selection_sha256'])
     existing = writer.marker(marker_relative.rsplit("/", 1)[0])
     if existing and existing.get("archive_sha256") == bundle["sha256"]:
         head = writer.client.head_object(Bucket=writer.config["bucket"], Key=writer.key(relative))
         if head.get("ContentLength") != bundle["size"]:
             raise IOError(f"Existing HF package size differs from its completion marker: {product}")
+        if progress:progress(phase='backup-readback',year=year,verified_bytes=0,total_bytes=bundle['size'])
         readback_started = time.perf_counter()
         response = writer.client.get_object(Bucket=writer.config["bucket"], Key=writer.key(relative))
         digest, readback_size = hashlib.sha256(), 0
@@ -233,12 +252,23 @@ def _upload_one(bundle, remote_root):
         multipart_chunksize=2 * 1024**3, max_concurrency=1, use_threads=True)
     started = time.perf_counter()
     with bucket_writer(writer.bucket_id, scope=marker_relative):
+        if progress:progress(phase='backup-upload',year=year,uploaded_bytes=0,total_bytes=bundle['size'])
+        transferred = 0
+        last_report = 0
+        def uploaded(count):
+            nonlocal transferred,last_report
+            transferred += count
+            now = time.monotonic()
+            if progress and now-last_report >= 30:
+                progress(phase='backup-upload',year=year,uploaded_bytes=transferred,total_bytes=bundle['size'])
+                last_report = now
         writer.client.upload_file(bundle["path"], writer.config["bucket"],
-            writer.key(relative), Config=transfer)
+            writer.key(relative), Config=transfer, **({'Callback':uploaded} if progress else {}))
         upload_seconds = time.perf_counter() - started
         head = writer.client.head_object(Bucket=writer.config["bucket"], Key=writer.key(relative))
         if head.get("ContentLength") != bundle["size"]:
             raise IOError(f"HF package size differs after upload: {product}")
+        if progress:progress(phase='backup-readback',year=year,verified_bytes=0,total_bytes=bundle['size'])
         readback_started = time.perf_counter()
         response = writer.client.get_object(Bucket=writer.config["bucket"], Key=writer.key(relative))
         digest = hashlib.sha256()
@@ -249,10 +279,21 @@ def _upload_one(bundle, remote_root):
                 if block:
                     digest.update(block)
                     readback_size += len(block)
+                    now = time.monotonic()
+                    if progress and now-last_report >= 30:
+                        progress(phase='backup-readback',year=year,verified_bytes=readback_size,total_bytes=bundle['size'])
+                        last_report=now
         finally:
             body.close()
         if readback_size != bundle["size"] or digest.hexdigest() != bundle["sha256"]:
             raise IOError(f"HF yearly package read-back hash differs: {product}")
+        if source == "goes":
+            with zipfile.ZipFile(bundle['path']) as archive:
+                manifest_bytes=archive.read('year_manifest.json')
+            if hashlib.sha256(manifest_bytes).hexdigest()!=bundle['manifest_sha256']:
+                raise IOError('GOES portable manifest differs from local receipt')
+            writer.client.put_object(Bucket=writer.config['bucket'],Key=writer.key(f'{prefix}/year_manifest.json'),
+                                     Body=manifest_bytes,ContentType='application/json')
         writer.client.put_object(Bucket=writer.config["bucket"],
             Key=writer.key(marker_relative),
             Body=json.dumps(marker, sort_keys=True).encode(), ContentType="application/json")

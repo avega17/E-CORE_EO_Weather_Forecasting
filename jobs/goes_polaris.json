@@ -39,7 +39,7 @@
     "grace_seconds": 60,
     "sample_seconds": 5
   },
-  "storage_cap_gb": 400,
+  "storage_cap_gb": null,
   "storage_reference": {
     "start": "2021-01-01",
     "end_excluded": "2023-01-01",

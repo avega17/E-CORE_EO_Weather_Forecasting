@@ -133,6 +133,18 @@ def bandwidth_data(stamp,first,second,state='checkpointed'):
     return snapshot
 
 
+def test_noaa_average_stops_at_fetch_completion_during_hf_backup():
+    snapshot=bandwidth_data(200,100_000_000,100_000_000)
+    snapshot['runs'][0].update(fetch_ended_at=100,phase='backup-upload',
+        backup={'phase':'backup-upload','year':2023,'uploaded_bytes':1024**3,'total_bytes':2*1024**3})
+    cache={};aggregate_bandwidth(snapshot,cache,200)
+    assert snapshot['aggregate_bandwidth']['run_average_mbps']==16
+    aggregate_bandwidth(snapshot,cache,220)
+    assert snapshot['aggregate_bandwidth']['intervals']==0
+    text=render(snapshot,220)
+    assert 'GOES annual backup: backup-upload' in text and '1.00/2.00 GiB' in text
+
+
 def test_aggregate_uses_common_elapsed_time_and_median_of_fresh_intervals():
     cache={}
     first=bandwidth_data(100,100_000_000,100_000_000)

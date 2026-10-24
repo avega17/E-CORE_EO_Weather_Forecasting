@@ -6,8 +6,8 @@
     "download_concurrency": 32,
     "local_readers": 2,
     "range_readers": 8,
-    "roi_budget_mib": 2048,
-    "staging_mib": 16384,
+    "roi_budget_mib": 8192,
+    "staging_mib": 65536,
     "block_size": 1048576,
     "finalizers": 2,
     "schema": 2,
@@ -17,7 +17,16 @@
       "other": "async_pipeline"
     }
   },
-  "reason": "User requested two normal month writers plus one C02-only tail after the admitted months drain; mixed-band pools unchanged",
+  "job_memory_gib": 0,
+  "memory_policy": {
+    "mode": "checkpoint_pause",
+    "warning_gib": 64,
+    "minimum_available_gib": 8,
+    "grace_seconds": 60,
+    "sample_seconds": 5,
+    "emergency_available_gib": 4
+  },
+  "reason": "Two normal months plus one C02 tail; larger RAM/disk buffers for 96 GB WSL. RSS is monitored without a hard production ceiling; actual available RAM governs checkpointed pauses.",
   "scope": "Two normal monthly pipelines plus at most one C02-only tail owner",
   "benchmark_reference": {
     "16": {

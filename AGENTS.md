@@ -68,8 +68,13 @@ Keep explanations readable for researchers inheriting the work.
   free space; use fast Linux scratch and a Linux-local DuckDB file.
 - GOES selected limit: **two normal month owners plus one C02-only tail owner**, 32 global
   async downloads for seven bands, two local HDF5 readers, eight C02 range readers,
-  2,048 MiB global ROI budget and 16,384 MiB staging. Limits do not multiply by band
+  8,192 MiB global ROI budget and 65,536 MiB Linux-disk staging. Limits do not multiply by band
   or month. HDF5 concurrency requires independent processes, not more threads.
+- Workstation production warns at 64 GiB summed RSS without an RSS stopping limit.
+  Pause with verified checkpoints after 60 seconds below 8 GiB available WSL RAM,
+  or immediately below 4 GiB. Strict benchmark limits remain separate. Queue/disk
+  budget saturation slows admission rather than stopping the study. Local shared
+  jobs may use --max-hours 0; PBS jobs must retain a positive deadline.
 - MRMS workstation defaults are four product-month writers, eight downloads each,
   one decode slot, eight admitted observations and 128 MiB ROI queue per writer.
   The measured Polaris MRMS profile uses twelve writers, four downloads, one
@@ -99,6 +104,15 @@ Keep explanations readable for researchers inheriting the work.
   removed when canonical archive provenance and verified checkpoints remain.
   Never delete live scratch or research data.
 - HF is backup storage: one MRMS product/year ZIP of verified monthly members.
+  Native GOES bundles contain all eight bands for one year and acquisition region,
+  preserving satellite/band/month paths; 2026 covers January–June. Automatic GOES
+  backup starts only after all 66 study months verify or have documented source
+  unavailability, never on pause/failure. Build/upload one year at a time outside
+  results/, verify remote SHA-256, retain receipts, then remove annual work ZIPs.
+  Eagle is the long-term ALCF home for datasets and model weights. Future GOES HF
+  restoration into Polaris scratch remains an optional feature, not a current
+  storage requirement: the user confirmed the Eagle quota increase to 10 TB.
+  Future preprocessing, validation data and model assets are not yet budgeted.
   Verify remote SHA-256/read-back before relying on it. Annual ZIPs need selected
   verified monthly restoration for analysis. Keep compact receipts; remove redundant
   annual working ZIPs only with retained matching originals or verified remote identity.
@@ -125,13 +139,23 @@ Keep explanations readable for researchers inheriting the work.
   stock CONUS and region-adapted comparisons must be labelled separately.
   Brief external read-only DuckDB locks are retried by the writer for up to
   30 seconds; do not leave exploratory connections open indefinitely.
+- GOES range bodies must match requested byte lengths. Known HDF5 integrity/
+  decompression failures get three fresh file/cache attempts; exhausted errors
+  retain the source URL/time/band. Preserve verified batches and never turn a
+  failed read into synthetic pixels or an unproven corrupt-source classification.
+  A complete-file size plus exactly matching MD5 ETag (single or multipart) and
+  failed local native-ROI decoding can establish a source gap. Keep its STAC
+  object and integrity evidence; omit only the unreadable observation, copying
+  the gap into canonical metadata and completion records. Never remove a
+  verified prefix. Annual backup coverage must account for the gap explicitly.
 - Diagnostic percentages are pixel-weighted; do not average image quartiles into
   pooled quartiles. Missing observations and missing pixels are distinct. Day-level
   performance requires day-level evidence, not manufactured month-log estimates.
 - Update README and canonical docs when interfaces change. Preserve useful compact
   findings in guides rather than proliferating test result folders. Do not claim
   live HF, Colab or long-run checks without actual run evidence.
-- Polaris PBS uses one node, the documented outbound proxy, local scratch/index
+- Polaris PBS uses one node for MRMS and one or three independent nodes for GOES,
+  the documented outbound proxy, local scratch/index
   and verified monthly publication to Eagle. Use debug for bounded environment setup, pilot and tuning, then
   capacity for the full study, after account/queue/quota checks. Completed months
   are durable; unfinished local stores may be lost between jobs. Push tested
@@ -150,8 +174,20 @@ Keep explanations readable for researchers inheriting the work.
   sixteen C02 range readers, 4,096 MiB ROI and 32,768 MiB staging. Do not change
   workstation settings or call this profile optimal without target-machine data.
   The manual four-context pilot has a 32 GiB transfer ceiling; this sprint does
-  not submit it. GOES study dates are 2021-01-01 to 2023-01-01, end excluded,
-  with a 400 decimal GB cap for GOES Eagle data/state. MRMS PBS requests six hours.
+  not submit it. The GOES full study is 2021-01-01 to 2026-07-01, end excluded.
+  The obsolete dataset cap is disabled by default; retain real project-quota,
+  filesystem and scratch checks. An explicit positive cap remains optional.
+  MRMS PBS requests six hours.
+- The three-node GOES wrapper uses JSON partitions with disjoint source-month
+  ownership, one existing pipeline per node, Linux-local writable DuckDB per node,
+  and distinct durable progress/state paths. Do not point multiple coordinators
+  at the same writable DB, root summary or physical archive. After all writers
+  close, one process merges verified snapshots into one canonical operational
+  DB. Preserve inputs until merge/read-back succeeds; raw manifests remain authoritative.
+  Use jobs_multinode status/merge for partition monitoring and deferred merges.
+  Do not run a single-node job on overlapping months at the same time. Three-node
+  dates come from goes_polaris_partitions.json, not PBS_GOES_START/END. Local
+  tests do not imply a successful live multi-node pilot or measured speedup.
 - Polaris GOES production RAM protection is separate from benchmark ceilings:
   warn at 256 GiB summed RSS; pause after 60 seconds above 384 GiB RSS or below
   32 GiB node-available RAM; below 8 GiB available, pause without the grace delay.
@@ -166,7 +202,7 @@ Keep explanations readable for researchers inheriting the work.
 - GOES PBS study jobs publish incremental compressed partial checkpoints to
   Eagle approximately every 25% of a band-month (rounded to verified eight-scan
   batches). Restore them into local scratch on resubmission; never mark them as
-  complete monthly archives. Count them against the GOES cap and delete them
+  complete monthly archives. Include them in actual storage use and delete them
   only after final ZIP verification. Supported shutdown attempts to save the
   latest verified batch; sudden node loss can lose work since the last durable
   part. With this enabled, use the configured admission drain interval rather

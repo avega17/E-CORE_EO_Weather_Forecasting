@@ -1,0 +1,29 @@
+#!/bin/bash -l
+#PBS -N ecore_goes_multi
+#PBS -l select=3:system=polaris:ncpus=64
+#PBS -l place=scatter
+#PBS -l walltime=24:00:00
+#PBS -l filesystems=home:eagle
+#PBS -q capacity
+#PBS -j oe
+
+set -Eeuo pipefail
+ecore_phase=startup
+printf 'E-CORE multi-node GOES entered | job %s | host %s\n' "${PBS_JOBID:-unset}" "${HOSTNAME:-unknown}"
+trap 'ecore_status=$?; printf "E-CORE multi-node ended | phase %s | exit %s\n" "$ecore_phase" "$ecore_status" >&2' EXIT
+source "${ECORE_CODE_ROOT:-${PBS_O_WORKDIR:-$PWD}}/jobs/pbs_common.sh"
+ecore_require PBS_JOBID PBS_O_WORKDIR PBS_NODEFILE ECORE_PROJECT_ROOT ECORE_PYTHON ECORE_QUOTA_FREE_GIB
+export ECORE_PBS_MODE="${ECORE_PBS_MODE:-study}"
+case "$ECORE_PBS_MODE" in pilot|study) ;; *) ecore_fail 'Use pilot or study mode.';; esac
+code_root="${ECORE_CODE_ROOT:-$PBS_O_WORKDIR}"
+ecore_code_directory
+if ! test -x "$ECORE_PYTHON"; then ecore_fail "Prepared Python is not executable: $ECORE_PYTHON"; fi
+ecore_walltime 600
+ecore_phase=multi-node-launch
+command=("$ECORE_PYTHON" -m ecore_weather.jobs_multinode launch
+    --config "${ECORE_GOES_PARTITIONS:-$code_root/jobs/goes_polaris_partitions.json}"
+    --nodefile "$PBS_NODEFILE" --code-root "$code_root" --python "$ECORE_PYTHON"
+    --state "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/$ECORE_PBS_MODE"
+    --seconds "$job_seconds" --mode "$ECORE_PBS_MODE")
+if test "${ECORE_DRY_RUN:-0}" = 1; then command+=(--dry-run); fi
+"${command[@]}"

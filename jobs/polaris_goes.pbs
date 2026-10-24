@@ -17,7 +17,7 @@ ecore_require PBS_JOBID PBS_O_WORKDIR ECORE_PROJECT_ROOT ECORE_PYTHON ECORE_QUOT
 export ECORE_PBS_MODE="${ECORE_PBS_MODE:-pilot}"
 case "$ECORE_PBS_MODE" in pilot|study) ;; *) ecore_fail 'Use pilot or study mode.';; esac
 if ! test -d "$ECORE_PROJECT_ROOT"; then ecore_fail "Eagle project directory is unavailable: $ECORE_PROJECT_ROOT"; fi
-state_root="$ECORE_PROJECT_ROOT/ecore-weather/state/goes/$ECORE_PBS_MODE"
+state_root="${ECORE_GOES_STATE_ROOT:-$ECORE_PROJECT_ROOT/ecore-weather/state/goes/$ECORE_PBS_MODE}"
 ecore_startup_record "$state_root"
 ecore_require PBS_GOES_START PBS_GOES_END
 code_root="${ECORE_CODE_ROOT:-$PBS_O_WORKDIR}"
@@ -34,7 +34,7 @@ export NO_PROXY="$no_proxy"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export TMPDIR=/tmp PYTHONUNBUFFERED=1
 ecore_phase=storage-preflight
-scratch_root="${ECORE_NODE_SCRATCH:-/local/scratch}/ecore-goes-${USER}-${PBS_JOBID%%.*}"
+scratch_root="${ECORE_NODE_SCRATCH:-/local/scratch}/ecore-goes-${USER}-${PBS_JOBID%%.*}${ECORE_GOES_PARTITION:+-$ECORE_GOES_PARTITION}"
 destination="${ECORE_DESTINATION:-$ECORE_PROJECT_ROOT/ecore_eo_datasets}"
 if test "$ECORE_PBS_MODE" = pilot; then
     destination="${ECORE_DESTINATION:-$ECORE_PROJECT_ROOT/ecore-weather/goes-pilot-archives}"
@@ -45,6 +45,8 @@ export ECORE_RUN_ROOT="$state_root/runs" ECORE_LOCAL_SCRATCH="$scratch_root"
 export ECORE_DURABLE_STATE="$state_root" ECORE_INDEX_PATH="$scratch_root/archive_index.duckdb"
 if test -f "$state_root/archive_index.duckdb"; then
     cp "$state_root/archive_index.duckdb" "$ECORE_INDEX_PATH"
+elif test -f "${ECORE_GOES_SEED_INDEX:-$ECORE_PROJECT_ROOT/ecore-weather/state/archive_index.duckdb}"; then
+    cp "${ECORE_GOES_SEED_INDEX:-$ECORE_PROJECT_ROOT/ecore-weather/state/archive_index.duckdb}" "$ECORE_INDEX_PATH"
 fi
 export ECORE_GOES_ACCOUNTING_ROOTS="[\"$ECORE_PROJECT_ROOT/ecore_eo_datasets/goes\",\"$ECORE_PROJECT_ROOT/ecore-weather/goes-pilot-archives/goes\",\"$ECORE_PROJECT_ROOT/ecore-weather/state/goes\"]"
 if ! test -r "$profile"; then ecore_fail "GOES profile is not readable: $profile"; fi
@@ -52,8 +54,20 @@ export ECORE_RSS_LIMIT_BYTES="$("$ECORE_PYTHON" -c 'import json,sys; p=json.load
 export ECORE_GOES_MEMORY_POLICY="$("$ECORE_PYTHON" -c 'import json,sys; p=json.load(open(sys.argv[1])); print(json.dumps({"mode":"strict"} if sys.argv[2]=="pilot" else p.get("memory_policy",{})))' "$profile" "$ECORE_PBS_MODE")"
 export ECORE_GOES_MEMORY_REPORT="$state_root/memory.json"
 ecore_note "Memory protection | RSS limit $((ECORE_RSS_LIMIT_BYTES/1073741824)) GiB | $ECORE_GOES_MEMORY_POLICY"
-"$ECORE_PYTHON" - "$profile" "$destination" "$scratch_root" <<'PY'
+storage_cap_gb="$("$ECORE_PYTHON" -c '
+import json, math, os, sys
+value = os.getenv("ECORE_GOES_STORAGE_CAP_GB") or json.load(open(sys.argv[1])).get("storage_cap_gb")
+try:
+    cap = None if value is None else float(value)
+except (TypeError, ValueError):
+    raise SystemExit("Optional GOES storage cap must be a positive finite GB value")
+if cap is not None and (not math.isfinite(cap) or cap <= 0):
+    raise SystemExit("Optional GOES storage cap must be a positive finite GB value")
+print("" if cap is None else cap)
+' "$profile")"
+"$ECORE_PYTHON" - "$profile" "$destination" "$scratch_root" "$start_date" "$end_date" "$storage_cap_gb" <<'PY'
 import json, os, shutil, sys
+from datetime import datetime
 from pathlib import Path
 profile=json.loads(Path(sys.argv[1]).read_text()); config=profile['global_config']
 samples=profile['empirical_roi_bytes_per_observation']
@@ -65,14 +79,45 @@ if shutil.disk_usage(sys.argv[3]).free < scratch_needed:
 if min(shutil.disk_usage(sys.argv[2]).free,float(os.environ['ECORE_QUOTA_FREE_GIB'])*1024**3)<publication_needed:
     raise SystemExit('Insufficient filesystem/project quota headroom for two publication candidates')
 reference=profile['storage_reference']
-forecast=reference['native_zip_bytes']*(1+reference['allowance_fraction'])
-if forecast+512*1024**2 > profile['storage_cap_gb']*1e9:
-    raise SystemExit('Historical selection estimate exceeds GOES storage cap')
-print(f'Historical 2021–2022 retained estimate with margin: {forecast/1e9:.1f} GB; actual publication is capped')
+# Scale the historical monthly retained size to the requested UTC interval.
+# Already published months are included: this is not additional required space.
+begin,end=(datetime.fromisoformat(value.replace('Z','+00:00')) for value in sys.argv[4:6])
+current=begin;months=0.
+while current<end:
+    first=current.replace(day=1,hour=0,minute=0,second=0,microsecond=0)
+    following=first.replace(year=first.year+1,month=1) if first.month==12 else first.replace(month=first.month+1)
+    stop=min(end,following)
+    months+=(stop-current).total_seconds()/(following-first).total_seconds()
+    current=stop
+forecast=reference['native_zip_bytes']/reference['completed_months']*months*(1+reference['allowance_fraction'])
+cap=float(sys.argv[6]) if sys.argv[6] else None
+if cap is not None and forecast+512*1024**2 > cap*1e9:
+    raise SystemExit('Selected interval estimate exceeds the optional GOES storage cap')
+print(f'Estimated compressed GOES size for selected interval: {forecast/1e9:.1f} GB including historical margin; includes existing months, not a space reservation')
+print('GOES dataset cap: none; project quota and filesystem headroom checked separately' if cap is None else f'Optional GOES dataset cap: {cap:g} GB')
 print(f'Initial scratch reservation: {scratch_needed/1024**3:.1f} GiB; profile is unmeasured on Polaris')
 PY
 ecore_walltime 300
+if test -n "${ECORE_GOES_JOB_SECONDS:-}"; then
+    if ! [[ "$ECORE_GOES_JOB_SECONDS" =~ ^[0-9]+$ ]] || test "$ECORE_GOES_JOB_SECONDS" -le 300; then
+        ecore_fail 'Multi-node worker deadline must exceed 300 seconds.'
+    fi
+    if test "$ECORE_GOES_JOB_SECONDS" -lt "$job_seconds"; then job_seconds="$ECORE_GOES_JOB_SECONDS"; fi
+fi
+if test "${ECORE_GOES_NODE_ONLY:-0}" = 1 && test "$ECORE_PBS_MODE" = study && test "${ECORE_DRY_RUN:-0}" != 1; then
+    ecore_phase=recovery-selections
+    prepare=("$ECORE_PYTHON" -m ecore_weather.jobs_multinode prepare --state "$state_root"
+        --legacy "${ECORE_GOES_LEGACY_STATE:-$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study}"
+        --start "$start_date" --end "$end_date")
+    if test -n "${ECORE_GOES_SOURCE_ISSUES:-}"; then prepare+=(--source-issues "$ECORE_GOES_SOURCE_ISSUES"); fi
+    "${prepare[@]}"
+fi
 ecore_phase=prepare-command
+if test -n "${ECORE_GOES_ALLOCATION_DEADLINE:-}"; then
+    remaining_seconds="$("$ECORE_PYTHON" -c 'import sys,time; print(max(0,int(float(sys.argv[1])-time.time())))' "$ECORE_GOES_ALLOCATION_DEADLINE")"
+    if test "$remaining_seconds" -lt "$job_seconds"; then job_seconds="$remaining_seconds"; fi
+    if test "$job_seconds" -le 300; then ecore_fail 'Not enough allocation time remains after worker setup; resubmit to continue.'; fi
+fi
 max_hours="$("$ECORE_PYTHON" -c 'import sys; print((int(sys.argv[1])-240)/3600)' "$job_seconds")"
 if test "$ECORE_PBS_MODE" = pilot; then
     command=("$ECORE_PYTHON" scripts/dataset_jobs.py benchmark goes --polaris-pilot
@@ -84,16 +129,22 @@ else
         --shared-profile "$profile" --product ABI-L2-CMIPF --destination "$destination"
         --scratch "$scratch_root" --output "$state_root/fetch" --index-path "$ECORE_INDEX_PATH"
         --durable-state "$state_root" --durable-progress "$state_root/progress.json"
-        --checkpoint-dir "$state_root/partial-archives" --checkpoint-fraction 0.25
-        --storage-cap-gb 400 --max-hours "$max_hours" --drain-minutes 15)
+        --checkpoint-dir "${ECORE_GOES_CHECKPOINT_DIR:-$state_root/partial-archives}" --checkpoint-fraction 0.25
+        --max-hours "$max_hours" --drain-minutes 15)
+    if test -n "$storage_cap_gb"; then command+=(--storage-cap-gb "$storage_cap_gb"); fi
     if test "${ECORE_DRY_RUN:-0}" = 1; then command+=(--dry-run); fi
 fi
 ecore_note "GOES PBS $PBS_JOBID | mode $ECORE_PBS_MODE | $start_date to $end_date (end excluded)"
 ecore_phase=application
-ecore_note 'Launching GOES application through mpiexec'
 ecore_status=0
-timeout --signal=TERM --kill-after=30s "$((job_seconds-30))s" \
-    mpiexec -n 1 --ppn 1 --depth=64 --cpu-bind none "${command[@]}" || ecore_status=$?
+if test "${ECORE_GOES_NODE_ONLY:-0}" = 1; then
+    ecore_note "Launching GOES directly on assigned node | partition ${ECORE_GOES_PARTITION:-unset}"
+    timeout --signal=TERM --kill-after=30s "$((job_seconds-30))s" "${command[@]}" || ecore_status=$?
+else
+    ecore_note 'Launching GOES application through mpiexec'
+    timeout --signal=TERM --kill-after=30s "$((job_seconds-30))s" \
+        mpiexec -n 1 --ppn 1 --depth=64 --cpu-bind none "${command[@]}" || ecore_status=$?
+fi
 if test "$ecore_status" -eq 75; then
     ecore_note "GOES application intentionally paused; inspect $state_root/fetch/paused.json for its reason. Resume with the same dates, destination and state; verified monthly archives and published partial checkpoints are retained."
 elif test "$ecore_status" -ne 0; then

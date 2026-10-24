@@ -1,8 +1,19 @@
 # NOAA radar and satellite subsets for Puerto Rico
 
-> Workstation GOES is paused after verified December 2022 archives. Its next chronological
-> continuation uses two normal month owners plus one C02-only tail. See
+> Local GOES completion records cover January 2021–August 2023 and January–February
+> 2026. Chronological continuation reuses verified archives with two normal month owners
+> plus one C02-only tail. See
 > [current operating settings](docs/goes_parallel_pipeline.md).
+
+The local continuation supports continuous execution with `--max-hours 0` and
+`--backup-after-complete`: finish the native GOES study through June 2026, then
+upload verified annual backups containing all eight bands. The workstation
+profile uses 8 GiB queued ROI memory and 64 GiB Linux-disk source staging. See
+[launch and backup commands](docs/study_jobs.md#local-fetch-followed-by-annual-hf-backup).
+The project now has a user-confirmed **10 TB Eagle quota**, sufficient for the
+current raw GOES study estimate. Preprocessed data, validation datasets and model
+weights still need separate storage estimates. Eagle is the intended ALCF home;
+HF remains backup/transfer storage, with optional GOES restoration still future work.
 
 For Polaris startup failures or empty PBS output, use the
 [short interactive debugging procedure](docs/study_jobs.md#debugging-a-goes-job-that-ends-without-output).
@@ -128,10 +139,15 @@ explain what has passed and what remains queued.
 
 For Polaris, follow the [PBS setup, profiles, pilot and production guide](docs/study_jobs.md#polaris-pbs).
 MRMS requests six hours with the measured 12-writer profile. The new
-[GOES manual pilot and 2021–2022 job](docs/study_jobs.md#polaris-goes-manual-pilot-and-20212022-study)
-uses a separate initial profile and a 400 GB retained-data cap. Both PBS wrappers
+[GOES pilot and full-study job](docs/study_jobs.md#polaris-goes-pilot-and-full-study-fetching)
+uses a separate per-node profile and no artificial dataset cap by default. Both PBS wrappers
 read explicit ISO date variables. The [StormScope overview](docs/StormScope-paper-notes.md)
 explains model inputs, geographic limits and solar zenith conditioning; it does
 not run inference or replace our future analysis-ready preprocessing.
 The cluster collection contains composite and base reflectivity; workstation
 four-product defaults remain available. Generated maps live under `figures/`.
+The [three-node GOES job](docs/study_jobs.md#three-node-goes-fetching) uses
+independent date partitions and consolidates their closed DuckDB snapshots into
+one operational database. Its launcher is locally tested; a real Polaris pilot
+and scaling measurements remain manual follow-ups. Multi-node dates come from
+`jobs/goes_polaris_partitions.json`, not the single-node date variables.
