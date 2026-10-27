@@ -8,6 +8,17 @@ preservation and interfaces are defined in [storage](storage_and_data_management
 
 ## Current work
 
+- Automatic GOES source recovery is implemented: bounded response/range checks,
+  full-file fallback, exact checksum-backed source gaps and band-local deferral.
+  Invalid NetCDF signatures no longer bypass handling. Existing Eagle parts
+  migrate to a stable requested-selection mapping without rewriting verified
+  pixels, including successive future gaps. Unresolved band-months stay pending
+  and cannot authorize completion or backup. Source evidence is automatic, not
+  a manually curated exception list. A final single-node Polaris run can use
+  2024-09-01 to 2025-05-01, end excluded, to include April and its satellite
+  transition. See [the command](study_jobs.md#single-node-recovery-for-september-2024-through-april-2025).
+  Remote submission/recovery validation remain manual.
+
 - The user confirmed the project Eagle quota is now **10 TB**, effective
   October 23, 2026. Extend Polaris GOES to the full study through June 2026.
   The PBS default dataset cap is removed; actual quota, filesystem and scratch

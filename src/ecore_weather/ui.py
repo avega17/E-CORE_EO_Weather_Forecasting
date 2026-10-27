@@ -269,7 +269,9 @@ def action(label, function):
             output.clear_output()
             try:
                 result["value"] = function()
-                print("Finished. Continue with the next cell.")
+                if isinstance(result['value'],dict) and result['value'].get('pending_sources'):
+                    print("Some source reads remain pending. Completed archives are available; resume to retry the unfinished bands.")
+                else:print("Finished. Continue with the next cell.")
             except Exception as e:
                 print(f"{type(e).__name__}: {e}")
             finally:

@@ -258,6 +258,7 @@ def pbs_environment(tmp_path):
 
 @pytest.mark.parametrize('source,mode,start,end', [
     ('goes','study','2021-01-01','2026-07-01'),
+    ('goes','study','2024-09-01','2025-05-01'),
     ('mrms','study','2021-01-01','2026-07-01'),
     ('mrms','pilot','2022-09-18T12:00:00Z','2022-09-18T12:40:00Z')])
 def test_mocked_pbs_passes_dates_and_deadline_without_fetch(tmp_path,pbs_environment,source,mode,start,end):

@@ -87,11 +87,22 @@ def _range_initialize():
 def range_read(asset, bbox, band, block_size):
     from .monthly_stream import _read_new
     transport = _RANGE_TRANSPORT
+    # One budget spans HTTP and HDF retries for this source task; successful
+    # range requests do not consume it. The diagnostic full fetch is separate.
+    transport._source_failures_remaining=3
     before = (transport.bytes, transport.requests, transport.retries,
               transport.failed_requests, transport.seconds)
     started = time.perf_counter(); cpu = time.process_time()
     context = SimpleNamespace(source='goes', bbox=bbox, product='ABI-L2-CMIPF', bands=(band,))
-    dataset, timing = _read_new(asset, context, band, transport, block_size)
+    try:
+        dataset, timing = _read_new(asset, context, band, transport, block_size)
+    except Exception as exc:
+        from .goes_recovery import source_error, SourceReadError
+        if not source_error(exc):raise
+        metrics = dict(zip(('read_bytes','range_requests','source_retries','failed_requests','transfer_task_seconds'),
+            (transport.bytes-before[0],transport.requests-before[1],transport.retries-before[2],
+             transport.failed_requests-before[3],transport.seconds-before[4])))
+        raise SourceReadError(asset,str(exc),getattr(exc,'evidence',None),metrics) from exc
     return dataset, {**timing, 'read_bytes': transport.bytes-before[0],
         'range_requests': transport.requests-before[1], 'source_retries': transport.retries-before[2],
         'failed_requests': transport.failed_requests-before[3],
@@ -109,6 +120,7 @@ class SharedReads:
         self.disk = self.roi = 0; self.disk_peak = self.roi_peak = 0
         self.downloads = self.locals = self.ranges = self.probes = 0
         self.max_downloads = self.max_locals = self.max_ranges = 0
+        self.retired_metrics = {}
         self.tasks = set(); self.order = deque()
         options = {'mp_context': self.context} if pool_class is ProcessPoolExecutor else {}
         self.local_pool = pool_class(max_workers=config.local_readers, **options)
@@ -140,11 +152,18 @@ class SharedReads:
         for reply in self.replies.values(): reply.close()
 
     def _reply(self, state, message):
-        self.replies[state['month']].put({'key': state['key'], **message})
+        reply=self.replies.get(state['month'])
+        if state.get('closing') or reply is None:return
+        reply.put({'key': state['key'], **message})
 
     def snapshot(self):
         with self.lock:
-            return {'active_downloads': self.downloads, 'active_local_readers': self.locals,
+            totals=dict(self.retired_metrics)
+            for state in self.states.values():
+                for name,value in state['metrics'].items():
+                    if name in ('read_bytes','range_requests','source_retries','failed_requests','full_file_fallbacks'):
+                        totals[name]=totals.get(name,0)+value
+            return {'observed_source_totals':totals,'active_downloads': self.downloads, 'active_local_readers': self.locals,
                 'active_range_readers': self.ranges, 'peak_active_downloads': self.max_downloads,
                 'peak_local_readers': self.max_locals, 'peak_range_readers': self.max_ranges,
                 'scratch_reserved_bytes': self.disk, 'scratch_peak_bytes': self.disk_peak,
@@ -166,8 +185,31 @@ class SharedReads:
             'read_decode_crop_seconds','reader_cpu_seconds','reader_seconds','active_downloads','peak_active_downloads',
             'hdf_read_retries')}
         self.states[key] = {**message, 'directory': directory, 'cursor':0, 'batch':None,
-            'files':{}, 'dispatched':set(), 'held':{}, 'payload':None, 'metrics':metrics}
+            'files':{}, 'dispatched':set(), 'held':{}, 'payload':None, 'metrics':metrics,
+            'tasks':set(),'download_tasks':set(),'closing':False,'failed':False,'range_disk':{}}
         self.order.append(key)
+
+    def _drop_state(self, state):
+        if not state['closing'] or state['tasks'] or state['key'] not in self.states:return
+        key=state['key']
+        for name,value in state['metrics'].items():
+            if name in ('read_bytes','range_requests','source_retries','failed_requests','full_file_fallbacks'):
+                self.retired_metrics[name]=self.retired_metrics.get(name,0)+value
+        self.states.pop(key,None)
+        self.roi-=sum(state['held'].values())
+        if state['batch']:self.disk-=state['batch'][2]
+        if key in self.order:self.order.remove(key)
+        reply=self.replies.get(state['month'])
+        if reply is not None:reply.put({'key':key,'op':'closed'})
+
+    def _source_failure(self,state,index,exc):
+        from .goes import ConfirmedCorruptSourceError
+        state['failed']=True
+        asset=state['rows'][index]['asset']
+        self._reply(state,{'op':'source_error','asset':asset,'error':str(exc),
+            'evidence':getattr(exc,'evidence',None),
+            'confirmed':isinstance(exc,ConfirmedCorruptSourceError),
+            'metrics':dict(state['metrics'])})
 
     async def _download(self, state, index):
         from .goes_staging import _stream_one
@@ -181,6 +223,10 @@ class SharedReads:
                 state['metrics'],self.semaphore,self.stop), timeout=900)
             state['metrics']['download_cache_seconds'] += time.perf_counter()-started
             state['files'][index] = path
+        except Exception as exc:
+            from .goes_recovery import source_error
+            if not source_error(exc):raise
+            self._source_failure(state,index,exc)
         finally: self.downloads -= 1
 
     async def _read(self, state, index, reservation):
@@ -189,9 +235,35 @@ class SharedReads:
         try:
             loop = asyncio.get_running_loop(); started = time.perf_counter()
             if band == 2:
-                dataset,timing = await loop.run_in_executor(self.range_pool,range_read,asset,state['bbox'],band,self.config.block_size)
+                try:
+                    dataset,timing = await loop.run_in_executor(self.range_pool,range_read,asset,state['bbox'],band,self.config.block_size)
+                except Exception as exc:
+                    from .goes_recovery import SourceReadError
+                    if not isinstance(exc,SourceReadError):raise
+                    for k,v in exc.metrics.items():state['metrics'][k]+=v
+                    if not state['range_disk'].get(index):raise
+                    from .goes_staging import _stream_one,retire_committed
+                    from .common import anonymous_noaa_store
+                    while self.downloads>=self.config.download_concurrency and not self.stop.is_set():
+                        await asyncio.sleep(.01)
+                    if self.stop.is_set():raise asyncio.CancelledError()
+                    self.downloads+=1;self.max_downloads=max(self.max_downloads,self.downloads)
+                    state['metrics']['full_file_fallbacks']=state['metrics'].get('full_file_fallbacks',0)+1
+                    try:
+                        if asset.bucket not in self.stores:self.stores[asset.bucket]=anonymous_noaa_store(asset.bucket)
+                        path=await asyncio.wait_for(_stream_one(asset,state['directory'],self.stores[asset.bucket],
+                            state['metrics'],self.semaphore,self.stop,attempts=1),timeout=900)
+                    finally:self.downloads-=1
+                    while self.locals>=self.config.local_readers and not self.stop.is_set():await asyncio.sleep(.01)
+                    if self.stop.is_set():raise asyncio.CancelledError()
+                    self.locals+=1;self.max_locals=max(self.max_locals,self.locals)
+                    try:
+                        dataset,timing=await loop.run_in_executor(self.local_pool,local_read,asset,path,state['bbox'],band)
+                    finally:
+                        self.locals-=1
+                        retire_committed(state['directory'],{asset.id})
                 for key in ('read_bytes','range_requests','source_retries','failed_requests','transfer_task_seconds'):
-                    state['metrics'][key] += timing[key]
+                    state['metrics'][key] += timing.get(key,0)
                 state['metrics']['hdf_read_retries'] += timing.get('hdf_read_retries',0)
             else:
                 dataset,timing = await loop.run_in_executor(self.local_pool,local_read,asset,state['files'][index],state['bbox'],band)
@@ -206,13 +278,19 @@ class SharedReads:
             self._reply(state, {'op':'result','index':index,'result':(dataset,timing),
                                 'metrics':dict(state['metrics'])})
         except Exception as exc:
+            from .goes_recovery import source_error
+            if source_error(exc):
+                self._source_failure(state,index,exc)
+                return
             raise OSError(f'GOES {state["month"]} C{band:02d} source read failed; '
                 f'asset {asset.id}, observation {asset.time}, source {asset.url}: '
                 f'{type(exc).__name__}: {exc}') from exc
         finally:
             if state['payload'] is None or reservation == self.config.roi_budget_mib*MIB:
                 self.probes = max(0,self.probes-1)
-            if band == 2: self.ranges -= 1
+            if band == 2:
+                self.ranges -= 1
+                self.disk-=state['range_disk'].pop(index,0)
             else: self.locals -= 1
 
     async def _finalize(self, message):
@@ -220,9 +298,17 @@ class SharedReads:
         result = await asyncio.get_running_loop().run_in_executor(self.final_pool,_finalize_archive,*message['arguments'])
         self.replies[message['month']].put({'key':message['key'],'op':'finalized','result':result})
 
-    def _spawn(self, coroutine):
+    def _spawn(self, coroutine, state=None, download=False):
         task = asyncio.create_task(coroutine); self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+        if state is not None:
+            state['tasks'].add(task)
+            if download:state['download_tasks'].add(task)
+            def settled(done):
+                state['tasks'].discard(done)
+                state['download_tasks'].discard(done)
+                self._drop_state(state)
+            task.add_done_callback(settled)
         def failed(done):
             if not done.cancelled() and done.exception() is not None:
                 import traceback
@@ -238,13 +324,14 @@ class SharedReads:
             if op == 'register': self._register(message); continue
             if op == 'finalize': self._spawn(self._finalize(message)); continue
             if op == 'close':
-                state=self.states.pop(key,None)
+                state=self.states.get(key)
                 if state:
-                    self.roi-=sum(state['held'].values())
-                    if state['batch']:self.disk-=state['batch'][2]
-                    self.order.remove(key)
+                    state['closing']=True
+                    for task in tuple(state['download_tasks']):task.cancel()
+                    self._drop_state(state)
                 continue
-            state = self.states[key]
+            state = self.states.get(key)
+            if state is None:continue
             if op == 'release':
                 self.roi -= state['held'].pop(message['index'],0)
             elif op == 'commit':
@@ -265,10 +352,11 @@ class SharedReads:
         probe_waiting=any(state['payload'] is None and state['cursor']<len(state['rows'])
             and (self.ranges<self.config.range_readers if state['band']==2 else
                  state['cursor'] in state['files'] and self.locals<self.config.local_readers)
-            for state in self.states.values())
+            for state in self.states.values() if not state['closing'] and not state['failed'])
         for _ in range(len(self.order)):
             key = self.order.popleft(); self.order.append(key); state = self.states[key]
             rows = state['rows']; band = state['band']
+            if state['closing'] or state['failed']:continue
             if state['cursor'] >= len(rows): continue
             if band != 2 and state['batch'] is None:
                 start = state['cursor']; archive_index = rows[start].get('archive_index', start)
@@ -287,7 +375,7 @@ class SharedReads:
                 if candidates:
                     i = candidates[0]; state['dispatched'].add(i); self.downloads += 1
                     self.max_downloads = max(self.max_downloads,self.downloads)
-                    self._spawn(self._download(state,i))
+                    self._spawn(self._download(state,i),state,True)
             i = state['cursor']
             if band != 2 and i not in state['files']: continue
             if band == 2 and self.ranges >= self.config.range_readers: continue
@@ -296,12 +384,19 @@ class SharedReads:
             reserve = state['payload'] or self.config.roi_budget_mib*MIB
             # First probes are exclusive; afterwards admission is in source order.
             if self.roi+reserve > self.config.roi_budget_mib*MIB: continue
+            # Reserve a possible C02 fallback before taking ROI credits. This
+            # prevents a fallback waiting for disk from blocking staged writers.
+            if band==2 and rows[i]['asset'].size<=self.config.staging_mib*MIB:
+                size=rows[i]['asset'].size
+                if self.disk+size>self.config.staging_mib*MIB:continue
+                self.disk+=size;state['range_disk'][i]=size
+                self.disk_peak=max(self.disk_peak,self.disk)
             self.roi += reserve; state['held'][i] = reserve; self.roi_peak = max(self.roi_peak,self.roi)
             state['cursor'] += 1
             if state['payload'] is None: self.probes += 1
             if band == 2: self.ranges += 1; self.max_ranges = max(self.max_ranges,self.ranges)
             else: self.locals += 1; self.max_locals = max(self.max_locals,self.locals)
-            self._spawn(self._read(state,i,reserve))
+            self._spawn(self._read(state,i,reserve),state)
         if self.order:self.order.rotate(-1)
 
     async def _run(self):
@@ -329,7 +424,7 @@ class ReaderClient:
     """Demultiplex one month's responses to its separate ordered band writers."""
     def __init__(self, month, requests, replies):
         self.month,self.requests,self.replies = month,requests,replies
-        self.condition = threading.Condition(); self.messages = {}; self.error = None
+        self.condition = threading.Condition(); self.messages = {}; self.error = None; self.errors={}; self.closed_keys=set()
         self.stopped = threading.Event()
         self.thread = threading.Thread(target=self._receive,daemon=True); self.thread.start()
 
@@ -339,6 +434,8 @@ class ReaderClient:
             except queue.Empty: continue
             with self.condition:
                 if message['op'] == 'error': self.error = message['error']
+                elif message['key'] in self.closed_keys and message['op'] in ('result','source_error'):continue
+                elif message['op']=='source_error':self.errors[message['key']]=message
                 else:self.messages.setdefault(message['key'],[]).append(message)
                 self.condition.notify_all()
 
@@ -348,6 +445,10 @@ class ReaderClient:
         with self.condition:
             while True:
                 if self.error: raise OSError(self.error)
+                if key in self.errors:
+                    from .goes_recovery import SourceReadError
+                    row=self.errors.pop(key)
+                    raise SourceReadError(row['asset'],row['error'],row['evidence'] if row['confirmed'] else None,row['metrics'])
                 rows = self.messages.setdefault(key,[])
                 for position,row in enumerate(rows):
                     if row['op'] == op and (index is None or row.get('index') == index):return rows.pop(position)
@@ -363,7 +464,11 @@ class ReaderClient:
                 metrics['writer_idle_seconds'] = metrics.get('writer_idle_seconds',0)+time.perf_counter()-started
                 try:yield row,response['result']
                 finally:self.send(key,'release',index=i)
-        finally:self.send(key,'close')
+        finally:
+            with self.condition:
+                self.closed_keys.add(key);self.messages.pop(key,None);self.errors.pop(key,None)
+            self.send(key,'close')
+            if not self.error:self.wait(key,'closed')
 
     def finalize(self,key,*arguments):
         self.send(key,'finalize',arguments=arguments)
@@ -382,25 +487,77 @@ def write_month(month, selection, groups, config, requests, replies, events, scr
         faulthandler.dump_traceback_later(float(os.environ['ECORE_DEBUG_DUMP_SECONDS']),repeat=True)
     client = ReaderClient(month,requests,replies)
     results = []
+    issue_lock=threading.Lock()
+    def write_one_band(item):
+        (target,band),assets=item
+        attempts=0;deferred_retries=0;recovery_bytes=0;started=time.perf_counter()
+        while True:
+            key=f'{month}:C{band:02}:attempt-{attempts}'
+            try:
+                result=_write_one(selection,assets,target,band,workers=1,scratch=scratch,
+                    read_mode='async_pipeline' if band!=2 else 'range',
+                    reader_factory=lambda rows,sel,b,d,metrics:client.reads(key,rows,sel,b,d,metrics),
+                    checkpoint_callback=lambda ids:client.send(key,'commit',ids=set(ids)) if band!=2 else None,
+                    finalizer=lambda *a:client.finalize(key,*a))
+                result.update(band=band,month=assets[0].time[:7],attempt_ended_at=time.time())
+                if attempts:
+                    result['read_bytes']=result.get('read_bytes',0)+recovery_bytes
+                    result['write_seconds']=time.perf_counter()-started
+                    result['restarted_band_attempts']=attempts
+                result.pop('assets',None)
+                events.put({'op':'band_verified','month':month,'band':band,'result':result})
+                return result
+            except Exception as exc:
+                from .goes_recovery import SourceReadError
+                if isinstance(exc,SourceReadError):
+                    recovery_bytes+=exc.metrics.get('read_bytes',0)
+                    if exc.evidence:
+                        from .catalog import record_corrupt_source
+                        from .goes import ConfirmedCorruptSourceError
+                        from .goes_recovery import save_local_issues
+                        with issue_lock:
+                            fact=record_corrupt_source(selection,exc.asset,
+                                ConfirmedCorruptSourceError(str(exc),exc.evidence))
+                            # Selection identity is unchanged; preserve evidence
+                            # locally before restarting only this band's writer.
+                            import hashlib,json
+                            from .monthly_stream import _archive_rows
+                            marker=Path(target)/'complete.json'
+                            prior=json.loads(marker.read_text()) if marker.is_file() else {}
+                            rows=_archive_rows(selection,assets,prior,include_unavailable=True)
+                            ident=hashlib.sha256(json.dumps({'target':str(Path(target).resolve()),
+                                'ids':[r['asset_id'] for r in rows]},sort_keys=True).encode()).hexdigest()[:24]
+                            save_local_issues(Path(scratch)/('goes-cmipf-'+ident),selection)
+                        events.put({'op':'source_issue','month':month,'band':band,'fact':fact,
+                            'recovery_read_bytes':recovery_bytes,'reply_key':key+':issue'})
+                        client.wait(key+':issue','issue_saved')
+                        attempts+=1
+                        continue
+                    if deferred_retries<1:
+                        deferred_retries+=1;attempts+=1
+                        events.put({'op':'band_retry','month':month,'band':band,'recovery_read_bytes':recovery_bytes})
+                        time.sleep(1)
+                        continue
+                    result={'path':str(Path(target)/'raw.zarr.zip'),'band':band,'status':'deferred',
+                        'error':str(exc),'source_url':exc.asset.url,'asset_id':exc.asset.id,
+                        'read_bytes':recovery_bytes,'write_seconds':time.perf_counter()-started}
+                    events.put({'op':'band_deferred','month':month,'band':band,'result':result})
+                    return result
+                import traceback
+                if 'Coordinator stopping;' not in str(exc):traceback.print_exc()
+                client.error=f'{type(exc).__name__}: {exc}'
+                with client.condition:client.condition.notify_all()
+                events.put({'op':'failed','month':month,'band':band,'error':client.error})
+                return {'path':target,'band':band,'status':'failed','error':client.error}
     def write(item):
-        (target,band),assets = item; key = f'{month}:C{band:02}'
-        try:
-            result = _write_one(selection,assets,target,band,workers=1,scratch=scratch,
-                read_mode='async_pipeline' if band != 2 else 'range',
-                reader_factory=lambda rows,sel,b,d,metrics:client.reads(key,rows,sel,b,d,metrics),
-                checkpoint_callback=lambda ids:client.send(key,'commit',ids=set(ids)) if band != 2 else None,
-                finalizer=lambda *a:client.finalize(key,*a))
-            result.update(band=band,month=assets[0].time[:7],attempt_ended_at=time.time())
-            result.pop('assets',None)
-            events.put({'op':'band_verified','month':month,'band':band,'result':result})
-            return result
+        try:return write_one_band(item)
         except BaseException as exc:
+            # Evidence/checkpoint persistence failures are fatal too. Wake
+            # peers even when the failure happened inside a recovery handler.
             import traceback
-            # The coordinator prints the root failure. Its cancellation notice
-            # must not produce another traceback for every active band.
-            if 'Coordinator stopping;' not in str(exc):
-                traceback.print_exc()
-            client.error = f'{type(exc).__name__}: {exc}'
+            traceback.print_exc()
+            (target,band),_=item
+            client.error=f'{type(exc).__name__}: {exc}'
             with client.condition:client.condition.notify_all()
             events.put({'op':'failed','month':month,'band':band,'error':client.error})
             return {'path':target,'band':band,'status':'failed','error':client.error}
@@ -432,8 +589,9 @@ def _progress(active,broker,index_results):
     updates=[];snap=broker.snapshot()
     for key,context in active.items():
         for (target,band),assets in context['groups']:
-            if band in context['verified']:continue
-            metrics=snap['bands'].get(f'{key}:C{band:02}',{})
+            if band in context['verified'] or band in context.get('deferred',{}):continue
+            streams=[v for k,v in snap['bands'].items() if k==f'{key}:C{band:02}' or k.startswith(f'{key}:C{band:02}:')]
+            metrics=streams[-1] if streams else {}
             task=context['task_progress'].get(band,{})
             if task.get('progress_path') and Path(task['progress_path']).is_file():
                 try:task.update(json.loads(Path(task['progress_path']).read_text()))
@@ -442,7 +600,7 @@ def _progress(active,broker,index_results):
             # Before a resumed band's source reader registers, its scratch
             # metrics belong to the prior attempt. Do not divide those bytes
             # by the new attempt's few seconds of elapsed time.
-            attempt_bytes=metrics.get('read_bytes',0)
+            attempt_bytes=metrics.get('read_bytes',0)+task.get('recovery_read_bytes',0)
             data={**compact(task),**metrics,'target':target,'attempt_started_at':context['started_at'],
                 'attempt_elapsed_seconds':elapsed,'attempt_read_bytes':attempt_bytes,
                 'read_bytes':task.get('initial_read_bytes',0)+attempt_bytes,
@@ -462,7 +620,7 @@ def _progress(active,broker,index_results):
 
 def fetch_contexts(requests,destination,config=None,scratch=None,index_results=True,
                    pause=None,on_complete=None,progress=None,retain_records=False,progress_total=None,
-                   deadline=None):
+                   deadline=None,on_source_issue=None):
     """Consume chronological (key, selection-loader, report-dir) requests lazily.
 
     No new month is admitted after pause(). Admitted normal/tail writers drain.
@@ -477,6 +635,7 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
     context=mp.get_context('spawn');events=context.Queue();slots=MonthSlots(config.month_writers,config.tail_months)
     iterator=iter(requests);exhausted=False;admission_paused=False;pause_reason=None;active={};reports=[];failures=[];started=time.perf_counter()
     completed_observations=0
+    pending=[]
     from .goes_memory import MemoryGuard
     memory_guard=MemoryGuard.from_environment()
     def notify_progress(status='checkpointed'):
@@ -502,6 +661,9 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                 if deadline is not None and time.monotonic() >= deadline:
                     from .goes_limits import IntentionalPause
                     raise IntentionalPause('hard wall-time deadline; verified band archives retained')
+                if len({(r['month'],r['band']) for r in pending})>=3:
+                    from .goes_limits import IntentionalPause
+                    raise IntentionalPause('multiple independent source reads unresolved; possible service outage')
                 requested_pause=pause() if pause else False
                 stopping=bool(requested_pause) or bool(failures) or broker.error is not None
                 if stopping:
@@ -517,6 +679,17 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                     if selection.source!='goes' or selection.product!='ABI-L2-CMIPF':
                         raise ValueError('Shared GOES scheduler supports native CMIPF only')
                     groups=_groups(selection,destination)
+                    from .goes_recovery import restore_issues
+                    from .catalog import confirmed_source_issues
+                    before=set(confirmed_source_issues(selection))
+                    restore_issues(selection,groups,scratch,os.getenv('ECORE_GOES_CHECKPOINT_ROOT'))
+                    from .catalog import confirmed_source_issues,save_selection
+                    restored=confirmed_source_issues(selection)
+                    if set(restored)!=before:
+                        if report_dir:save_selection(selection,report_dir,index_results=index_results)
+                        if on_source_issue:
+                            for ident,fact in restored.items():
+                                if ident not in before:on_source_issue(fact)
                     if not groups:
                         empty={'source':'goes','selection_id':selection.id,'selection_summary':selection.summary(),
                             'monthly_archives':[],'records':[],'interrupted':False,'wall_s':0,
@@ -549,7 +722,7 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                         tasks[band]={**data,'progress_path':str(path),'initial_read_bytes':data.get('read_bytes',0)}
                     process=context.Process(target=write_month,args=(key,selection,groups,config,req,reply,events,str(scratch)))
                     active[key]={'selection':selection,'selection_id':selection.id,'groups':groups,'process':process,'verified':set(),
-                        'results':[],'role':'normal','started_at':time.time(),'report_dir':report_dir,'task_progress':tasks,'requested_indices':requested_indices}
+                        'results':[],'role':'normal','started_at':time.time(),'report_dir':report_dir,'task_progress':tasks,'requested_indices':requested_indices,'deferred':{}}
                     print(f'Admitted GOES {key}: {len(groups)} separate native-band stores',flush=True)
                     process.start()
                     reason=pause() if pause else False
@@ -561,7 +734,35 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                 except queue.Empty:message=None
                 if message:
                     key=message['month'];entry=active[key]
-                    if message['op']=='band_verified':
+                    if message['op']=='source_issue':
+                        entry['task_progress'][message['band']]['recovery_read_bytes']=message['recovery_read_bytes']
+                        from .catalog import record_corrupt_source,save_selection
+                        from .goes import ConfirmedCorruptSourceError
+                        fact=message['fact'];asset=next(a for a in entry['selection'].assets if a.id==fact['asset_id'])
+                        record_corrupt_source(entry['selection'],asset,
+                            ConfirmedCorruptSourceError(fact['error'],fact['integrity_evidence']))
+                        if entry['report_dir']:save_selection(entry['selection'],entry['report_dir'],index_results=index_results)
+                        if on_source_issue:on_source_issue(fact)
+                        from .monthly_stream import _archive_rows
+                        for (target,band),assets in entry['groups']:
+                            marker=Path(target)/'complete.json';prior=json.loads(marker.read_text()) if marker.is_file() else {}
+                            rows=_archive_rows(entry['selection'],assets,prior)
+                            selected_ids={a.id for a in assets}
+                            entry['requested_indices'][band]=[i for i,r in enumerate(rows) if r['asset_id'] in selected_ids]
+                        broker.replies[key].put({'key':message['reply_key'],'op':'issue_saved'})
+                        print(f"Confirmed unavailable GOES source {asset.time} C{message['band']:02}; other observations continue",flush=True)
+                    elif message['op']=='band_retry':
+                        entry['task_progress'][message['band']]['recovery_read_bytes']=message['recovery_read_bytes']
+                    elif message['op']=='band_deferred':
+                        pending.append({'month':key,**message['result']})
+                        entry['deferred'][message['band']]=message['result']
+                        print(f"Deferred GOES {key} C{message['band']:02}; verified prefix retained, other bands continue",flush=True)
+                        if index_results:
+                            from .index import _writer_lock,connect
+                            with _writer_lock(),connect() as con:
+                                con.execute("UPDATE tasks SET status='deferred',updated_at=?,metrics_json=? WHERE task_id=?",
+                                    [time.time(),json.dumps(message['result']),message['result']['path']])
+                    elif message['op']=='band_verified':
                         band=message['band'];entry['verified'].add(band);entry['results'].append(message['result'])
                         slots.verified(key,band)
                         print(f'Verified GOES {key} C{band:02}: {message["result"]["status"]}',flush=True)
@@ -591,14 +792,15 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                         source_issues=confirmed_source_issues(sel)
                         records=[{'asset_id':a.id,'time':a.time,'source_url':a.url,'source_bytes':a.size,
                             'etag':a.etag,'product':sel.product,'band':_band(a),
-                            'url':None if a.id in source_issues else by_band[_band(a)]['path'],
-                            'status':'corrupt_source' if a.id in source_issues else 'reused' if by_band[_band(a)]['status']=='reused' else 'archived',
+                            'url':None if a.id in source_issues or by_band[_band(a)]['status'] in ('deferred','unavailable') else by_band[_band(a)]['path'],
+                            'status':'corrupt_source' if a.id in source_issues else 'deferred' if by_band[_band(a)]['status']=='deferred' else 'reused' if by_band[_band(a)]['status']=='reused' else 'archived',
                             'subset_id':_identity(sel,_band(a))} for a in sel.assets] if retain_records else []
                         report={'source':'goes','selection_id':entry['selection_id'],'selection_summary':sel.summary(),
                             'root':destination,'destination':destination,'records':records,
                             'monthly_archives':results,'read_bytes':sum(r.get('read_bytes',0) for r in results),
                             'stored_bytes':sum(r.get('stored_bytes',0) for r in results),
                             'wall_s':time.time()-entry['started_at'],'interrupted':any(r['status']=='failed' for r in results),
+                            'status':'pending_sources' if any(r['status']=='deferred' for r in results) else 'complete',
                             'global_config':config.manifest(),'storage_layout':'monthly native-grid Earth2Studio Zarr v3 ZIP'}
                         issues=list(source_issues.values())
                         if issues:report['source_issues']=issues
@@ -637,7 +839,8 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
         metrics=broker.snapshot()
     return {'reports':reports,'interrupted':bool(failures),'wall_s':time.perf_counter()-started,
             'global_metrics':{**{k:v for k,v in metrics.items() if k!='bands'},'memory':memory_guard.summary()},'global_config':config.manifest(),
-            'paused':admission_paused, 'pause_reason':pause_reason}
+            'paused':admission_paused or bool(pending), 'pause_reason':pause_reason or ('unresolved source reads; verified prefixes retained' if pending else None),
+            'pending_sources':pending}
 
 
 def fetch(selection,destination,config=None,scratch=None,report_dir=None,index_results=True,progress=None):
@@ -655,7 +858,14 @@ def fetch(selection,destination,config=None,scratch=None,report_dir=None,index_r
                 'source_issues':[issue for issue in selection.discovery_facts.get('source_issues',[])
                                  if issue.get('asset_id') in ids]}
         requests.append((f'{month}-goes{satellite}',segment,None))
-    result=fetch_contexts(requests,str(Path(destination).resolve()),config,scratch,index_results,progress=progress,retain_records=True,progress_total=len(selection.assets))
+    def persist_issue(fact):
+        from .catalog import record_corrupt_source,save_selection
+        from .goes import ConfirmedCorruptSourceError
+        asset=next(a for a in selection.assets if a.id==fact['asset_id'])
+        record_corrupt_source(selection,asset,ConfirmedCorruptSourceError(fact['error'],fact['integrity_evidence']))
+        if report_dir:save_selection(selection,report_dir,index_results=index_results)
+    result=fetch_contexts(requests,str(Path(destination).resolve()),config,scratch,index_results,progress=progress,
+        retain_records=True,progress_total=len(selection.assets),on_source_issue=persist_issue)
     reports=result.pop('reports')
     report={**result,'source':'goes','selection_id':selection.id,'selection_summary':selection.summary(),
         'destination':destination,'root':str(Path(destination).resolve()),

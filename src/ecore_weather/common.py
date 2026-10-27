@@ -207,25 +207,31 @@ class Transport:
                     options = {"if_match": f'"{asset.etag}"'}
                     if start is not None:
                         options["range"] = (start, end)
-                    data = bytes(obstore.get(store, asset.key, options=options).bytes())
+                    response=obstore.get(store, asset.key, options=options)
+                    data = bytes(response.bytes())
                 if budget:budget.settle(reservation,len(data))
                 reservation=None
                 with self._lock:
                     self.bytes += len(data)
                     self.requests += 1
                     self.seconds += time.perf_counter() - before
+                from .goes_recovery import validate_response
+                validate_response(response,asset,start,end)
                 if start is not None and len(data) != end-start:
                     raise IOError(f'Incomplete NOAA range response for {asset.url}: '
                                   f'expected {end-start} bytes, received {len(data)}')
                 return data
             except Exception:
                 if budget and reservation is not None:budget.settle(reservation)
+                remaining=getattr(self,'_source_failures_remaining',None)
+                if remaining is not None:
+                    remaining-=1;self._source_failures_remaining=remaining
                 with self._lock:
-                    if attempt == 2:
+                    if attempt == 2 or remaining is not None and remaining<=0:
                         self.failed_requests += 1
                     else:
                         self.retries += 1
-                if attempt == 2:
+                if attempt == 2 or remaining is not None and remaining<=0:
                     raise
                 time.sleep(0.5 * 2**attempt)
 

@@ -50,7 +50,7 @@ def observe(data, cache, now):
         run=runs.get(task.get('run_id'),{})
         complete=task['status']=='complete'
         state=task['status']
-        if not complete and state!='queued' and run.get('status') in ('interrupted','paused','failed'):
+        if not complete and state not in ('queued','deferred','unavailable') and run.get('status') in ('interrupted','paused','failed'):
             state=run['status']
         elif state=='checkpointed':state='fetching' if run.get('process_alive') or (run.get('process_alive') is None and run.get('status')=='running') else 'checkpointed'
         # Reused scratch retains the previous attempt's metrics until this band

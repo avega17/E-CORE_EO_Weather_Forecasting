@@ -125,7 +125,7 @@ def record_fetch(report, path=None):
             [run_id,source,report.get('archive_product',selection.get('product','unknown')),
              report.get('selection_id',''),report.get('root',''),utc(started).replace(tzinfo=None),
              report.get('wall_s',0),report.get('read_bytes',0),report.get('stored_bytes',0),
-             report.get('peak_rss_bytes',0),'interrupted' if report.get('interrupted') else 'complete',
+             report.get('peak_rss_bytes',0),'pending_sources' if report.get('pending_sources') else 'interrupted' if report.get('interrupted') else 'complete',
              json.dumps(compact(report),default=str)])
 
     if os.getenv('ECORE_DURABLE_STATE'):

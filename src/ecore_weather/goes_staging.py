@@ -49,8 +49,7 @@ async def download_batch(assets,directory,concurrency):
 
 def local_read(asset,path,bbox,band):
     started=time.perf_counter();cpu=time.process_time()
-    with xr.open_dataset(path,engine='h5netcdf',decode_cf=False,mask_and_scale=False) as ds:
-        subset=goes.subset_dataset(ds,bbox,(band,))
+    subset=goes._read_full_source(path,asset,bbox,(band,))
     subset.attrs.update(source_url=asset.url,source_etag=asset.etag,
         observation_time=asset.time,scan_end=asset.end_time,requested_bbox=list(bbox))
     return subset, {'read_decode_crop_s':time.perf_counter()-started,
@@ -140,7 +139,7 @@ def retire_committed(directory, asset_ids):
         if ledger:ledger.release(key)
 
 
-async def _stream_one(asset,directory,store,metrics,semaphore,stop):
+async def _stream_one(asset,directory,store,metrics,semaphore,stop,attempts=3):
     import hashlib,json,os,obstore
     path=directory/(asset.id+'.nc');receipt=directory/(asset.id+'.receipt.json')
     def cached():
@@ -161,13 +160,15 @@ async def _stream_one(asset,directory,store,metrics,semaphore,stop):
         metrics['peak_active_downloads']=max(metrics['peak_active_downloads'],metrics['active_downloads'])
         before=time.perf_counter()
         try:
-            for attempt in range(3):
+            for attempt in range(attempts):
                 temporary=path.with_suffix('.partial');size=0;digest=hashlib.sha256();budget=None;reservation=None
                 try:
                     from .transfer_budget import active
                     budget=active();reservation=budget.reserve(asset.size) if budget else None
                     metrics['range_requests']+=1
                     response=await obstore.get_async(store,asset.key,options={'if_match':f'"{asset.etag}"'})
+                    from .goes_recovery import validate_response
+                    validate_response(response,asset)
                     with temporary.open('wb') as stream:
                         async for block in response.stream(min_chunk_size=1024**2):
                             if stop.is_set():raise asyncio.CancelledError()
@@ -183,7 +184,7 @@ async def _stream_one(asset,directory,store,metrics,semaphore,stop):
                     if budget and reservation is not None:budget.settle(reservation,size)
                     temporary.unlink(missing_ok=True);metrics['failed_requests']+=1
                     from .transfer_budget import BudgetExceeded
-                    if attempt==2 or stop.is_set() or isinstance(__import__('sys').exception(),BudgetExceeded):raise
+                    if attempt==attempts-1 or stop.is_set() or isinstance(__import__('sys').exception(),BudgetExceeded):raise
                     metrics['source_retries']+=1
                     await asyncio.sleep(.25*2**attempt)
         finally:

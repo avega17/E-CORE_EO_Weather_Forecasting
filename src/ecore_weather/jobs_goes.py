@@ -472,7 +472,7 @@ def run_shared(plan,args,config):
         'rss_limit_bytes':int(os.getenv('ECORE_RSS_LIMIT_BYTES','0')),
         'memory_report':os.getenv('ECORE_GOES_MEMORY_REPORT'),
         'maximum_hours':args.max_hours,'minimum_drain_minutes':args.drain_minutes})
-    started=time.perf_counter();completed=[];requests=[];metadata={};segments_done={};durations=[]
+    started=time.perf_counter();completed=[];requests=[];metadata={};segments_done={};durations=[];pending=[]
     deadline=time.monotonic()+args.max_hours*3600 if args.max_hours else None
     def checkpoint(month):return output/'checkpoints'/month['stage']/f"{month['start']}.json"
     def monthly_requests():
@@ -497,13 +497,16 @@ def run_shared(plan,args,config):
                 yield (key,load,str(Path(segment['report_dir'])/args.product))
     requests=monthly_requests()
     def finished(key,report):
+        if report.get('status')=='pending_sources':
+            pending.extend([{'month':key,**r} for r in report['monthly_archives'] if r['status']=='deferred'])
+            return
         if report.get('interrupted'):raise OSError(f"Failed GOES month {key}: {report['monthly_archives']}")
         month,segment,count=metadata[key]
         segments_done[month['start']].append(report)
         if len(segments_done[month['start']])!=count:return
-        reports=segments_done.pop(month['start']);archives=[a for r in reports for a in r['monthly_archives']]
+        reports=segments_done.pop(month['start']);archives=[a for r in reports for a in r['monthly_archives'] if a.get('status')!='unavailable']
         bands=sorted({a['band'] for a in archives})
-        row={'status':'complete' if archives else 'unavailable','product':args.product,
+        row={'status':'complete' if archives or any(r.get('source_issues') for r in reports) else 'unavailable','product':args.product,
             'stage':month['stage'],'start':month['start'],'end_excluded':month['end_excluded'],
             'bands':BANDS,'selected_assets':sum(r.get('selection_summary',{}).get('files',0) for r in reports),
             'coverage':[r.get('selection_summary',{}) for r in reports],
@@ -558,7 +561,7 @@ def run_shared(plan,args,config):
                    'stored_bytes':r.get('stored_bytes',0),'wall_seconds':r.get('wall_seconds',0)}
                   for r in sorted(completed,key=lambda r:r['start'])],
         'elapsed_seconds':time.perf_counter()-started,'global_config':config.manifest(),
-        'global_metrics':result['global_metrics'],'pause_reason':result.get('pause_reason')}
+        'global_metrics':result['global_metrics'],'pause_reason':result.get('pause_reason'),'pending_sources':pending}
     write_json(output/'summary.json',summary)
     if summary['status']=='paused':
         detail={k:v for k,v in summary.items() if k not in ('months','global_metrics')}

@@ -387,7 +387,9 @@ checks and a submission-time quota estimate are not a project-wide reservation.
 Open stores, staged NOAA files and packing copies stay on node-local SSD.
 Verified monthly ZIPs and incremental recovery checkpoints go to Eagle.
 The recovery checkpoints contain new compressed chunks and their verification
-records, published roughly every quarter of a band-month. They are not complete
+records, published roughly every quarter of a band-month. Checkpoint schema 2 keeps the original requested source list separate from
+confirmed unavailable observations; old schema-1 parts can be restored without
+rewriting their verified pixels. They are not complete
 datasets for analysis and are removed only after the final monthly archive has
 verified. Allow space for these temporary copies alongside final archives;
 source NetCDF files are retired after their observations commit.

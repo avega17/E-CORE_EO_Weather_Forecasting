@@ -92,20 +92,67 @@ Restart a notebook kernel after package changes and rerun setup/control cells.
 
 ## Recovery decisions
 
-For a GOES HDF5 decompression/integrity error, first inspect the source identity
-in the failure. Range reads now make up to three attempts with fresh file/cache
-handles and reject incomplete HTTP range bodies. A persistent error still stops
-the job with its checkpoints intact; never classify it as missing pixels or
-remove it from the selection without source-integrity evidence. Resume using the
-same saved selection and scratch directory after investigating the named object.
-For a complete, checksum-confirmed object that also fails local decoding, use
-`goes._read_full_source` to obtain `ConfirmedCorruptSourceError`, then
-`catalog.record_corrupt_source(selection, asset, error)` and
-`catalog.save_selection(selection, original_directory, index_results=False)`
-while the job is stopped. This retains the requested object and explicit evidence
-in STAC. Only its unreadable observation is absent from the array; archive
-metadata, the completion marker and backup coverage retain the gap. Unsupported
-checksums or ordinary read errors cannot authorize an exclusion.
+<a id="automatic-source-error-recovery-next-change"></a>
+### Automatic source-error recovery
+
+The shared native-CMIPF pipeline handles recognized source failures separately
+from failures that could damage an archive. It does not need a list of known bad
+object keys. Normal successful reads keep their existing format and access path.
+
+- HTTP responses are checked against the selected ETag, exposed object size and
+  requested byte range. The checks use SDK metadata already returned by the GET.
+- C02 range workers allow three failed HTTP/HDF operations per source. Cache and
+  file handles are reopened for HDF retries. If these attempts fail, one diagnostic
+  whole-file download goes through the shared anonymous download service, using
+  the configured ALCF proxy and existing concurrency, disk and ROI limits.
+- A successful full-file read supplies the same packed native subset. If local
+  decoding instead confirms invalid format or a recognized integrity defect,
+  the complete size and supported single/multipart ETag MD5 must match before
+  the observation can become an explicit source gap. An HTML page with an
+  unsupported or mismatched checksum is not enough evidence.
+- All seven staged bands use that same full-object verification on a decoding
+  failure. Normal staged downloads retain their existing three-attempt limit.
+  Unexplained source failures receive one further band attempt. If still
+  unresolved, that band closes and publishes its verified prefix; other bands
+  and months continue. The final status is deferred/paused (75), not complete.
+- Three independently deferred band-months request a node pause because a wider
+  service or environment problem is likely. Archive-write/ownership/hash errors,
+  invalid requests, reader-process death and memory protection retain their
+  existing fatal or checkpointed-pause behavior. They are not converted to gaps.
+
+A C02 task reserves the disk space it might need for fallback before it takes
+ROI credits. This prevents a failed first observation from holding all ROI
+memory while waiting for other staged files to retire. The reservation is
+returned even on failure. Before a band retries, old downloads are cancelled,
+readers finish, and the broker acknowledges released reservations. Separate
+band stores remain owned by the same month process.
+
+Source evidence is saved atomically by the coordinator in the selected STAC
+manifest, and copied into native archive attributes and completion records.
+Raw arrays omit only the confirmed unavailable observation: no synthetic zeros,
+interpolation or changed quality flags are introduced. Unresolved reads remain
+pending and prevent that month from authorizing a completion marker or backup.
+The status table retains `deferred`, with the exception and source identity in
+its compact task record. Notebook results and CLI exit 75 distinguish pending
+work from completed data.
+
+#### Reusing existing Eagle checkpoints
+
+Checkpoint schema 2 stores the original requested source identity separately
+from available observations and source-gap evidence. Existing schema-1 parts
+remain readable. If a new gap lies after the verified prefix, their immutable
+ZIPs and pixel positions are reused; only unwritten array capacity and future
+timestamps change. A gap that would move a verified pixel stops for inspection.
+Successive new gaps and fresh-allocation restores are covered by local tests.
+Receipt evidence is recovered before constructing the new observation mapping,
+so a resubmission does not have to rediscover a confirmed defect. Failed reads
+force publication of the latest verified eight-scan boundary, rather than
+waiting for the next 25% interval. Monthly ZIPs still require final read-back.
+
+Keep the same destination and shared checkpoint root when resubmitting. See
+[the final single-node command](study_jobs.md#single-node-recovery-for-september-2024-through-april-2025).
+Previously recorded scientific facts in `jobs/goes_source_issues.json` remain
+historical evidence; adding new hardcoded exceptions is not part of this workflow.
 
 A resumed band first reads its saved arrays and checks their recorded checksums.
 It can therefore show an unchanged observation count and no new download bytes

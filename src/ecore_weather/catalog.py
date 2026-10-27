@@ -92,7 +92,10 @@ def save_selection(selection: Selection, directory, index_results=True, compress
         os.replace(temporary, directory/filename)
     else:
         write_json(directory / filename, manifest.to_dict())
-    write_json(directory / "collection.json", collection.to_dict())
+    pending=directory/'collection.json.tmp'
+    write_json(pending, collection.to_dict())
+    with pending.open('rb') as stream:os.fsync(stream.fileno())
+    os.replace(pending,directory/'collection.json')
     collection_path = directory / "collection.json"
     if index_results:
         try:

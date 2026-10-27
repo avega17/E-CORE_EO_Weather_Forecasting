@@ -25,7 +25,7 @@ def _sha(path):
 class DurableBatches:
     """Single-owner incremental checkpoints; restore is verified before use."""
 
-    def __init__(self, root, parent, rows, fraction=.25):
+    def __init__(self, root, parent, rows, fraction=.25, *, requested_rows=None, source_issues=()):
         if not 0 < fraction <= 1:
             raise ValueError('Checkpoint fraction must be greater than zero and at most one')
         self.parent = Path(parent)
@@ -34,7 +34,10 @@ class DurableBatches:
                 or self.parent.resolve().is_relative_to(self.folder.resolve())):
             raise ValueError('Durable checkpoint directory must be separate from working scratch')
         self.rows = rows
+        self.requested_rows = rows if requested_rows is None else requested_rows
+        self.source_issues = list(source_issues)
         self.ids_digest = hashlib.sha256('\n'.join(r['asset_id'] for r in rows).encode()).hexdigest()
+        self.requested_digest = hashlib.sha256('\n'.join(r['asset_id'] for r in self.requested_rows).encode()).hexdigest()
         # Publication occurs only at already verified eight-scan boundaries.
         self.interval = max(8, ((int(len(rows) * fraction) + 7) // 8) * 8)
         self.state = self._load()
@@ -42,12 +45,30 @@ class DurableBatches:
     def _load(self):
         receipt = self.folder / 'checkpoint.json'
         state = json.loads(receipt.read_text()) if receipt.is_file() else {
-            'schema': 1, 'identity': self.parent.name, 'selected': len(self.rows),
-            'ordered_asset_ids_sha256': self.ids_digest, 'parts': [], 'next_index': 0}
-        if (state.get('schema') != 1 or state.get('identity') != self.parent.name
-                or state.get('ordered_asset_ids_sha256') != self.ids_digest
-                or state.get('selected') != len(self.rows)):
+            'schema': 2, 'identity': self.parent.name, 'selected': len(self.rows),
+            'ordered_asset_ids_sha256': self.ids_digest,
+            'requested_asset_ids_sha256':self.requested_digest,
+            'requested':len(self.requested_rows), 'source_issues':self.source_issues,
+            'parts': [], 'next_index': 0}
+        original = state.get('requested_asset_ids_sha256', state.get('ordered_asset_ids_sha256'))
+        original_count = state.get('requested',state.get('selected'))
+        same_available = (state.get('ordered_asset_ids_sha256') == self.ids_digest
+                          and state.get('selected') == len(self.rows))
+        # A v1 receipt written with already-known gaps used the available list.
+        legacy_available = state.get('schema') == 1 and same_available
+        if (state.get('schema') not in (1,2) or state.get('identity') != self.parent.name
+                or not legacy_available and (original != self.requested_digest
+                    or original_count != len(self.requested_rows))):
             raise IOError('Durable checkpoint scientific selection differs')
+        if not same_available:
+            # Gaps can only remove future, unwritten observations. Existing
+            # source IDs and pixel positions up to next_index must not move.
+            before = self.requested_rows
+            old_excluded = {f['asset_id'] for f in state.get('source_issues',[])}
+            before = [r for r in before if r['asset_id'] not in old_excluded]
+            count = state['next_index']
+            if [r['asset_id'] for r in before[:count]] != [r['asset_id'] for r in self.rows[:count]]:
+                raise IOError('New source gap conflicts with the durable verified prefix')
         end = 0
         for part in state['parts']:
             if part['begin'] != end or not end < part['end'] <= len(self.rows):
@@ -58,6 +79,17 @@ class DurableBatches:
         if end != state['next_index']:
             raise IOError('Durable checkpoint observation count differs')
         return state
+
+    def commit_identity(self):
+        """Publish evidence/mapping changes only after restored pixels verify."""
+        updated = {**self.state,'schema':2,'selected':len(self.rows),
+            'ordered_asset_ids_sha256':self.ids_digest,
+            'requested_asset_ids_sha256':self.requested_digest,
+            'requested':len(self.requested_rows),'source_issues':self.source_issues}
+        if updated != self.state and self.folder.is_dir():
+            from .goes_monthly import _checkpoint
+            _checkpoint(self.folder/'checkpoint.json',updated)
+        self.state=updated
 
     @property
     def count(self):
@@ -154,7 +186,10 @@ class DurableBatches:
                 with pending.open('rb') as stream:
                     os.fsync(stream.fileno())
                 os.replace(pending, self.folder / name)
-                updated = {**self.state, 'next_index': count,
+                updated = {**self.state, 'schema':2,'selected':len(self.rows),
+                    'ordered_asset_ids_sha256':self.ids_digest,
+                    'requested_asset_ids_sha256':self.requested_digest,
+                    'requested':len(self.requested_rows),'source_issues':self.source_issues, 'next_index': count,
                     'parts': [*self.state['parts'], {'file': name, 'begin': begin,
                         'end': count, 'bytes': packed.stat().st_size, 'sha256': digest}]}
                 from .goes_monthly import _checkpoint

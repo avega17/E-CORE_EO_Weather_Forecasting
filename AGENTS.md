@@ -139,15 +139,23 @@ Keep explanations readable for researchers inheriting the work.
   stock CONUS and region-adapted comparisons must be labelled separately.
   Brief external read-only DuckDB locks are retried by the writer for up to
   30 seconds; do not leave exploratory connections open indefinitely.
-- GOES range bodies must match requested byte lengths. Known HDF5 integrity/
-  decompression failures get three fresh file/cache attempts; exhausted errors
-  retain the source URL/time/band. Preserve verified batches and never turn a
-  failed read into synthetic pixels or an unproven corrupt-source classification.
-  A complete-file size plus exactly matching MD5 ETag (single or multipart) and
-  failed local native-ROI decoding can establish a source gap. Keep its STAC
-  object and integrity evidence; omit only the unreadable observation, copying
-  the gap into canonical metadata and completion records. Never remove a
-  verified prefix. Annual backup coverage must account for the gap explicitly.
+- GOES range bodies and exposed response metadata must match requested sizes,
+  ranges and ETags. Shared C02 tasks use one three-failure HTTP/HDF budget, then
+  one bounded full-object fallback through the existing proxy/download service.
+  Staged bands verify complete-object integrity when decoding fails. Exact
+  full size plus supported single/multipart ETag MD5 and persistent recognized
+  decode failure can establish an automatic source gap, including stored HTML.
+  Preserve STAC identity, actual time and proof; never invent raw pixels.
+- Unconfirmed source errors receive one band restart, then defer that band while
+  unrelated work continues. Three independent deferred band-months request a
+  checkpointed node pause. Deferred months cannot complete or authorize backup.
+  Storage/hash/ownership/programming errors and worker death remain fatal.
+- Durable checkpoint schema 2 keeps original requested identities separate from
+  available rows and gap evidence. Read older schema-1 parts; never move verified
+  pixels. A new gap inside the verified prefix is a conflict. Before retrying,
+  settle old band readers/downloads and release reservations. The coordinator
+  alone persists source evidence and index updates. No hardcoded source-key
+  exception list is required for new defects.
 - Diagnostic percentages are pixel-weighted; do not average image quartiles into
   pooled quartiles. Missing observations and missing pixels are distinct. Day-level
   performance requires day-level evidence, not manufactured month-log estimates.

@@ -28,6 +28,11 @@ def hdf_integrity_error(exc):
         'incorrect metadata checksum', 'filter returned failure', 'data error detected by fletcher32'))
 
 
+def source_decode_error(exc):
+    from .goes_recovery import format_error
+    return hdf_integrity_error(exc) or format_error(exc)
+
+
 class ConfirmedCorruptSourceError(OSError):
     """An exact, checksum-verified NOAA object cannot supply the requested pixels."""
 
@@ -76,7 +81,7 @@ def _read_full_source(path, asset, bbox, bands, allow_missing=False):
         with xr.open_dataset(path, engine='h5netcdf', decode_cf=False, mask_and_scale=False) as ds:
             return subset_dataset(ds, bbox, bands, allow_missing)
     except Exception as exc:
-        if hdf_integrity_error(exc) and (evidence := _verified_object_evidence(path, asset)):
+        if source_decode_error(exc) and (evidence := _verified_object_evidence(path, asset)):
             raise ConfirmedCorruptSourceError(exc, {**evidence,
                 'error':f'{type(exc).__name__}: {exc}'}) from exc
         raise
@@ -305,9 +310,12 @@ def read(asset, bbox=PR_BBOX, bands=(8, 13), transport=None, full_file=False,
                         subset = subset_dataset(ds, bbox, bands, allow_missing)
                 break
             except Exception as exc:
-                if not hdf_integrity_error(exc):raise
-                if attempt == 2:
-                    raise OSError(f'GOES range read failed after 3 fresh HDF5 attempts; '
+                if not source_decode_error(exc):raise
+                remaining=getattr(transport,'_source_failures_remaining',None)
+                if remaining is not None:
+                    remaining-=1;transport._source_failures_remaining=remaining
+                if attempt == 2 or remaining is not None and remaining<=0:
+                    raise OSError(f'GOES range read failed after {attempt+1} fresh HDF5 attempts; '
                         f'asset {asset.id}, observation {asset.time}, source {asset.url}: {exc}') from exc
                 if hasattr(transport,'retries'):
                     with transport._lock:transport.retries += 1

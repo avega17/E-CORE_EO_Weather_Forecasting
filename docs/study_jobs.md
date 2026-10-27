@@ -875,6 +875,58 @@ this merge operation also preserves run, task, benchmark and backup history.
 No research archives are deleted by consolidation. The workstation fetch and
 its database remain independent.
 
+### Single-node recovery for September 2024 through April 2025
+
+Use the normal `jobs/polaris_goes.pbs` wrapper with explicit dates. To include
+**all of April**, the end is **2025-05-01**, excluded. `2025-04-01` would stop
+before April. GOES-16/19 requests split automatically at the April 7 handoff.
+Verified archives from either satellite are reused when encountered.
+
+First let the older multi-node allocation finish before updating its checkout
+or launching overlapping fetches. Make the tested recovery changes available
+in the Polaris repository, then submit from that repository:
+
+```bash
+source jobs/polaris.env.sh
+export PBS_GOES_START=2024-09-01
+export PBS_GOES_END=2025-05-01
+qsub -A "$ECORE_PBS_ACCOUNT" \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE=study,PBS_GOES_START,PBS_GOES_END" \
+  jobs/polaris_goes.pbs
+```
+
+This uses one node, the existing Polaris profile and a 24-hour request. No new
+profile, credential export or code-lineage check is required. Actual runtime
+is not guaranteed; exit 75 remains resumable. The default shared recovery root
+is the same `ecore-weather/state/goes/study/partial-archives` used by the
+multi-node job. Its store identity depends on native scientific selections and
+canonical destination paths, not partition names or physical hosts. Compatible
+part-1 and part-2 recovery data can therefore be reused by this single-node run.
+If an earlier job used a custom destination or checkpoint root, retain those
+explicit overrides rather than silently writing somewhere else.
+
+The single-node progress snapshot is at the study root, rather than under a
+partition directory:
+
+```bash
+watch -n 30 -t -- "$ECORE_PYTHON" scripts/dataset_jobs.py status goes \
+  --progress "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study/progress.json" \
+  --start 2024-09-01 --end 2025-05-01
+```
+
+The source-recovery update distinguishes three outcomes: successful range/full
+reads, checksum-confirmed unavailable observations, and deferred unconfirmed
+reads. A confirmed malformed source is recorded automatically and the band
+continues. Deferred bands keep their verified prefixes and leave the month
+incomplete; the job returns 75 with pending-source details. Other bands continue.
+Do not reset saved selections or remove partial checkpoint folders to work
+around the old file-signature error. See [the recovery policy](developer_guide.md#automatic-source-error-recovery).
+
+A closed index snapshot is published at the study root on completion/shutdown.
+Retain it for consolidation with earlier partition history; never open an Eagle
+snapshot for concurrent writes. PBS submission and a live recovery test remain
+manual: fixture tests do not establish remote success.
+
 ### GOES memory protection and recovery
 
 Job **7776485** ended with exit **1**, not an intentional pause: our application

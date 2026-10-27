@@ -29,6 +29,12 @@ Source [the Polaris configuration](jobs/polaris.env.sh) for non-sensitive job
 settings and an automatically refreshed project-quota estimate.
 
 
+GOES source recovery now retries recognized read failures, falls back to a bounded
+full-file read when needed, and records checksum-confirmed malformed observations
+as explicit gaps. Unconfirmed failures defer only the affected band; its month
+remains incomplete. Existing Eagle partial checkpoints are reusable. See the
+[final single-node recovery job](docs/study_jobs.md#single-node-recovery-for-september-2024-through-april-2025).
+
 This project prepares reproducible raw subsets from NOAA MRMS radar and GOES
 satellite archives for weather-forecasting research. The notebooks use custom
 Earth2Studio-compatible sources to retain the Puerto Rico region, requested

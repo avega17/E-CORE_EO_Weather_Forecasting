@@ -69,31 +69,41 @@ reused. Completed files can enter a local reader immediately while other downloa
 continue. A reader crops the native ROI, preserving packed data and metadata.
 C02 readers instead obtain remote file sections as HDF5 requests them.
 
-Range responses must contain exactly the requested number of bytes; incomplete
-responses are retried before HDF5 can consume them. If HDF5 reports a decompression
-or integrity error, the reader retries the observation up to three times, each
-time reopening both the remote byte cache and the HDF5 file. Retries contribute
-to source retry/transfer counters. An exhausted failure names the band, NOAA
-object and observation time and preserves the verified scan checkpoints.
-A failed range read alone is not evidence that NOAA's source is corrupt.
+Range responses must match their requested byte count and exposed range,
+object size and ETag metadata. C02 source tasks allow three failed HTTP/HDF
+operations, reopening caches/handles for HDF errors. If range reading still
+fails, one full-file diagnostic uses the same bounded staging service and local
+reader pool as the other bands. It uses the documented proxy on Polaris.
+A successful local decode supplies the unchanged native subset. A failed range
+read alone never establishes source corruption. Clean reads need no extra GET.
 
 A confirmed corrupt source needs stronger evidence: a complete-file download of
 the expected size, an exactly matching single-part or multipart MD5 ETag, and
 failure to decode the requested native pixels locally. Some
 [S3 ETags do not describe the whole-file MD5](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html);
 multipart confirmation checks the combined part digests instead, and unsupported
-encodings remain unconfirmed failures. `catalog.record_corrupt_source` records
+encodings remain unconfirmed failures. The coordinator automatically uses `catalog.record_corrupt_source` to record
 this evidence in the saved STAC selection without removing its source object.
 The native writer omits only that unreadable observation, retains its actual
 time as a documented gap, and copies the evidence into archive metadata and the
 completion record. No placeholder pixels or timestamps are created. Existing
 verified observations cannot be removed by this mechanism.
 
+Unconfirmed failures get one band restart, then the affected band is deferred
+with its verified prefix retained. Other bands and months continue. The node
+returns 75 if unresolved work remains; three independent deferred band-months
+request a wider pause. Storage/ownership/programming errors remain protective
+failures. Deferred work never receives a monthly completion marker or authorizes
+annual backup.
+
 If the gap is beyond a saved prefix, the writer keeps the original scratch
 location and adjusts only unfinished capacity and future coordinates. It checks
 the unchanged prefix again before continuing. Status counts available source
 observations and records the unavailable-object count separately. Annual backup
 validation requires those gap records to agree with the completed archives.
+Durable checkpoint schema 2 separates the original selection from available rows;
+older schema-1 ZIP parts remain reusable without moving verified pixels. See the
+[recovery guide](developer_guide.md#automatic-source-error-recovery).
 
 Independent processes allow simultaneous HDF5 work; threads within one process
 are serialized by h5py's lock. Async request count is not CPU thread count. More

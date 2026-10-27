@@ -52,14 +52,15 @@ def test_first_probe_drains_replenishment_instead_of_starving_new_month():
     from collections import deque
     broker=object.__new__(SharedReads)
     broker.config=SharedConfig(range_readers=4,roi_budget_mib=1)
-    broker.states={name:{'rows':[None]*1000,'band':2,'cursor':0,
-                         'payload':payload,'held':{}}
+    broker.states={name:{'rows':[{'asset':Asset('b','k',1,'e','2021-01-01')}]*1000,'band':2,'cursor':0,
+                         'payload':payload,'held':{},'closing':False,'failed':False,'range_disk':{}}
                    for name,payload in [('established',16),('new_month',None)]}
     broker.order=deque(broker.states)
     broker.roi=16;broker.roi_peak=16
     broker.ranges=broker.locals=broker.probes=0
     broker.max_ranges=broker.max_locals=0
-    broker._spawn=lambda coroutine:coroutine.close()
+    broker.disk=broker.disk_peak=0
+    broker._spawn=lambda coroutine,*args:coroutine.close()
     broker._admit()
     assert broker.states['established']['cursor']==0
     assert broker.states['new_month']['cursor']==0

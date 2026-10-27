@@ -140,6 +140,7 @@ def main(source, argv=None):
                                              scans_per_hour=scans, product=args.product or "ABI-L2-CMIPF")]
         summaries = []
         failed = False
+        paused = False
         for selection in selections:
             if source == "goes" and args.reuse_cmipf_2km_from and selection.product != "ABI-L2-MCMIPF":
                 raise ValueError("CMIPF 2 km reuse requires an MCMIPF source selection")
@@ -194,6 +195,7 @@ def main(source, argv=None):
                     shared_config=shared_config if selection.product=='ABI-L2-CMIPF' else None,
                     max_inflight=args.max_inflight if source=='mrms' else None,
                     roi_queue_mib=args.roi_queue_mib if source=='mrms' else 128)
+            paused |= bool(report.get("paused"))
             failed |= bool(report.get("interrupted")) or any(
                 r["status"] == "failed" for r in report["records"])
             if args.save_figures:
@@ -206,8 +208,12 @@ def main(source, argv=None):
                     with open_observation(rows[index]) as ds:
                         print(show_or_save(ds, args.save_figures, display=False,
                             recipe=args.recipe, center_crop=args.center_crop))
-        return 1 if failed else 0
+        return 1 if failed else 75 if paused else 0
     except Exception as exc:
+        from .goes_limits import IntentionalPause
+        if isinstance(exc,IntentionalPause):
+            write_json(out/'paused.json',{'status':'paused','reason':str(exc)})
+            return 75
         write_json(out/"failure.json", {"source": source, "operation": args.operation,
                                        "error": f"{type(exc).__name__}: {exc}"})
         print(f"{type(exc).__name__}: {exc}", flush=True)

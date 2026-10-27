@@ -125,6 +125,9 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
 # One process owns each active month's separate band stores. Global download,
 # local-reader and C02 range-reader pools serve every active month. Verified
 # eight-scan scratch batches survive interruption.
+# Recognized read failures are retried automatically. Checksum-confirmed malformed
+# source observations become documented gaps; unresolved bands remain deferred,
+# with their verified prefixes kept for a later retry. Other bands can finish.
 # MCMIPF and hybrid remain separate historical products; their pixels are not
 # reused in a CMIPF study. Future 1 km interpolation and cloud-top parallax
 # correction belong to a separate training-preparation sprint.
@@ -166,7 +169,7 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
         successful = [r for r in report["records"] if r["status"] in ("archived", "reused")]
         controls["image_index"].max = max(0, len(successful)-1)
         display(dict(Counter(r["status"] for r in report["records"])))
-        display(pd.DataFrame([r for r in report["records"] if r["status"] == "failed"]))
+        display(pd.DataFrame([r for r in report["records"] if r["status"] in ("failed", "deferred")]))
         return report
     fetched = ui.action("Fetch raw subsets", fetch_data)
 
@@ -187,6 +190,9 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
     display(recipe)
     def show_image():
         rows = [r for r in fetched["value"]["records"] if r["status"] in ("archived", "reused")]
+        if not rows:
+            print("No completed images are available. Choose another period, or resume any deferred bands.")
+            return
         row = rows[controls["image_index"].value]
         with view_frames.open_observation(row) as raw:
             before = storage.fingerprint(raw)

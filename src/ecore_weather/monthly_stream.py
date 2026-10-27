@@ -110,7 +110,10 @@ def _prepare_source_gaps(parent, original_rows, rows):
     path=parent/'progress.json';state=json.loads(path.read_text()) if path.is_file() else {}
     ids=[row['asset_id'] for row in rows];old_ids=[row['asset_id'] for row in original_rows]
     saved_ids=state.get('asset_ids',old_ids);count=state.get('next_index',0)
-    if saved_ids not in (old_ids,ids) or saved_ids[:count] != ids[:count]:
+    allowed_removed=set(old_ids)-set(ids)
+    saved_set=set(saved_ids)
+    if (len(saved_set)!=len(saved_ids) or saved_ids!=[v for v in old_ids if v in saved_set]
+            or set(old_ids)-saved_set-allowed_removed or saved_ids[:count] != ids[:count]):
         raise IOError('A source gap would change the verified scratch prefix; preserve it for inspection')
     times=np.asarray([np.datetime64(utc(row['time']).replace(tzinfo=None),'ns') for row in rows])
     root=zarr.open_group(parent/'raw.zarr',mode='a',use_consolidated=False)
@@ -119,7 +122,7 @@ def _prepare_source_gaps(parent, original_rows, rows):
     for name in root.array_keys():
         array=root[name];dims=array.metadata.dimension_names or ()
         if 'time' not in dims:continue
-        if dims[0] != 'time' or array.shape[0] not in (len(rows),len(original_rows)):
+        if dims[0] != 'time' or array.shape[0] not in (len(rows),len(original_rows),len(saved_ids)):
             raise IOError('Unexpected time layout during source-gap recovery')
         if array.shape[0] != len(rows):array.resize((len(rows),*array.shape[1:]))
     root['time'][:]=times
@@ -176,6 +179,11 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                     "observations": len(rows), "stored_bytes": prior.get("stored_bytes", 0),
                     "read_bytes": 0, "write_seconds": 0, "assets": prior.get("assets", [])}
         if not rows:
+            from .catalog import confirmed_source_issues
+            if selection.source=='goes' and confirmed_source_issues(selection):
+                return {'path':str(target/'raw.zarr.zip'),'status':'unavailable','band':band,
+                    'observations':0,'stored_bytes':0,'read_bytes':0,
+                    'source_issues':list(confirmed_source_issues(selection).values())}
             raise ValueError("No available source observations for this month")
         if prior and not (target / "raw.zarr.zip").is_file():
             raise IOError(f"Completion marker has no archive: {target}")
@@ -197,12 +205,17 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
             if recovery:print(f"Recovered scratch: {recovery}",flush=True)
         if native and os.getenv('ECORE_GOES_CHECKPOINT_ROOT'):
             from .durable_checkpoints import DurableBatches
+            from .catalog import confirmed_source_issues
             durable = DurableBatches(os.environ['ECORE_GOES_CHECKPOINT_ROOT'], parent, rows,
-                float(os.getenv('ECORE_GOES_CHECKPOINT_FRACTION', '.25')))
+                float(os.getenv('ECORE_GOES_CHECKPOINT_FRACTION', '.25')),
+                requested_rows=original_rows,
+                source_issues=list(confirmed_source_issues(selection).values()))
             restored = durable.restore()
+            _prepare_source_gaps(parent,original_rows,rows)
             if restored:
                 recover(parent, rows)
                 print(f'Restored {restored}/{len(rows)} GOES C{band:02} scans from Eagle checkpoints', flush=True)
+            durable.commit_identity()
         if resumable:
             for batch_path in sorted(parent.glob("batch-*.json")):
                 batch = json.loads(batch_path.read_text())

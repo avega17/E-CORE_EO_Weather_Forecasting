@@ -1,3 +1,38 @@
+# Polaris part-1 source diagnosis — October 26, 2026
+
+The user reports job **7784282** continued part-0 and part-2 independently after
+part-1 exited 1. Its failure identifies **2024-09-29 16:00:21.1 UTC, C02**,
+asset `d5a9ddd204c8a53ec3a6`, in September's CMIPF selection. This is not the
+previous October 2023 HDF5 chunk failure.
+
+A bounded workstation diagnostic read 64 header bytes and then the complete
+6,060-byte object. Amazon S3 returned HTTP 206/200 with ETag
+`3eaffc3eaeb1792bfbc3665c86151ea1`; the complete MD5 matched that ETag exactly.
+The stored content begins `<!DOCTYPE HTML>` and fails local HDF5 opening with
+`file signature not found`. Size, ETag, key and timestamps reproduce the exact
+failed asset ID. This establishes an invalid-format source object for this
+case; it is not merely an inference from a remote proxy error. No source bytes
+were retained and no running fetch code or scientific archive was changed.
+
+Automatic recovery is now implemented and validated with **237 passing local
+checks, one skipped**, plus notebook synchronization and shell syntax checks:
+response identity/range checks, bounded range/full fallback, checksum-backed
+source gaps, band-local retries/deferral, durable schema-1/2 restore and
+completion/backup gating. The update was applied after the workstation's
+supported November/December month-boundary drain. Its intentional exit was 75;
+all sixteen archives for those months verified. The next local month is January
+2024. No remote source key was hardcoded to make this case pass.
+
+The final single-node Polaris interval is 2024-09-01 to 2025-05-01, end excluded,
+so April is included. Reuse the existing shared durable checkpoint root and
+canonical destination. The production notebook CLI also handled the exact public
+September source automatically from the workstation: four requests returned
+24,240 bytes, within a 64 KiB ceiling. It recorded the gap and returned 0 for the
+processed selection, without inventing an array or a complete marker. Temporary
+files were removed; compact evidence is in the existing recovery summary. This
+is not a Polaris proxy or live Eagle restore test. Remote submission remains manual.
+See [submission instructions](study_jobs.md#single-node-recovery-for-september-2024-through-april-2025).
+
 # Three-node GOES implementation — October 24, 2026
 
 The user confirms the project's **10 TB Eagle quota** took effect October 23.
