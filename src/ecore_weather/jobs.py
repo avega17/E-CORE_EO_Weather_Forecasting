@@ -154,15 +154,18 @@ def status(index_path=None, *, coordinator=False):
 
 
 def main(argv=None):
+    import sys
+    inputs=list(sys.argv[1:] if argv is None else argv)
+    if inputs[:1]==['process']:
+        from .process_cli import main as process_main
+        return process_main(inputs[1:])
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('operation',choices=['fetch','resume','status','pause','stop-after','estimate','benchmark','backup','cleanup','index','snapshot','handoff'])
+    p.add_argument('operation',choices=['fetch','resume','status','pause','stop-after','estimate','benchmark','backup','cleanup','index','snapshot','handoff','process'])
     p.add_argument('--index-path',help='Linux-local DuckDB path')
     p.add_argument('--durable-state',help='Destination for a closed index snapshot')
     p.add_argument('--backup-after-complete',action='store_true',help='GOES only: back up annual bundles after the entire study verifies')
     p.add_argument('--backup-work-dir',help='Linux disk for one temporary annual GOES bundle at a time')
     p.add_argument('--backup-remote-root',help='Optional HF bucket yearly-backup prefix')
-    import sys
-    inputs=list(sys.argv[1:] if argv is None else argv)
     source=inputs.pop(1) if len(inputs)>1 and inputs[1] in ('goes','mrms') else None
     args,remaining=p.parse_known_args(inputs)
     args.source=source

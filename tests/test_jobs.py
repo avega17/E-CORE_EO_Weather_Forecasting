@@ -5,13 +5,18 @@ from ecore_weather.jobs_policy import ensure_paused,select_profiles
 from ecore_weather import jobs,index
 
 
-def test_internal_progress_uses_matching_duckdb_mode_and_external_status_stays_read_only(tmp_path):
+@pytest.mark.parametrize('source',['goes','mrms'])
+def test_internal_progress_uses_matching_duckdb_mode_and_external_status_stays_read_only(tmp_path,monkeypatch,source):
     """A held writer deterministically exposes the old mixed-mode monitor bug."""
     from ecore_weather.runlog import publish_progress
     db=tmp_path/'live.duckdb';snapshot=tmp_path/'progress.json'
     with index.connect(db) as writer:
         writer.execute("INSERT INTO jobs VALUES ('run','running',0,'other-host',0,0,'{}')")
-        publish_progress('goes',snapshot,db)
+        if source=='mrms':
+            from ecore_weather.jobs_mrms import _publish_mrms_progress
+            monkeypatch.setenv('ECORE_INDEX_PATH',str(db))
+            _publish_mrms_progress(snapshot)
+        else:publish_progress('goes',snapshot,db)
         assert json.loads(snapshot.read_text())['runs'][0]['run_id']=='run'
         # An independent reader must never be silently promoted to RW mode.
         external=jobs.status(db)

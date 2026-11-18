@@ -1,0 +1,40 @@
+name: ecore-processing
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - numpy>=2,<3
+  - pandas>=2.2,<3
+  - xarray=2026.7.0
+  - dask
+  - pyarrow
+  - duckdb>=1.4,<2
+  - scipy=1.18.1
+  - pyresample=1.35.0
+  - satpy=0.59.0
+  - pyproj
+  - eccodes
+  - pygrib
+  - rasterio
+  - h5py
+  - h5netcdf
+  - netcdf4<1.7.3
+  - zarr=3.3.0
+  - boto3
+  - s3fs=2026.7.0
+  - matplotlib
+  - ipywidgets
+  - ipykernel
+  - jupytext
+  - nbclient
+  - pytest
+  - psutil
+  - python-dotenv
+  - tabulate
+  - pip:
+      - icechunk==2.2.0
+      - virtualizarr==2.7.3
+      - obstore==0.11.1
+      - earth2studio==0.18.0
+      - -e .

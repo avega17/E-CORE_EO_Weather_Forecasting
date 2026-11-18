@@ -721,7 +721,7 @@ scaling measurement have not yet run.** Submission is manual.
 
 The [queue guide](https://docs.alcf.anl.gov/polaris/running-jobs/)
 allows three-node requests in `capacity` and `debug-scaling`; ordinary `debug`
-is limited to two nodes. Three nodes for 24 hours request 72 node-hours, and a
+is limited to two nodes. The recovery request uses three nodes for 14 hours: 42 node-hours, and a
 larger allocation can wait longer in the queue. This exercises node allocation
 and independent ingestion, not distributed GPU training.
 
@@ -733,14 +733,14 @@ control the single-node wrapper. The launcher supplies each worker's bounds:
 
 | Stable partition | Start | End excluded | Work |
 |---|---|---|---|
-| `part-0` | 2022-01-01 | 2024-01-01 | Reuse verified 2022; finish leftovers and 2023 |
-| `part-1` | 2024-01-01 | 2025-04-01 | 2024 and January–March 2025 |
-| `part-2` | 2025-04-01 | 2026-07-01 | Rest of 2025 and January–June 2026 |
+| `part-0` | 2023-05-01 | 2024-07-01 | Publish complete May–July 2023 checkpoints; fetch remaining 2023; reuse January–June 2024 |
+| `part-1` | 2024-07-01 | 2025-01-01 | Resume July–September checkpoints, then October–December 2024 |
+| `part-2` | 2025-01-01 | 2026-07-01 | January–March 2025; reuse April 2025–May 2026; publish June 2026 checkpoints |
 
 The launcher rejects duplicate labels, overlaps, gaps and boundaries that split
 a physical month. Keep labels stable when resubmitting. Adjust the split dates
 in the JSON before submission if the latest inventory suggests a better balance.
-The default assignment assumes 2021 is complete; confirm that separately. A node
+The October 27 archive inventory found 2021 through April 2023 complete. The new ranges include already complete intervening months, which are reused, rather than splitting physical store ownership. A node
 which finishes its static partition stays allocated until the job ends.
 
 Every node uses `jobs/goes_polaris.json`: three normal month owners, one C02 tail,
@@ -769,7 +769,8 @@ ecore-weather/state/goes/study/
 
 All nodes publish to the same canonical archive destination, but their source
 months are disjoint. Recovery selections are copied from the earlier single-node
-`study/fetch` only when needed. Existing `partial-archives` are reused in place;
+`study/fetch` or an earlier partition owner only when the new owner lacks them.
+Mutable progress files and databases are never copied between owners. Existing `partial-archives` are reused in place;
 verified monthly ZIPs are validated and reused normally. **Do not run an older
 single-node GOES job against these same months simultaneously.** The new launcher
 excludes another multi-node launcher using the same state directory.
@@ -780,6 +781,57 @@ and attaches that evidence only after matching the exact source identity, ETag,
 size and ROI. A changed NOAA object is read normally. No synthetic pixels or
 unproven skip list is introduced. Updating this small file with the Python code
 avoids having to transfer the workstation's entire ignored STAC directory.
+
+#### October 27 recovery: full counts without a final ZIP
+
+The supplied worker tails and a live Eagle inventory show two different outcomes.
+Part 1 failed on the malformed September 29, 2024 C02 source described in the
+[automatic recovery notes](developer_guide.md#automatic-source-error-recovery).
+Parts 0 and 2 reached their application deadlines and returned intentional exit
+75. Their extra `GeneratorExit`/coordinator-stopping tracebacks were emitted while
+closing source iterators; they are not evidence that a completed ZIP was damaged.
+
+A scan count at 100% establishes a verified working prefix, not a final archive.
+The writer still needs to close its source iterator and Zarr store, pack the ZIP,
+read its arrays back, copy it to Eagle, verify that copy, and publish `complete.json`.
+Status now labels a full checkpoint without this completion record **unpublished**.
+The full-prefix receipts were written roughly 8–11 hours before the deadline,
+so a short finalization window does not explain the whole delay. The traceback
+locates affected writers waiting for the source reader's close acknowledgement.
+The deployed pipeline files have modification timestamps at 01:42 UTC on October
+27, inside job 7784282's 19:10 October 26–19:06 October 27 allocation. An older
+coordinator alongside newer spawned writers could disagree on that handshake.
+This is a plausible mechanism, not a proven reconstruction of the old processes.
+A general finalizer deadlock has not been reproduced locally.
+
+The launcher now copies the worker package, entry script, required shell helpers,
+source-gap facts and selected profile to one `study/runtime-code/` directory before
+spawning any node workers. Every node uses that copy through its working directory
+and `PYTHONPATH`, so later edits to the development checkout cannot mix worker
+protocols. It copies neither `.env` nor Git metadata and performs no code-hash or
+checkout checks. Only one runtime copy is retained; it is replaced under the
+ensemble ownership lock after the preceding allocation has stopped. Do not edit
+or clean this directory while an allocation is active.
+
+The October 27 metadata inventory found 53 durable band-month receipts, including
+33 with all selected observations saved. All eight bands for May–July 2023 and
+June 2026 have full prefixes. September 2024 C10 is the other full prefix.
+These are recovery data, not completed research archives. A local all-eight-band
+test removed node scratch, restored the durable parts, and published through real
+spawned finalizer processes with zero NOAA reads. This establishes the recovery
+path on the test fixture; it is not a live Eagle performance measurement.
+
+Keep `state/goes/study/partial-archives` unchanged. Repartitioning retains this
+shared root and copies scientific selections from the former owner. The new job
+validates restored arrays before packing; incomplete prefixes fetch only their
+remaining observations. No edits to grids, measurements or compression are needed.
+The compact live inventory and cleanup receipt are `study/recovery-review.json`
+and `state/cleanup.json`. Replacement job **7789763** was queued on October 27,
+2026; job 7787123 was cancelled. While the new allocation is still queued,
+`ensemble.json` and partition progress describe the previous allocation. Use
+`qstat 7789763` for queue state; the files update after its launcher starts.
+A 14-hour request is a runtime limit, not a guarantee
+that all remaining months will finish; resubmit the same partitions on exit 75.
 
 #### Submit and monitor
 

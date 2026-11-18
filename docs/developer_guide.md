@@ -6,6 +6,14 @@ Earth2Studio 0.18.0; its stock GOES source reads full-domain MCMIPF. Our compati
 sources preserve native-band CMIPF crops and CARIB MRMS products instead.
 Compatibility with the API does not establish compatibility with a released model.
 
+Derived processing now has its own [guide](dataset_processing.md),
+`environment-processing.yml`, notebook 05 and `dataset_jobs.py process` interface.
+Keep its dependencies isolated from active fetching. New helpers are in
+`processing`, `process_catalog`, `process_store`, `process_parallax`,
+`process_benchmarks`, `process_model` and the shared CLI/UI modules.
+Workstation derived arrays live on DAS; only the small live query index stays on
+Linux. A virtual snapshot still needs the original native archive paths.
+
 ## Set up a clean machine
 
 ```bash

@@ -213,7 +213,7 @@ def test_multinode_pbs_dry_run_uses_partition_dates_without_fetch(pbs_environmen
     env={**pbs_environment,'PBS_NODEFILE':str(nodefile),'ECORE_DRY_RUN':'1'}
     result=subprocess.run(['bash','jobs/polaris_goes_multinode.pbs'],env=env,capture_output=True,text=True)
     assert result.returncode==0,result.stderr
-    assert '2022-01-01' in result.stdout and '2026-07-01' in result.stdout
+    assert '2023-05-01' in result.stdout and '2026-07-01' in result.stdout
     assert 'part-2' in result.stdout and 'node-c' in result.stdout
     assert not Path(env['CAPTURE']).exists()
 

@@ -210,3 +210,16 @@ def test_aggregate_new_task_has_no_counter_jump_and_history_is_bounded():
     aggregate_bandwidth(snapshot,cache,180)
     assert snapshot['aggregate_bandwidth']['intervals']==0
     assert snapshot['aggregate_bandwidth']['run_average_mbps'] is None
+
+
+def test_full_scan_checkpoint_is_unpublished_until_monthly_verification():
+    snapshot=data()
+    snapshot['tasks'][0]['checkpointed']=100
+    assert observe(snapshot,{},100)['tasks'][0]['display_status']=='unpublished'
+    assert 'Unpublished: all selected scans are checkpointed' in render(snapshot,now=100)
+    for state in ('failed','paused','interrupted'):
+        snapshot=data();snapshot['runs'][0]['status']=state
+        snapshot['tasks'][0]['checkpointed']=100
+        assert observe(snapshot,{},100)['tasks'][0]['display_status']==state
+    complete=data(state='complete');complete['tasks'][0]['checkpointed']=100
+    assert observe(complete,{},100)['tasks'][0]['display_status']=='complete'

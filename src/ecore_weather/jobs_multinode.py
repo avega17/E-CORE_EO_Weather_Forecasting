@@ -63,6 +63,8 @@ def partitions(path):
         if begin.year < 2021 or end > datetime(2026, 7, 1, tzinfo=timezone.utc):
             raise ValueError('Partition outside the supported study period')
         a, b = interval(row['pilot_start'], row['pilot_end'])
+        if not begin <= a < b <= end:
+            raise ValueError('Pilot window must lie inside its study partition')
         if (b-a).total_seconds() > 86400:
             raise ValueError('Each pilot window is limited to one day')
         result.append(Partition(**{k: row[k] for k in Partition.__dataclass_fields__}))
@@ -100,21 +102,32 @@ def prepare_worker(state, legacy, start, end, *, issue_file=None):
     """Reuse portable selections; optionally attach proven source-gap evidence."""
     begin, stop = interval(start, end)
     target = Path(state) / 'fetch'
+    # Ownership can move between allocations. Scientific selections are portable;
+    # never copy another worker's mutable DB, progress or month outcome.
     original = Path(legacy) / 'fetch'
+    originals = [original, *sorted((Path(legacy) / 'partitions').glob('*/fetch'))]
     copied = 0
     current = begin.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     while current < stop:
         stage = f'h{1 if current.month <= 6 else 2}-{current.year}'
         relative = Path(stage) / current.strftime('%Y-%m') / 'ABI-L2-CMIPF'
-        source_dir, destination = original / relative, target / relative
-        # Only selections, not another coordinator's mutable summaries/DB files.
-        if source_dir.is_dir() and not (destination / 'collection.json').exists():
-            for name in ('items.json.gz', 'items.json', 'collection.json'):
-                source = source_dir / name
-                if source.is_file():
-                    destination.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(source, destination / name)
-                    copied += 1
+        destination = target / relative
+        # Prefer this owner's selection. Otherwise recover an earlier owner's
+        # complete catalog, including its source-gap evidence, without NOAA IO.
+        if not (destination / 'collection.json').exists():
+            for original in originals:
+                source_dir = original / relative
+                if not (source_dir / 'collection.json').is_file():
+                    continue
+                if not any((source_dir / name).is_file() for name in ('items.json.gz', 'items.json')):
+                    continue
+                destination.mkdir(parents=True, exist_ok=True)
+                for name in ('items.json.gz', 'items.json', 'collection.json'):
+                    source = source_dir / name
+                    if source.is_file():
+                        shutil.copyfile(source, destination / name)
+                        copied += 1
+                break
         current = current.replace(year=current.year+1, month=1) if current.month == 12 else current.replace(month=current.month+1)
     imported = unmatched = 0
     if issue_file:
@@ -201,6 +214,36 @@ def _merge(state, scratch, canonical, *, require_all=True):
     return result
 
 
+
+def copy_worker_code(code_root, target, profile):
+    """Give every spawned worker the same files throughout an allocation.
+
+    This is execution isolation, not code-lineage inspection: no Git, code
+    hashes or checkout requirements. The caller holds the ensemble lease.
+    Only replace the previous runtime after its allocation has stopped.
+    """
+    code_root, target = Path(code_root), Path(target)
+    temporary = target.with_name(target.name + '.partial')
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    try:
+        shutil.copytree(code_root/'src/ecore_weather', temporary/'src/ecore_weather',
+                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        (temporary/'scripts').mkdir()
+        shutil.copyfile(code_root/'scripts/dataset_jobs.py', temporary/'scripts/dataset_jobs.py')
+        (temporary/'jobs').mkdir()
+        for name in ('polaris_goes.pbs', 'pbs_common.sh', 'goes_source_issues.json'):
+            shutil.copyfile(code_root/'jobs'/name, temporary/'jobs'/name)
+        shutil.copyfile(profile, temporary/'jobs/goes_runtime_profile.json')
+        if target.exists():
+            shutil.rmtree(target)
+        os.replace(temporary, target)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return target
+
+
 def launch(config, nodefile, state, code_root, python, seconds, *, mode='study', dry_run=False):
     selected, nodes = partitions(config), hosts(nodefile)
     if mode not in ('study', 'pilot') or seconds <= 600:
@@ -219,6 +262,10 @@ def launch(config, nodefile, state, code_root, python, seconds, *, mode='study',
         print(json.dumps(plan, indent=2))
         return 0
     with ownership(state):
+        worker_code = copy_worker_code(code_root, state/'runtime-code', profile)
+        worker_profile = worker_code/'jobs/goes_runtime_profile.json'
+        plan.update(worker_code_root=str(worker_code), profile=str(worker_profile))
+        print(f'Worker source files copied for this allocation | {worker_code}', flush=True)
         save(state / 'ensemble.json', {**plan, 'status': 'running', 'started_at': time.time()})
         runtime = Path(os.getenv('ECORE_NODE_SCRATCH', '/local/scratch')) / f'ecore-ensemble-{os.getenv("USER", "user")}-{os.getenv("PBS_JOBID", "local").split(".")[0]}'
         runtime.mkdir(parents=True, exist_ok=True)
@@ -249,14 +296,16 @@ def launch(config, nodefile, state, code_root, python, seconds, *, mode='study',
                 worker_state.mkdir(parents=True, exist_ok=True)
                 begin, end = (p.pilot_start, p.pilot_end) if mode == 'pilot' else (p.start, p.end)
                 env = dict(os.environ, ECORE_GOES_PARTITION=p.label,
-                           ECORE_PYTHON=str(python), ECORE_CODE_ROOT=str(code_root),
+                           ECORE_PYTHON=str(python), ECORE_CODE_ROOT=str(worker_code),
+                           ECORE_PROFILE=str(worker_profile),
+                           PYTHONPATH=str(worker_code/'src') + (os.pathsep+os.environ['PYTHONPATH'] if os.getenv('PYTHONPATH') else ''),
                            ECORE_GOES_NODE_ONLY='1', ECORE_PBS_MODE=mode,
                            ECORE_GOES_STATE_ROOT=str(worker_state),
                            PBS_GOES_START=begin, PBS_GOES_END=end,
                            ECORE_GOES_CHECKPOINT_DIR=str(state / 'partial-archives'),
                            ECORE_GOES_LEGACY_STATE=str(state),
                            ECORE_GOES_SEED_INDEX=str(canonical),
-                           ECORE_GOES_SOURCE_ISSUES=str(code_root / 'jobs/goes_source_issues.json'),
+                           ECORE_GOES_SOURCE_ISSUES=str(worker_code / 'jobs/goes_source_issues.json'),
                            ECORE_GOES_ALLOCATION_DEADLINE=str(time.time() + max(0, seconds-180-(time.monotonic()-started))),
                            ECORE_GOES_JOB_SECONDS=str(seconds - 180))
                 if mode == 'pilot':
@@ -273,7 +322,7 @@ def launch(config, nodefile, state, code_root, python, seconds, *, mode='study',
                         stream.close()
                         handler.close()
                 command = ['mpiexec', '-n', '1', '--ppn', '1', '--depth=64', '--cpu-bind', 'none',
-                           '--hostfile', str(hostfile), '/bin/bash', str(code_root / 'jobs/polaris_goes.pbs')]
+                           '--hostfile', str(hostfile), '/bin/bash', str(worker_code / 'jobs/polaris_goes.pbs')]
                 print(f'Launching {p.label} on {host} | {begin} to {end} | {worker_state}/worker.log', flush=True)
                 try:
                     proc = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,

@@ -50,7 +50,7 @@ grid to Puerto Rico. The example's regional Flash option selects a region within
 its supported domain; it is not a general geographic extension of the checkpoint.
 Stock GOES reads the shared-grid MCMIPF product, while our CMIPF archives retain
 separate native band grids. They cannot be stacked through implicit xarray
-alignment. Our future analysis-ready processing must provide the chosen model's
+alignment. Our [derived processing](dataset_processing.md) must provide the chosen model's
 grid, channels, coordinates, quality treatment and calibration explicitly.
 
 The installed ingestion environment uses **Earth2Studio 0.18.0**. NVIDIA's changing
@@ -66,9 +66,11 @@ mode or explicit parallel execution. Measure GPU memory on the selected model
 and history length; neither the training-memory numbers below nor our CPU fetch
 job establish inference-memory requirements.
 
-This is an overview, not a regional dataloader or preprocessing implementation.
-Parallax correction, the 1 km training grid, causal window construction and
-fine-tuning design remain subsequent research work.
+This remains the model/data overview. Notebook 05 implements regional grids,
+causal window preparation and a bounded parallax experiment separately from raw
+fetching. The explicitly experimental Caribbean adapter is not yet validated by
+a successful checkpoint forward pass; see [current blockers](dataset_processing.md).
+Fine-tuning and validation of regional forecasting skill remain subsequent work.
 
 ## Solar geometry is also needed at inference
 

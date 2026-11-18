@@ -411,3 +411,64 @@ def test_resumed_progress_does_not_report_previous_attempt_bytes(tmp_path, monke
     with connect(read_only=True) as con:
         row = json.loads(con.execute('SELECT metrics_json FROM tasks').fetchone()[0])
     assert row['attempt_read_bytes'] == 0 and row['read_bytes'] == 1000
+
+
+def test_finalization_in_real_spawned_process_pool(tmp_path, monkeypatch):
+    """Exercise production IPC rather than the usual thread-only fixture."""
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+    from ecore_weather import goes_shared
+    _,assets,_=fake_sources(monkeypatch,tmp_path)
+    real=goes_shared.SharedReads
+    def broker(config, context):
+        result=real(config,context,pool_class=ThreadPoolExecutor)
+        result.final_pool.shutdown()
+        result.final_pool=ProcessPoolExecutor(max_workers=2,mp_context=mp.get_context('spawn'))
+        return result
+    monkeypatch.setattr(goes_shared,'SharedReads',broker)
+    chosen=[a for a in assets if 'C13_' in a.key]
+    sel=Selection('goes','ABI-L2-CMIPF',chosen[0].time,'2022-09-18T13:00:00Z',(-70,14,-62,22),chosen,bands=(13,),satellite=16)
+    result=goes_shared.fetch_contexts([('test',sel,None)],tmp_path/'dest',SharedConfig(roi_budget_mib=8,staging_mib=8),tmp_path/'scratch',index_results=False,deadline=time.monotonic()+30)
+    report=result['reports'][0]
+    assert report['monthly_archives'][0]['status']=='saved'
+
+
+def test_complete_durable_month_finalizes_without_noaa_after_node_loss(tmp_path, monkeypatch):
+    import json, shutil, multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+    from ecore_weather import goes_shared, monthly_stream
+    from ecore_weather.storage import open_raw
+    ds,assets,activity=fake_sources(monkeypatch,tmp_path)
+    real=goes_shared.SharedReads
+    monkeypatch.setenv('ECORE_GOES_CHECKPOINT_ROOT',str(tmp_path/'eagle-parts'))
+    def broker(config, context):
+        result=real(config,context,pool_class=ThreadPoolExecutor)
+        result.final_pool.shutdown()
+        result.final_pool=ProcessPoolExecutor(max_workers=2,mp_context=mp.get_context('spawn'))
+        return result
+    monkeypatch.setattr(goes_shared,'SharedReads',lambda c,ctx:real(c,ctx,pool_class=ThreadPoolExecutor))
+    selected=Selection('goes','ABI-L2-CMIPF',assets[0].time,'2022-09-18T13:00:00Z',(-70,14,-62,22),assets,bands=(1,2,3,7,8,9,10,13),satellite=16)
+    original=monthly_stream._finalize_archive
+    def fail(*args):
+        until=time.monotonic()+20
+        while len(list((tmp_path/'eagle-parts').glob('*/checkpoint.json')))<8 and time.monotonic()<until:
+            time.sleep(.02)
+        raise OSError('simulated interruption before publication')
+    monkeypatch.setattr(monthly_stream,'_finalize_archive',fail)
+    with pytest.raises(OSError,match='interruption'):
+        goes_shared.fetch(selected,tmp_path/'dest',SharedConfig(roi_budget_mib=8,staging_mib=8),tmp_path/'scratch',index_results=False)
+    receipts=list((tmp_path/'eagle-parts').glob('*/checkpoint.json'))
+    assert len(receipts)==8 and all(json.loads(p.read_text())['next_index']==8 for p in receipts)
+    shutil.rmtree(tmp_path/'scratch')
+    monkeypatch.setattr(monthly_stream,'_finalize_archive',original)
+    monkeypatch.setattr(goes_shared,'SharedReads',broker)
+    def unexpected_download(*a,**k):raise AssertionError('No new NOAA download is needed')
+    monkeypatch.setattr(__import__('obstore'),'get_async',unexpected_download)
+    report=goes_shared.fetch(selected,tmp_path/'dest',SharedConfig(roi_budget_mib=8,staging_mib=8),tmp_path/'scratch',index_results=False)
+    assert len(report['monthly_archives'])==8 and report['read_bytes']==0
+    for archive in report['monthly_archives']:
+        assert archive['resumed_observations']==8 and archive['status']=='saved'
+        with open_raw(archive['path']) as actual:
+            np.testing.assert_array_equal(actual[f"CMI_C{archive['band']:02}"].isel(time=0),ds.CMI)
+            np.testing.assert_array_equal(actual[f"DQF_C{archive['band']:02}"].isel(time=0),ds.DQF)
+    assert not list((tmp_path/'eagle-parts').glob('*/checkpoint.json'))

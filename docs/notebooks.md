@@ -11,6 +11,7 @@ excluded. Restart the kernel and rerun setup after editing imported modules.
 | [02 GOES](../notebooks/02_goes.ipynb) | Choose native bands and scans, inspect/fetch satellite subsets | Selection, scan/gap counts, separate native band ZIPs and calibrated session-only previews |
 | [03 Explore datasets](../notebooks/03_explore_datasets.ipynb) | Search local/HF archives, choose a band/time and visualize | Single map, bounded one-day/multi-day animations, storage summary, and an optional cached 2022 radar-quality figure |
 | [04 Dataset report](../notebooks/04_dataset_report.ipynb) | Inspect diagnostics and measured performance, export a report | Cached report tables, interactive summaries, CSV/Markdown/HTML exports |
+| [05 Process datasets](../notebooks/05_process_datasets.ipynb) | Decode and align native observations; create regional variants | Portable scientific indices, virtual snapshots, separate physical arrays/masks, storage estimates and bounded experiment receipts |
 
 ## Fetch notebooks
 
@@ -40,6 +41,18 @@ python notebooks/02_goes.py --operation inspect --start 2022-09-18 --end 2022-09
 
 CLI and widgets call the same selection/fetch helpers. See `--help` for fetch,
 storage, worker and optional PNG controls; [study jobs](study_jobs.md) covers long jobs.
+
+## Processing completed observations
+
+Notebook 05 uses the separate `ecore-processing` environment. Follow
+[dataset processing](dataset_processing.md) for setup and the matching
+`dataset_jobs.py process` commands. Indexing identifies available/missing products;
+the virtual catalog points to unchanged native ZIPs. Materialization computes
+physical values and masks on 1/2/3 km grids. Workstation preparation and outputs
+use separate DAS paths; Polaris outputs use job-local scratch with a 5% reserve.
+Default quality masks do not turn missing radar into clear air. Preview saving
+writes to `figures/dataset-processing/`. GPU experiments require an explicit
+experimental Caribbean opt-in and their own compatible environment and inputs.
 
 ## Exploring existing data
 

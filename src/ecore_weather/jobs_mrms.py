@@ -132,6 +132,13 @@ def _record_run_config(output, config):
     write_json(Path(output)/'run_config.json',current)
 
 
+def _publish_mrms_progress(destination):
+    """Use the coordinator's locked connection mode, also used by GOES."""
+    if destination:
+        from .runlog import publish_progress
+        publish_progress('mrms',Path(destination),os.getenv('ECORE_INDEX_PATH'))
+
+
 def _continuation(output, measured_seconds, measured_items, measured_bytes, destination, scratch=None, products=None):
     remaining = _nominal_items(datetime(2022,1,1,tzinfo=timezone.utc), STUDY_END, products)
     if measured_items < 1:
@@ -268,16 +275,7 @@ def main(argv=None):
     progress_stop = threading.Event()
     peak_rss = 0
     def publish():
-        if not args.durable_progress:
-            return
-        from .jobs import status
-        from .runlog import compact
-        from .common import write_json as atomic_json
-        data = compact(status(os.getenv('ECORE_INDEX_PATH')))
-        if data.get('status')=='index_unavailable':
-            return
-        data.update(snapshot_at=time.time(), source='mrms', pbs_job_id=os.getenv('PBS_JOBID'))
-        atomic_json(Path(args.durable_progress),data)
+        _publish_mrms_progress(args.durable_progress)
     def heartbeat():
         while not progress_stop.wait(30):
             try:

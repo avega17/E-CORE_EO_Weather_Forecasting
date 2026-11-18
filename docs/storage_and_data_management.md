@@ -14,6 +14,14 @@ data. Use [the notebook guide](notebooks.md) for interactive exploration,
 [the pipeline guide](goes_parallel_pipeline.md) for parallel processing and
 performance measurements.
 
+The separate [processing workflow](dataset_processing.md) builds derived 1/2/3 km
+variants without modifying these native observations. On the workstation its
+preparation artifacts and physical variants use separate DAS directories.
+Polaris keeps reusable preparation on Eagle and prefers complete variants on
+node scratch when estimates fit with a 5% filesystem reserve. Explicit block
+mode is the fallback. Icechunk snapshots provide consistent views; they do not
+automatically execute a regridding recipe or remove virtual source dependencies.
+
 ## Where the data live
 
 | Location | Purpose |

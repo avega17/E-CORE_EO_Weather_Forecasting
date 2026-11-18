@@ -1,8 +1,7 @@
 # NOAA radar and satellite subsets for Puerto Rico
 
-> Local GOES completion records cover January 2021–August 2023 and January–February
-> 2026. Chronological continuation reuses verified archives with two normal month owners
-> plus one C02-only tail. See
+> Chronological GOES continuation reuses verified archives with two normal month owners
+> plus one C02-only tail. Use the status command for current completion counts. See
 > [current operating settings](docs/goes_parallel_pipeline.md).
 
 The local continuation supports continuous execution with `--max-hours 0` and
@@ -47,6 +46,7 @@ monthly Zarr archives and keep analysis steps separate from the raw data.
 | [GOES imagery](notebooks/02_goes.ipynb) · [Python source](notebooks/02_goes.py) | Select full-disk scans and ABI bands, archive each band on its native grid, and inspect data quality. |
 | [Dataset explorer](notebooks/03_explore_datasets.ipynb) · [Python source](notebooks/03_explore_datasets.py) | Browse monthly archives, prepare one month from an HF yearly backup, compare storage sizes, and preview samples or sequences on a portable map that works in VS Code. |
 | [Dataset report](notebooks/04_dataset_report.ipynb) · [Python source](notebooks/04_dataset_report.py) | Audit raw quality, compare storage and I/O, and review future model preparation. |
+| [Process datasets](notebooks/05_process_datasets.ipynb) · [Python source](notebooks/05_process_datasets.py) | Build causal window indices and virtual catalogs, materialize separate 1/2/3 km variants on DAS or Polaris scratch, and run bounded storage/parallax/model checks. |
 
 ## Set up
 
@@ -81,8 +81,9 @@ global download/read budgets; MRMS keeps four product-month writers. See the
 [measured pipeline settings](docs/goes_parallel_pipeline.md). HF writing uses one
 Earth2Studio async coordinator and verifies remote arrays before completion.
 Raw values and product metadata are preserved. Cleaning,
-interpolation, calibration decoding, and display reprojection remain session-only
-operations. MRMS and CMIPF local archives use Earth2Studio's `ZarrBackend`;
+interpolation, calibration decoding, and display reprojection happen separately.
+Notebook 05 can explicitly persist derived variants without changing native archives.
+MRMS and CMIPF local archives use Earth2Studio's `ZarrBackend`;
 the MCMIPF grouped ZIP uses Zarr v3 arrays that the project's
 Earth2Studio-compatible monthly source adapter reopens by band. Direct HF
 MCMIPF writing is not part of this local-DAS refactor.
@@ -125,6 +126,7 @@ and installs the notebook dependencies. Never store credentials in a notebook.
 - [Storage choices, measured tradeoffs, archive layout and HF access](docs/storage_and_data_management.md)
 - [GOES/MRMS concurrency and verified archive runtime](docs/goes_parallel_pipeline.md)
 - [Diagnostics and report exports](docs/dataset_report.md)
+- [Dataset processing, virtual catalogs, DAS variants and Polaris scratch](docs/dataset_processing.md)
 - [GOES acquisition ROI and future training context](docs/goes_roi_training_study.md)
 - [MRMS ROI and 2022 radar-quality figure](docs/mrms_roi_and_radar_coverage.md) — CARIB grid, measured reflectivity footprint, mean RQI, and illustrative training regions.
 - [Mentor implementation review](docs/original_code_review.md)
@@ -154,6 +156,9 @@ The cluster collection contains composite and base reflectivity; workstation
 four-product defaults remain available. Generated maps live under `figures/`.
 The [three-node GOES job](docs/study_jobs.md#three-node-goes-fetching) uses
 independent date partitions and consolidates their closed DuckDB snapshots into
-one operational database. Its launcher is locally tested; a real Polaris pilot
-and scaling measurements remain manual follow-ups. Multi-node dates come from
+one operational database. The current recovery request uses three nodes for
+14 hours. Each node pipeline uses the same allocation source copy, preventing
+newly spawned months from importing later checkout edits. Polaris multi-node
+execution has been observed; a measured scaling comparison remains future work.
+Multi-node dates come from
 `jobs/goes_polaris_partitions.json`, not the single-node date variables.

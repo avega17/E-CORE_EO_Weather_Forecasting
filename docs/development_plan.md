@@ -8,6 +8,38 @@ preservation and interfaces are defined in [storage](storage_and_data_management
 
 ## Current work
 
+- October 27 live Polaris review supersedes earlier proposed single-node ranges:
+  use the three-node, fourteen-hour recovery partitions in
+  [study jobs](study_jobs.md#three-node-goes-fetching). Remaining work spans
+  May–December 2023, July 2024–March 2025, and June 2026. Preserve the 53 durable
+  band receipts (33 full prefixes), copy saved selections across reassigned
+  owners, and distinguish full scan checkpoints from final verified archives.
+  Parts 0/2 exited at their deadlines; part 1 encountered the malformed source
+  now handled by automatic source recovery. No general finalization deadlock
+  has been established by the supplied logs or local spawned-worker tests.
+  An allocation-specific worker source copy prevents old coordinator/new spawned
+  writer protocol mixtures without Git or code-hash gates.
+
+
+- [Notebook 05 and the processing CLI](dataset_processing.md) now create separate
+  regional 1/2/3 km datasets from immutable native archives. Preparation contains
+  causal time/window indices, reusable interpolation geometry and virtual
+  Icechunk references. Derived arrays write directly to DAS locally; Polaris
+  uses node scratch with a 5% filesystem reserve and full/block modes. Bounded
+  real-data checks passed at all three spacings, including a GOES-19 month
+  boundary. Four cloud-height parallax examples executed; this is still an
+  experiment rather than an approved full-study correction. The Caribbean
+  forward test remains blocked by the isolated model environment's NATTEN/Flash
+  requirements and unprovided model/static-field artifacts. Do not claim
+  successful inference from tensor or source tests.
+- Local composite reflectivity is complete for 66 months. The supplemental base
+  fetch started after the storage benchmarks and reached 35 verified months
+  before a coordinator-monitor connection-mode error. The shared locked
+  publisher fixes that error; 71 checks passed and the remaining work resumed.
+  [Current status](status.md) gives the durable monitoring command. GOES resumes
+  from November 2024 after successful radar completion. Keep the compact request
+  under results/study-mrms/ and reuse every verified archive.
+
 - Automatic GOES source recovery is implemented: bounded response/range checks,
   full-file fallback, exact checksum-backed source gaps and band-local deferral.
   Invalid NetCDF signatures no longer bypass handling. Existing Eagle parts
@@ -130,12 +162,13 @@ The scripts use explicit ISO PBS date variables. MRMS now requests six hours.
 See the operational guide for manual submission and the StormScope notes for
 model/data requirements, including internally computed solar zenith at inference.
 
-Future training preparation: decode and inspect native observations, validate
-cloud-height-dependent parallax correction, map onto an explicit 1 km training
-grid, then build aligned windows. CMI alone lacks cloud height. No ingestion-time
-interpolation or correction is implemented. See [StormScope](StormScope-paper-notes.md),
+Training preparation is now an explicit derived workflow: decode and inspect
+native observations, validate cloud-height-dependent parallax correction, map
+onto a declared training grid, then build aligned windows. CMI alone lacks cloud
+height. Ingestion remains unchanged. See [processing](dataset_processing.md),
+[StormScope](StormScope-paper-notes.md),
 [CorrDiff](CorrDiff-paper-notes.md) and [ROI considerations](goes_roi_training_study.md).
-Model training, inference and managed cloud-native architecture are outside this sprint.
+Full model training and managed cloud deployment remain outside this sprint.
 
 ## GOES PBS failure investigation — October 20, 2026
 

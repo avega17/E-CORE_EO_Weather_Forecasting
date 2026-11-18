@@ -62,6 +62,11 @@ def observe(data, cache, now):
         recovered_wait=(not complete and run.get('status') in ('failed','paused','interrupted')
             and (task.get('source'),task.get('product'),task.get('month')) in active_months)
         if old_attempt or recovered_wait:state='waiting'
+        # A verified scan batch is not a published monthly archive. Full counts
+        # can wait for reader closure, packing, verification and Eagle copying.
+        if (state in ('checkpointed', 'fetching') and task.get('selected', 0) > 0
+                and task.get('checkpointed', 0) >= task['selected']):
+            state='unpublished'
         task['display_status']=state
         task.update(elapsed_seconds=None,average_mbps=None,returned_bytes=counter,timing_scope='unavailable')
         if old_attempt or recovered_wait:
@@ -281,7 +286,8 @@ def render(data, now):
     lines.extend(['','Elapsed and speed: attempt = recorded writer wall time (last attempt, including crop/write/verify);',
         'watch = time and byte change since monitoring began, including waits. Not summed parallel download time.',
         'Returned GiB: attempt bytes, or cumulative build counter for watch/unavailable. Watch rates use its change.',
-        'Counts and counters may lag up to 30s. Date filters select whole intersecting months; end is exclusive.'])
+        'Counts and counters may lag up to 30s. Date filters select whole intersecting months; end is exclusive.',
+        'Unpublished: all selected scans are checkpointed; the monthly ZIP has not yet passed final publication verification.'])
     aggregate=data.get('aggregate_bandwidth')
     if aggregate:
         def rate(key):

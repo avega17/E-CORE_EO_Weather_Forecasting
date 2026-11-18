@@ -53,8 +53,36 @@ Keep explanations readable for researchers inheriting the work.
 - MCMIPF/hybrid are optional distinct historical products. Never convert/relabel
   their pixels as native CMIPF. Hybrid reuse needs exact-time/grid checks and
   per-band origins. Preserve source-specific corrupt/missing-scan evidence.
-- Training, inference, 1 km interpolation and cloud-top parallax correction are
-  future processing. CMI alone does not provide the cloud height needed for correction.
+- Native ingestion never trains, normalizes, interpolates or corrects parallax.
+  Explicit derived processing uses notebook 05 and the process CLI. CMI alone
+  does not provide cloud height. Caribbean checkpoint output is engineering evidence,
+  not a validated regional forecast.
+
+## Derived dataset processing
+
+- Read [processing](docs/dataset_processing.md). Notebook 05 remains
+  `05_process_datasets.py/.ipynb`; the shared operational command is `process`.
+  Use separate Conda processing/model environments; do not upgrade active fetching.
+- Workstation variants go directly to `/mnt/p/ecore_eo_datasets/processed/`,
+  preparation to its separate preparation/ directory. Never stage a whole variant
+  on the limited Linux SSD. Live DuckDB stays Linux-local.
+- Polaris auto mode prefers the complete requested variant when measured output
+  plus peak temporary requirements fit, retaining 5% of total scratch capacity.
+  Otherwise use explicit temporal blocks and report their sampling limitations.
+  Compression remains lossless; uncompressed storage requires measured justification.
+- Restore per-scan calibration and scientific sidecars when virtualizing ZIPs.
+  Keep native grids separate. Virtual references do not perform transformations
+  and depend on their source paths. Cache only reproducible preparation artifacts.
+- One filesystem Icechunk coordinator commits validated writes. Readers use
+  snapshot IDs; no concurrent filesystem commits or deletion behind live readers.
+  Processing hashes identify scientific recipes/arrays, never source code or Git.
+- GOES bilinear interpolation requires valid contributors; flags stay categorical.
+  MRMS bitmap/sentinel distinctions and negative reflectivity remain intact.
+  QPE is outside the current processing sprint. Parallax pilots support C02/C13,
+  same-platform heights and explicit unknown-height masks; no generic water-vapor shift.
+- Controlled DAS/model-window benchmarks require the supported fetch pause.
+  Record cache conditions, processing/write/read costs and physical storage separately.
+  Successful disposable benchmark stores are removed; processed research data are not.
 
 ## Storage and concurrency
 
@@ -194,7 +222,12 @@ Keep explanations readable for researchers inheriting the work.
   DB. Preserve inputs until merge/read-back succeeds; raw manifests remain authoritative.
   Use jobs_multinode status/merge for partition monitoring and deferred merges.
   Do not run a single-node job on overlapping months at the same time. Three-node
-  dates come from goes_polaris_partitions.json, not PBS_GOES_START/END. Local
+  dates come from goes_polaris_partitions.json, not PBS_GOES_START/END.
+  Every node's pipeline runs from the same small state/runtime-code copy of the
+  package/helpers/profile, with PYTHONPATH pointing there. This prevents protocol
+  mismatches if the development checkout changes; it is not a Git/hash check.
+  Preserve that copy while the allocation is active; replace it only under the
+  ensemble ownership lock after the previous allocation has stopped. Local
   tests do not imply a successful live multi-node pilot or measured speedup.
 - Polaris GOES production RAM protection is separate from benchmark ceilings:
   warn at 256 GiB summed RSS; pause after 60 seconds above 384 GiB RSS or below

@@ -25,7 +25,7 @@ def config(tmp_path):
 def test_three_partitions_cover_remaining_study_once(tmp_path):
     rows = multi.partitions(config(tmp_path))
     assert len(rows) == 3
-    assert rows[0].start == '2022-01-01' and rows[-1].end == '2026-07-01'
+    assert rows[0].start == '2023-05-01' and rows[-1].end == '2026-07-01'
     assert all(a.end == b.start for a, b in zip(rows, rows[1:]))
 
 
@@ -232,6 +232,9 @@ def test_launch_has_distinct_state_hostfiles_and_no_nested_mpi(tmp_path,monkeypa
     for args,env in commands:
         assert Path(args[args.index('--hostfile')+1]).read_text().strip() in ('a','b','c')
         assert env['ECORE_GOES_CHECKPOINT_DIR'] == str(state/'partial-archives')
+        assert env['ECORE_CODE_ROOT'] == str(state/'runtime-code')
+        assert env['PYTHONPATH'].split(os.pathsep)[0] == str(state/'runtime-code/src')
+        assert env['ECORE_PROFILE'] == str(state/'runtime-code/jobs/goes_runtime_profile.json')
     result = json.loads((state/'ensemble.json').read_text())
     assert result['status'] == 'paused' and result['merge'] == 'pending'
 
@@ -240,7 +243,7 @@ def test_multinode_pbs_shell_syntax_and_allocation():
     subprocess.run(['bash','-n','jobs/polaris_goes_multinode.pbs'],check=True)
     script = Path('jobs/polaris_goes_multinode.pbs').read_text()
     assert 'select=3:system=polaris:ncpus=64' in script
-    assert 'walltime=24:00:00' in script
+    assert 'walltime=14:00:00' in script
     assert 'git ' not in script and 'ECORE_REVISION' not in script
 
 
@@ -277,3 +280,47 @@ sys.exit(75 if label=='part-1' else 0)
     assert not list(state.glob('partitions/*/archive_index.duckdb'))
     with index.connect(tmp_path/'state/archive_index.duckdb',read_only=True) as con:
         assert con.execute('SELECT count(*) FROM jobs').fetchone()[0] == 3
+
+
+def test_repartition_reuses_other_workers_catalog_without_mutable_state(tmp_path):
+    state, legacy = tmp_path/'new-owner', tmp_path/'old-study'
+    previous = legacy/'partitions/part-1/fetch/h1-2025/2025-02/ABI-L2-CMIPF'
+    write_json(previous/'collection.json', {'source_issues': ['preserved evidence']})
+    (previous/'items.json.gz').write_bytes(b'selected native sources')
+    (previous/'summary.json').write_text('do not copy')
+    (previous/'archive_index.duckdb').write_text('do not copy')
+    result = multi.prepare_worker(state, legacy, '2025-01-01', '2025-04-01')
+    assert result['copied_selection_files'] == 2
+    target = state/'fetch/h1-2025/2025-02/ABI-L2-CMIPF'
+    assert json.loads((target/'collection.json').read_text())['source_issues'] == ['preserved evidence']
+    assert not list(state.rglob('summary.json')) and not list(state.rglob('*.duckdb'))
+    (target/'collection.json').write_text('{"existing_owner": true}')
+    assert multi.prepare_worker(state, legacy, '2025-01-01', '2025-04-01')['copied_selection_files'] == 0
+    assert json.loads((target/'collection.json').read_text()) == {'existing_owner': True}
+
+
+def test_pilot_outside_partition_is_rejected(tmp_path):
+    path=config(tmp_path)
+    value=json.loads(path.read_text())
+    value['partitions'][0].update(pilot_start='2023-04-01T00:00:00Z',pilot_end='2023-04-01T01:00:00Z')
+    write_json(path,value)
+    with pytest.raises(ValueError,match='inside its study partition'):multi.partitions(path)
+
+
+def test_worker_source_copy_isolated_without_git_or_secrets(tmp_path):
+    source=tmp_path/'checkout';target=tmp_path/'state/runtime-code'
+    for name in ('src/ecore_weather/__init__.py','src/ecore_weather/goes_shared.py',
+                 'scripts/dataset_jobs.py','jobs/polaris_goes.pbs','jobs/pbs_common.sh',
+                 'jobs/goes_source_issues.json','jobs/profile.json'):
+        p=source/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('original')
+    (source/'.env').write_text('SECRET=do-not-copy')
+    (source/'jobs/private.env').write_text('secret')
+    multi.copy_worker_code(source,target,source/'jobs/profile.json')
+    (source/'src/ecore_weather/goes_shared.py').write_text('later update')
+    assert (target/'src/ecore_weather/goes_shared.py').read_text()=='original'
+    assert (target/'jobs/goes_runtime_profile.json').read_text()=='original'
+    assert not (target/'.env').exists() and not (target/'jobs/private.env').exists()
+    # A source copy is not a checkout and needs no Git executable/metadata.
+    assert not (target/'.git').exists()
+    multi.copy_worker_code(source,target,source/'jobs/profile.json')
+    assert (target/'src/ecore_weather/goes_shared.py').read_text()=='later update'

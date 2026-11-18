@@ -19,6 +19,10 @@ notebooks = [
   "kerchunk==0.2.10", "huggingface_hub==1.30.0", "earth2studio==0.18.0", "loguru",
 ]
 test = ["pytest", "nbclient"]
+processing = [
+  "ecore-weather[notebooks]", "icechunk==2.2.0", "scipy==1.18.1",
+  "pyresample==1.35.0", "satpy==0.59.0", "tabulate",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

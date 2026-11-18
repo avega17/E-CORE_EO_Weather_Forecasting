@@ -2,7 +2,7 @@
 #PBS -N ecore_goes_multi
 #PBS -l select=3:system=polaris:ncpus=64
 #PBS -l place=scatter
-#PBS -l walltime=24:00:00
+#PBS -l walltime=14:00:00
 #PBS -l filesystems=home:eagle
 #PBS -q capacity
 #PBS -j oe

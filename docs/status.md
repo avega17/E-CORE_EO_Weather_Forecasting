@@ -1,3 +1,75 @@
+# Polaris GOES recovery review — October 27, 2026
+
+Live Eagle markers and ZIP existence/size establish completion through April
+2023, January–June 2024, and April 2025–May 2026. April 2025 contains both
+satellites. This was a metadata inventory, not a new full-archive hash audit.
+The remaining months are May–December 2023, July 2024–March 2025, and June 2026;
+several already have complete durable prefixes awaiting final publication.
+
+Job 7784282 parts 0 and 2 reached their hard application deadlines and returned
+75; part 1 failed on the checksum-confirmed malformed September 2024 C02 object.
+The automatic source-recovery implementation addresses that failure. Full scan
+counts must not be reported as a completed ZIP. Status now distinguishes them
+as `unpublished`. The live inventory found 53 durable band receipts, 33 complete
+prefixes; preserve all of them. See the updated partition table and commands in
+[study jobs](study_jobs.md#three-node-goes-fetching).
+
+The fully checkpointed receipts predate shutdown by about 8–11 hours. The
+reader-close wait and pipeline-file modification timestamps inside the allocation
+make mixed coordinator/worker code a plausible cause. It remains a diagnosis,
+not a confirmed reconstruction. Worker pipelines now run from one allocation
+source copy, protecting newly spawned months from development-checkout updates.
+No Git checks or code hashes are involved.
+
+Replacement **7789763** was submitted on October 27 at 23:29 UTC, requesting
+three nodes for fourteen hours. The old held single-node job **7787123** was
+cancelled. Its latest checked state is queued (`Q`), with scheduler comment
+“Not enough free nodes available.” This is not yet advancing production work.
+
+The replacement wrapper requests three nodes for fourteen hours. Existing
+native archives, selections and shared partial checkpoints are reused. Local
+fetching is unchanged; no live ingestion module was edited for this operational
+update. Obsolete pilot/benchmark outputs and package-download cache are removed
+on Polaris, retaining the active environment, production records and failed-run
+recovery evidence. The exact logical-byte deletion total is in `state/cleanup.json`.
+
+The new source recovery and completion tests are local evidence. Queue admission,
+Eagle finalization time and remaining production progress require live job status.
+
+# Regional processing and missing radar data — October 27, 2026
+
+Notebook 05, its shared processing functions and the separate CPU environment
+are implemented. Real DAS outputs passed at 1, 2 and 3 km over the full acquisition
+bbox, with source masks, quality classes, actual times and snapshot verification.
+The 1 km check crosses January–February 2026. Native and virtual arrays agree
+for all eight GOES bands plus composite radar. Four C02/C13 cloud-height
+examples ran successfully with 5.7 MB transferred. See the measured scopes in
+[the processing guide](dataset_processing.md); these checks are not model-skill
+validation or controlled performance comparisons.
+
+The model environment can access the RTX GPU, but the NATTEN extension is absent:
+its two-worker build did not finish within a 600-second bound. Installed
+Earth2Studio 0.19.0 also lacks the reviewed main-branch Flash helper. A compatible
+model environment, actual Flash package and documented regional topography
+remain requirements before the engineering forward test can pass.
+
+GOES September/October 2024 drained to a verified intentional exit 75 for the
+storage comparisons. The full-study local reflectivity fetch then started,
+reusing all 66 composite months and the eight existing base months. Its first
+attempt verified another 27 base months, through November 2023, before an
+internal progress query opened DuckDB in read-only mode during coordinator
+writes. No verified archive was lost. MRMS now uses the same locked coordinator
+publisher as GOES; the held-writer regression and related checks passed (71 tests).
+The resumed run is advancing December 2023 onward, with fresh durable progress.
+After successful radar completion the same queued command resumes GOES from
+November 2024. The two coordinators run sequentially.
+
+Monitor the current radar work with:
+
+```bash
+python scripts/dataset_jobs.py status mrms --progress results/study-mrms/progress.json
+```
+
 # Polaris part-1 source diagnosis — October 26, 2026
 
 The user reports job **7784282** continued part-0 and part-2 independently after
