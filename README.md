@@ -135,3 +135,13 @@ newly spawned months from importing later checkout edits. Polaris multi-node
 execution has been observed; a measured scaling comparison remains future work.
 Multi-node dates come from
 `jobs/goes_polaris_partitions.json`, not the single-node date variables.
+
+### Derived datasets
+
+Notebook 05 and `dataset_jobs.py process` create separate compressed plain-Zarr
+arrays on 1/2/3 km regional grids. Native observations remain unchanged. The
+[processing guide](docs/dataset_processing.md) covers timestamp/pixel validity,
+cloud heights, correction, training-only statistics and the stock loader check.
+GPU inference uses a separate model environment; a successful dataset read is not
+a validated Caribbean forecast. Superseded Icechunk assets are retired rather than
+kept without a supported use or conversion path.

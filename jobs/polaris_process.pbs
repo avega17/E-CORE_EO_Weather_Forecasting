@@ -33,7 +33,10 @@ mpiexec -n 1 --ppn 1 --depth 64 "$python" scripts/dataset_jobs.py process materi
   --output "$state" --start "$start" --end "$end" \
   --resolution-km "${ECORE_PROCESS_RESOLUTION:-1}" --mode "${ECORE_PROCESS_MODE:-auto}" \
   --compression "${ECORE_PROCESS_COMPRESSION:-zstd}" --reserve-percent 5 \
-  --memory-mib "${ECORE_PROCESS_MEMORY_MIB:-32768}" --workers "${ECORE_PROCESS_WORKERS:-4}" \
+  --chunk-time "${ECORE_PROCESS_CHUNK_TIME:-1}" --shard-time "${ECORE_PROCESS_SHARD_TIME:-0}" \
+  --correction "${ECORE_PROCESS_CORRECTION:-none}" \
+  --memory-mib "${ECORE_PROCESS_MEMORY_MIB:-65536}" --workers "${ECORE_PROCESS_WORKERS:-0}" \
+  --executor "${ECORE_PROCESS_EXECUTOR:-process}" --prefetch-batches "${ECORE_PROCESS_PREFETCH_BATCHES:-4}" \
   --max-hours "$hours"
 status=$?
 set -e

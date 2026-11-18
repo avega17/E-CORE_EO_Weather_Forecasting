@@ -61,7 +61,7 @@ def load_index(preparation):
 
 def recipe_from_dict(value):
     value = dict(value)
-    for key in ('bands', 'radar', 'bbox'):
+    for key in ('bands', 'radar', 'bbox', 'correction_bands'):
         if key in value: value[key] = tuple(value[key])
     return Recipe(**value)
 

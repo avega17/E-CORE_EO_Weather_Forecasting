@@ -20,9 +20,11 @@ notebooks = [
 ]
 test = ["pytest", "nbclient"]
 processing = [
-  "ecore-weather[notebooks]", "icechunk==2.2.0", "scipy==1.18.1",
+  "ecore-weather[notebooks]", "scipy==1.18.1",
   "pyresample==1.35.0", "satpy==0.59.0", "tabulate",
 ]
+
+virtual-catalog = ["icechunk==2.2.0", "virtualizarr==2.7.3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -21,7 +21,11 @@ def create():
     resolution=w.Dropdown(options=[('1 km',1),('2 km',2),('3 km',3)],value=1,description='Grid')
     quality=w.Dropdown(options=[('Good pixels','good'),('Good + conditional','conditional')],description='Quality')
     mode=w.Dropdown(options=['auto','full','blocks'],description='Storage',tooltip='Auto uses the full selection when it fits with a 5% free-space reserve')
+    layout=w.Dropdown(options=[('Frame chunks',(1,0)),('Six-frame chunks',(6,0)),('24-frame shards',(1,24))],description='Layout',tooltip='Measured layout choices; complete shards are written before checkpointing')
+    correction=w.Dropdown(options=[('Uncorrected','none'),('Cloud heights','cloud-height')],description='Parallax',tooltip='C01/C02/C03/C07/C13 only; requires matched height data')
     compression=w.Dropdown(options=['zstd','none'],description='Codec',tooltip='Lossless Zstd by default; uncompressed only when measured and affordable')
+    workers=w.BoundedIntText(value=0,min=0,max=1024,description='Processes',tooltip='0 uses all CPUs allowed by this machine/job; each process opens independent native archives')
+    memory=w.BoundedIntText(value=32768,min=1024,max=1048576,description='Memory MiB',tooltip='Budget for process, decoded-source and prefetched output buffers; leave RAM for the operating system')
     bands=w.SelectMultiple(options=[(f'C{n:02d}',n) for n in [1,2,3,7,8,9,10,13]],
         value=(1,2,3,7,8,9,10,13),description='GOES bands',rows=4)
     radar=w.SelectMultiple(options=[('Composite reflectivity','refc'),('Base reflectivity','refc_base')],
@@ -31,7 +35,7 @@ def create():
     unit=w.Text(description='Store',layout=w.Layout(width='95%'),tooltip='Completed full/block directory, not a raw monthly archive')
     def changed_selection(change):
         selection.value='';unit.value=''
-    for control in (location,start,end,resolution,quality,compression,bands,radar):
+    for control in (location,start,end,resolution,quality,compression,bands,radar,layout,correction):
         control.observe(changed_selection,names='value')
     save=w.Checkbox(value=False,description='Save preview to figures/',indent=False)
     output=w.Output();buttons=[]
@@ -42,7 +46,9 @@ def create():
     def arguments(operation):
         values=[operation,'--location',location.value,'--destination',destination.value,'--preparation-root',preparation.value,
             '--start',start.value.isoformat(),'--end',end.value.isoformat(),'--resolution-km',str(resolution.value),
-            '--quality',quality.value,'--mode',mode.value,'--compression',compression.value]
+            '--quality',quality.value,'--mode',mode.value,'--compression',compression.value,
+            '--chunk-time',str(layout.value[0]),'--shard-time',str(layout.value[1]),'--correction',correction.value,
+            '--workers',str(workers.value),'--memory-mib',str(memory.value)]
         values+=['--bands',*[str(n) for n in bands.value],'--radar',*radar.value]
         if selection.value and operation not in ('index','inventory'):values+=['--selection',selection.value]
         if unit.value:values+=['--unit',unit.value]
@@ -72,8 +78,9 @@ def create():
         ('Estimate','estimate','Read representative ROI samples and estimate complete-variant storage'),
         ('Materialize','materialize','Write physical arrays and masks to the Derived path'),
         ('Validate','validate','Reopen and check all committed processing batches'),
+        ('Statistics','stats','Export training-only moments and geographic invariants'),
         ('Benchmark','benchmark','Run bounded storage tests; requires the supported fetch pause'),
-        ('Parallax pilot','parallax','Fetch bounded cloud-height examples; only C02/C13'),
+        ('Parallax pilot','parallax','Validate C01/C02/C03/C07/C13 with bounded cloud-height examples'),
         ('Model check','model-check','Report model/data requirements; CLI opts in to experimental geography')]:
         button=w.Button(description=label,tooltip=tip,layout=w.Layout(min_width='145px',width='auto'))
         button.on_click(action(operation));buttons.append(button);actions.append(button)
@@ -83,16 +90,16 @@ def create():
         with output:
             output.clear_output(wait=True)
             try:
-                import icechunk as ic,numpy as np,matplotlib.pyplot as plt
+                import numpy as np,matplotlib.pyplot as plt
                 from ecore_weather.processing.process_store import ProcessedSource
                 path=Path(unit.value);state=json.loads((path/'progress.json').read_text())
-                repo=ic.Repository.open(ic.local_filesystem_storage(str(path/'data.icechunk')))
                 import zarr
-                raw=zarr.open_group(repo.readonly_session(snapshot_id=state['snapshot_id']).store,mode='r')
+                raw=zarr.open_group(str(path/'data.zarr'),mode='r')
                 choices=raw['variable'][:].tolist()
                 if variable.value not in choices:variable.options=choices
                 times=raw['time'][:]
-                sample=ProcessedSource(path)([times[len(times)//2]],[variable.value]).isel(time=0,variable=0)
+                with ProcessedSource(path) as source:
+                    sample=source([times[len(times)//2]],[variable.value]).isel(time=0,variable=0)
                 figure,axis=plt.subplots(figsize=(8,6),layout='constrained')
                 sample.plot(ax=axis);axis.set_title(f'{variable.value} · {str(sample.time.values)}')
                 if save.value:
@@ -102,16 +109,16 @@ def create():
             except Exception as exc:display(Markdown(f'**{type(exc).__name__}:** {exc}'))
     preview.on_click(draw);buttons.append(preview)
     return w.VBox([instructions,location,preparation,destination,w.HBox([start,end]),
-        w.HBox([resolution,quality]),w.HBox([mode,compression]),w.HBox([bands,radar]),selection,unit,
+        w.HBox([resolution,quality]),w.Box([mode,compression,layout,correction],layout=w.Layout(display='flex',flex_flow='row wrap')),w.HBox([bands,radar]),selection,unit,
         w.Box(actions,layout=w.Layout(display='flex',flex_flow='row wrap',gap='8px')),
-        w.HBox([variable,preview,save]),output])
+        w.HBox([workers,memory]),w.HBox([variable,preview,save]),output])
 
 
 def export_report(output):
     """One readable Markdown report from compact bounded-experiment receipts."""
     root=Path(output);root.mkdir(parents=True,exist_ok=True)
     sections=['# Dataset processing results','Generated from bounded scientific processing receipts.']
-    for name in ['storage-benchmark','parallax-pilot','model-check','nam-availability']:
+    for name in ['storage-benchmark','worker-benchmark','parallax-pilot','loader-check','model-reference','model-check','caribbean-comparison','nam-availability','retired-stores']:
         path=root/(name+'.json')
         if not path.exists():continue
         data=json.loads(path.read_text());sections+=['',f'## {name.replace("-"," ").title()}','']
@@ -120,6 +127,14 @@ def export_report(output):
             frame=pd.DataFrame(data['cases'])
             nested=[column for column in frame if frame[column].map(lambda v:isinstance(v,(dict,list))).any()]
             sections.append(frame.drop(columns=nested).to_markdown(index=False))
+        elif name=='caribbean-comparison':
+            frame=pd.DataFrame(data['comparisons'])
+            sections.append(data['scope'])
+            sections.append(frame[['variable','units','lead_minutes','mae','persistence_mae','rmse','persistence_rmse']].to_markdown(index=False,floatfmt='.4f'))
+            if data.get('figure'):
+                import os
+                figure=os.path.relpath(Path(data['figure']).resolve(),root.resolve())
+                sections.append(f'[Observed and forecast images]({figure})')
         elif name=='storage-benchmark':
             for key in ('disk','linux_disk'):
                 if key in data:
@@ -131,12 +146,13 @@ def export_report(output):
                 if key in data:
                     frame=pd.DataFrame(data[key]['cases'])
                     sections+=['',f'### {key.replace("_"," ").title()} — disposable Zarr layout trials']
-                    sections.append(frame.groupby(['compression','chunk_time','frames','readers']).agg(
+                    groups=[c for c in ('compression','chunk_time','shard_time','spatial_chunk','frames','readers') if c in frame]
+                    sections.append(frame.groupby(groups).agg(
                         median_windows_s=('windows_per_second','median'),median_latency_s=('median_window_seconds','median')).to_markdown())
             if 'current_snapshot_reads' in data:
                 frame=pd.DataFrame(data['current_snapshot_reads']['cases'])
                 groups=(['cache_metadata'] if 'cache_metadata' in frame else [])+['frames','readers']
-                sections+=['','### Actual Icechunk snapshot and model-facing reader',
+                sections+=['','### Actual plain-Zarr store and model-facing reader',
                     frame.groupby(groups).agg(
                         median_windows_s=('windows_per_second','median'),median_latency_s=('median_window_seconds','median')).to_markdown()]
             sections.append(data.get('model_consumption','Model consumption was not measured.'))

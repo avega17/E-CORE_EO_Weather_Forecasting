@@ -13,6 +13,9 @@ configuration and a fresh quota estimate. Do not export the credential-bearing
 | mrms_study.sh | Scheduler-independent MRMS wrapper |
 
 Machine JSON profiles control resources; they do not define scientific identity.
+`process_3km_study.json` selects the full-study uncorrected derived baseline.
+See [processing commands and recovery](../docs/dataset_processing.md) for the
+separate processing environment, cloud-height acquisition, statistics and model checks.
 Single-node fetch dates use PBS_MRMS_START/END or PBS_GOES_START/END; end is
 excluded. Multi-node dates come from goes_polaris_partitions.json.
 

@@ -1,0 +1,29 @@
+# Separate from acquisition/processing. Tested Colab L4 CUDA 13 wheel combination.
+# Build Earth2Grid afterward with the matching system CUDA compiler; see model notes.
+name: ecore-model
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - numpy>=2,<3
+  - pandas>=2.2,<3
+  - xarray=2026.7.0
+  - zarr=3.3.0
+  - pyproj
+  - rasterio
+  - psutil
+  - boto3
+  - scipy
+  - setuptools>=77
+  - wheel
+  - ninja
+  - ipykernel
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu130
+      - --find-links https://whl.natten.org
+      - torch==2.13.0+cu130
+      - natten==0.21.7+torch2130cu130
+      - nvidia-physicsnemo==2.2.2
+      - earth2studio==0.20.0
+      - -e .

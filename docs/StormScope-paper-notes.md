@@ -68,8 +68,8 @@ job establish inference-memory requirements.
 
 This remains the model/data overview. Notebook 05 implements regional grids,
 causal window preparation and a bounded parallax experiment separately from raw
-fetching. The explicitly experimental Caribbean adapter is not yet validated by
-a successful checkpoint forward pass; see [current blockers](dataset_processing.md).
+fetching. The experimental Caribbean adapter has completed a bounded two-step
+run with an explicitly approximate static field; see [the processing guide](dataset_processing.md).
 Fine-tuning and validation of regional forecasting skill remain subsequent work.
 
 ## Solar geometry is also needed at inference
@@ -238,3 +238,129 @@ variables, units, accumulation intervals, geography and forecast horizon before
 estimating compute. Training and inference are outside the current fetching
 and diagnostic sprint. See [StormScope notes](StormScope-paper-notes.md) for
 native-band resolution, future 1 km preparation and compute accounting.
+
+## Plain-Zarr handoff and Flash test environment
+
+Preprocessing now writes data.zarr, with `pixel_valid(time, variable, y, x)` and
+`valid(time)` for the stock training loader. The reference loader has been checked
+on real regional data, but that does not validate a forecasting checkpoint.
+Use physical values for Earth2Studio; its checkpoint normalizers remain authoritative.
+Regional stats.json is for future training, not a replacement inference normalizer.
+
+`environment-model.yml` separates GPU packages from active ingestion. Earth2Studio
+0.20.0 includes the reviewed Flash helper; the previous local 0.19 installation
+did not. The Colab L4 environment uses Torch 2.13.0/CUDA 13.0 and
+NATTEN 0.21.7+torch2130cu130, following the
+[NATTEN wheel matrix](https://natten.org/install/). Target-driver compatibility
+and an actual compiled operation must be checked. An import is not a kernel test.
+
+Earth2Studio's interpolator also needs `earth2grid`, which is not available on
+PyPI in this environment. Its [official source installation](https://github.com/NVlabs/earth2grid#install)
+compiles against the installed Torch and CUDA toolchain. The first Colab attempt
+used CUDA 12.6 wheels with a CUDA 13.0 system compiler and did not build. The
+matching CUDA 13 environment built Earth2Grid 2025.11.1+torch213 successfully.
+An earlier finite NATTEN result and successful weight loading alone did not
+establish that a forecast ran; consult model-reference.json for that result.
+
+The matching-CUDA retry completed two Flash steps (10 and 20 minutes) for a
+204 × 204 supported-CONUS region. Their combined forward time was 0.99 s;
+model loading was 23.45 s and public GOES preparation 53.54 s. Peak Torch-allocated
+GPU memory was 3.19 GiB on L4. Compilation was disabled and one realization was
+used. These are one engineering check's timings, not a forecasting-skill score
+or a repeated throughput benchmark. The stock source uses its own scan-matching
+rules; this check does not validate the project's causal regional dataloader.
+The Colab runtime was stopped after the result was retrieved.
+
+For a Caribbean engineering test, the available six-frame January 2021 input
+has sufficient joint pixel support. The remaining scientific uncertainty is the
+static topography channel: the registry enables it and the wrapper reads
+topo.npy without additional scaling, but the original normalization is not
+documented. It is not valid to replace that field with raw metres or infer a
+scale solely from its numerical range.
+
+A paired check against NOAA elevation data at matching CONUS locations gives
+an approximate conversion. A mountainous calibration patch and an independent
+coastal/ocean patch show an error of about 0.004 in checkpoint units. This is
+empirical evidence, not NVIDIA's documented training recipe. Applying it to the
+Caribbean also places about 11.6% of this crop's elevation pixels outside the
+checkpoint field's 0–1 range. Neither clipping those values nor substituting
+CONUS terrain would establish compatibility. Any run using this approximation
+must be explicitly enabled and labelled as an execution experiment. The
+[NOAA ETOPO metadata](https://oceanwatch.pifsc.noaa.gov/erddap/info/ETOPO_2022_v1_60s/index.html)
+defines elevation in metres relative to EGM2008 and includes bathymetry; ocean
+treatment must therefore be recorded as part of the model input convention.
+
+### Caribbean execution and a single-case comparison
+
+With explicit approval for that approximation and bounded transfer, the GOES-only
+Flash adapter ran on six committed frames from 15:10–16:00 UTC on January 15,
+2021. It used a 256 × 256 three-kilometre crop, actual Caribbean coordinates,
+unchanged released weights, seed 0 and no parallax correction. Both +10/+20-minute
+outputs were finite on the supported 99.98% of pixels. Forward passes plus output
+read-back took 1.35 s; model loading took 24.65 s separately. Peak allocated L4
+GPU memory was 2.61 GiB. The runtime was released after retrieval.
+
+Evaluation used later observations on the workstation, never as model input.
+The same 65,522 valid pixels were compared against persistence (repeat the last
+input). All eight bands had lower MAE than persistence at both leads in this case:
+
+| Band and units | +10 min MAE | Persistence | +20 min MAE | Persistence |
+|---|---:|---:|---:|---:|
+| C02, reflectance factor | 0.0257 | 0.0313 | 0.0343 | 0.0400 |
+| C13, kelvin | 0.942 | 2.009 | 1.450 | 2.692 |
+
+This demonstrates execution with the prepared regional arrays and a useful
+single-case diagnostic. It does not validate Caribbean forecast skill, rainfall
+prediction, the empirical topography convention, or performance on a held-out
+regional sample set. Proper static-field provenance, parallax-aware inputs and
+broader regional evaluation remain necessary research work. The compact report
+is model-check.json; caribbean-comparison.csv/json and the corresponding figure
+record the observational comparison.
+
+After creating the model environment, check the compiler and build the additional
+dependency before attempting inference:
+
+```bash
+conda activate ecore-model
+python -c "import torch; print(torch.__version__, torch.version.cuda)"
+nvcc --version
+export MAX_JOBS=2
+export TORCH_CUDA_ARCH_LIST="$(python -c 'import torch; print(".".join(map(str,torch.cuda.get_device_capability())))')"
+python -m pip install --no-deps --no-build-isolation \
+  https://github.com/NVlabs/earth2grid/archive/main.tar.gz
+python -c "from earth2studio.utils.interp import NearestNeighborInterpolator; print('Interpolator available')"
+```
+
+The selected architecture is 8.9 for L4; other GPUs require their own capability.
+The compiler's CUDA major version must match the Torch build. This recipe is
+tested on Colab, not a validated Polaris GPU environment. Perform heavy setup
+inside an allocation rather than on a Polaris login node. Keep verbose build
+output for failures; an ordinary pip summary can hide the compiler error.
+
+While the workstation GPU is absent, transfer only a completed bounded 3 km
+example to Colab or a short Polaris allocation. Install the separate environment,
+verify CUDA and NATTEN, then load the compatible GOES Flash package. Test a supported
+CONUS region before the explicit Caribbean adapter. The latter starts at 256×256,
+falls back to 200×200 only for GPU memory, and runs two forecast steps with one
+ensemble member. Document elevation units/scaling/ocean treatment; do not infer
+checkpoint topography conventions from its numerical range. Missing GPU, weights,
+NATTEN or static fields is a blocked result, not successful inference.
+
+On WSL, the Colab CLI's OAuth keyring may lack a Linux Secret Service backend.
+Use its explicit ADC mode after local interactive authorization:
+
+```bash
+gcloud auth application-default login --no-launch-browser \
+  --scopes="openid,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/colaboratory"
+colab --auth=adc sessions
+```
+
+ADC persists credentials outside this repository. Do not copy them into notebooks
+or share the token file. A separate `uv tool install keyring` does not add a backend
+to the Colab tool's isolated environment. Do not silently use plaintext alternate
+keyrings to resolve the warning. Release any allocated Colab session after the test.
+
+The supplied HTML implementation report is advisory. Its 4.2× comparison mixes
+layouts/readers, C10 is water vapor, ACHAF grids require historical inspection,
+and expert fine-tuning is not automatically equivalent to Flash distillation.
+This sprint prepares input compatibility; it does not train those experts.

@@ -34,6 +34,8 @@ def source_read_workers(workers):
 
 
 def _science(ds, band):
+    if 'HT' in ds:
+        return ds[[n for n in ds.data_vars if ds[n].dims==ds.HT.dims]]
     if band is None:
         return ds[["measurement", "bitmap_valid"]]
     names = [name for name in ds.data_vars if name == "CMI" or name == "DQF"
@@ -83,7 +85,7 @@ def _archive_rows(selection, assets, prior, *, include_unavailable=False):
         if asset.id in done:
             continue
         match = matches.get(asset.id, {})
-        rows.append({"kind": "new", "asset": asset, "asset_id": asset.id,
+        rows.append({"kind": "new", "asset": asset, "asset_id": asset.id, "end_time": asset.end_time,
             "time": asset.time, "source_url": asset.url, "etag": asset.etag,
             "source_bytes": asset.size, "slot_time": match.get("slot_time") or "",
             "offset_seconds": match.get("offset_seconds")})
@@ -190,10 +192,11 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
 
         started = time.perf_counter()
         native = selection.source == "goes" and selection.product == "ABI-L2-CMIPF"
-        resumable = native or selection.source == "mrms"
+        height_product=selection.product=='ABI-L2-ACHAF'
+        resumable = native or height_product or selection.source == "mrms"
         identity = hashlib.sha256(json.dumps({"target": str(target.resolve()),
             "ids": [r["asset_id"] for r in original_rows]}, sort_keys=True).encode()).hexdigest()[:24]
-        parent = (Path(scratch or scratch_root()) / f"{'goes-cmipf' if native else 'mrms'}-{identity}"
+        parent = (Path(scratch or scratch_root()) / f"{'goes-cmipf' if native else 'goes-height' if height_product else 'mrms'}-{identity}"
                   if resumable else Path(tempfile.mkdtemp(prefix="ecore-month-", dir=scratch)))
         parent.mkdir(parents=True, exist_ok=True)
         saved = {}
@@ -364,7 +367,7 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                         checksums.append((index, name, hashlib.sha256(value.tobytes()).hexdigest()))
                     observed_metadata.append(raw_meta)
                     actual_rows.append({key: row.get(key) for key in
-                        ("asset_id", "time", "source_url", "etag", "source_bytes",
+                        ("asset_id", "time", "end_time", "source_url", "etag", "source_bytes",
                          "slot_time", "offset_seconds")})
                     # Reopening a verified prefix must not rewrite its batches
                     # or make the durable progress counter move backwards.

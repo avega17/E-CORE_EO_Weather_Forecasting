@@ -19,8 +19,10 @@ variants without modifying these native observations. On the workstation its
 preparation artifacts and physical variants use separate DAS directories.
 Polaris keeps reusable preparation on Eagle and prefers complete variants on
 node scratch when estimates fit with a 5% filesystem reserve. Explicit block
-mode is the fallback. Icechunk snapshots provide consistent views; they do not
-automatically execute a regridding recipe or remove virtual source dependencies.
+mode is the fallback. Derived arrays use compressed plain Zarr v3 and open directly
+with xarray. Optional virtual catalogs reference native files; they do not execute
+transformations. Superseded Icechunk-derived assets have no supported production
+reader and are retired after a verified replacement.
 
 ## Where the data live
 

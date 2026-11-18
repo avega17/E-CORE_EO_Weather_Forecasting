@@ -73,12 +73,18 @@ Keep explanations readable for researchers inheriting the work.
 - Restore per-scan calibration and scientific sidecars when virtualizing ZIPs.
   Keep native grids separate. Virtual references do not perform transformations
   and depend on their source paths. Cache only reproducible preparation artifacts.
-- One filesystem Icechunk coordinator commits validated writes. Readers use
-  snapshot IDs; no concurrent filesystem commits or deletion behind live readers.
+- New derived stores use plain compressed Zarr v3. One coordinator writes complete
+  chunks/shards, verifies them and atomically advances the committed prefix.
+  Readers hold leases; no deletion or replacement behind live readers.
   Processing hashes identify scientific recipes/arrays, never source code or Git.
+- Derived materialization uses independent transform processes and bounded
+  time/variable prefetch, not a two-thread workstation limit. Workers open their
+  own native handles; one ordered writer verifies output. Worker count and memory
+  are runtime controls, not scientific identity. `--workers 0` uses CPU affinity;
+  measure explicit counts on the actual filesystem before calling a profile faster.
 - GOES bilinear interpolation requires valid contributors; flags stay categorical.
   MRMS bitmap/sentinel distinctions and negative reflectivity remain intact.
-  QPE is outside the current processing sprint. Parallax pilots support C02/C13,
+  QPE is outside the current processing sprint. Parallax supports C01/C02/C03/C07/C13,
   same-platform heights and explicit unknown-height masks; no generic water-vapor shift.
 - Controlled DAS/model-window benchmarks require the supported fetch pause.
   Record cache conditions, processing/write/read costs and physical storage separately.
@@ -131,6 +137,12 @@ Keep explanations readable for researchers inheriting the work.
   guards, probes and obsolete launch folders. Completed selection copies may be
   removed when canonical archive provenance and verified checkpoints remain.
   Never delete live scratch or research data.
+- When retiring a workflow or format, delete its obsolete generated data and state.
+  Keep an old asset only for a documented current use or an explicit one-time
+  migration/conversion path. An unsupported-reader message or hypothetical future
+  usefulness does not justify retaining it. Native observations and active research
+  outputs are protected separately. This sprint retires existing derived Icechunk
+  stores and unused virtual catalogs after a verified plain-Zarr replacement.
 - HF is backup storage: one MRMS product/year ZIP of verified monthly members.
   Native GOES bundles contain all eight bands for one year and acquisition region,
   preserving satellite/band/month paths; 2026 covers January–June. Automatic GOES

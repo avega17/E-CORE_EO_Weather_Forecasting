@@ -63,7 +63,12 @@ class Recipe:
     radar: tuple = ('refc', 'refc_base')
     compression: str = 'zstd'
     chunk_time: int = 1
-    schema: int = 1
+    shard_time: int = 0
+    spatial_chunk: int = 0
+    correction_bands: tuple = (1, 2, 3, 7, 13)
+    height_age_minutes: int = 20
+    grid_alignment_m: int = 12000
+    schema: int = 2
 
     def __post_init__(self):
         if self.resolution_km not in (1, 2, 3):
@@ -74,6 +79,14 @@ class Recipe:
             raise ValueError('Parallax must be none or cloud-height')
         if self.compression not in ('zstd', 'none') or self.chunk_time not in (1, 6, 12):
             raise ValueError('Use zstd/none compression and 1/6/12 time chunks')
+        if self.shard_time not in (0,24) or (self.shard_time and self.shard_time % self.chunk_time):
+            raise ValueError('Use unsharded storage or 24-frame shards divisible by chunk-time')
+        if self.spatial_chunk not in (0,256):
+            raise ValueError('Use full-ROI spatial chunks (0) or 256-pixel tiles')
+        if not set(self.correction_bands).issubset({1,2,3,7,13}):
+            raise ValueError('Cloud-top correction is supported for C01/C02/C03/C07/C13; water-vapor bands stay unshifted')
+        if self.height_age_minutes <= 0 or self.grid_alignment_m != 12000 or self.schema != 2:
+            raise ValueError('Use positive height age and the schema-2 12 km aligned grid')
         if not set(self.bands).issubset(BANDS) or not (self.bands or self.radar):
             raise ValueError('Select study GOES bands and/or reflectivity variables')
         if not set(self.radar).issubset(RADAR_PRODUCTS):
@@ -97,8 +110,9 @@ def target_grid(recipe):
                         '+lon_0=-66.4 +datum=WGS84 +units=m +no_defs')
     transform = Transformer.from_crs('EPSG:4326', crs, always_xy=True)
     bounds = transform.transform_bounds(*recipe.bbox, densify_pts=1000)
-    left, bottom = (math.floor(v / 6000) * 6000 for v in bounds[:2])
-    right, top = (math.ceil(v / 6000) * 6000 for v in bounds[2:])
+    alignment=recipe.grid_alignment_m
+    left, bottom = (math.floor(v / alignment) * alignment for v in bounds[:2])
+    right, top = (math.ceil(v / alignment) * alignment for v in bounds[2:])
     spacing = recipe.resolution_km * 1000
     x = np.arange(left + spacing / 2, right, spacing, dtype='float64')
     y = np.arange(top - spacing / 2, bottom, -spacing, dtype='float64')
@@ -266,7 +280,11 @@ class NativeReader:
                 self.opened.popitem(last=False)[1].close()
             self.opened[path] = open_raw(path)
         self.opened.move_to_end(path)
-        return scan_dataset(self.opened[path], int(record['row_index']))
+        selected=scan_dataset(self.opened[path], int(record['row_index']))
+        if 'source_asset_id' in selected.coords:
+            if str(np.asarray(selected.source_asset_id.values).item())!=str(record['asset_id']):
+                raise IOError('Native archive observation mapping changed; rebuild the processing index')
+        return selected
 
     def close(self):
         for dataset in self.opened.values():

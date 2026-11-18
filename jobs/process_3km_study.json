@@ -1,0 +1,19 @@
+{
+  "start": "2021-01-01",
+  "end": "2026-07-01",
+  "resolution_km": 3,
+  "bands": [1, 2, 3, 7, 8, 9, 10, 13],
+  "radar": ["refc", "refc_base"],
+  "quality": "good",
+  "correction": "none",
+  "compression": "zstd",
+  "chunk_time": 1,
+  "shard_time": 0,
+  "spatial_chunk": 0,
+  "workers": 8,
+  "executor": "process",
+  "prefetch_batches": 4,
+  "memory_mib": 65536,
+  "mode": "full",
+  "max_hours": 0
+}

@@ -18,7 +18,7 @@ from pyproj import CRS, Transformer
 
 from ecore_weather.core.common import Asset, PR_BBOX, Selection, Transport, digest, hours, iso, jsonable, list_objects, remote_file, s3_client, utc, validate_request, write_json
 
-PRODUCTS = ("ABI-L2-CMIPF", "ABI-L2-CMIPC", "ABI-L2-MCMIPF", "ABI-L2-MCMIPC")
+PRODUCTS = ("ABI-L2-CMIPF", "ABI-L2-CMIPC", "ABI-L2-MCMIPF", "ABI-L2-MCMIPC", "ABI-L2-ACHAF")
 STORMSCOPE_BANDS = (1, 2, 3, 7, 8, 9, 10, 13)
 
 
@@ -134,8 +134,8 @@ def discover(start, end, bbox=PR_BBOX, bands=STORMSCOPE_BANDS, satellite="auto",
         raise ValueError(f"Supported CMI products: {', '.join(PRODUCTS)}")
     if scans_per_hour is not None and not 1 <= int(scans_per_hour) <= 6:
         raise ValueError("Choose 1-6 scans per hour, or 0/None for every available scan.")
-    bands = tuple(sorted(set(map(int, bands))))
-    if not bands or any(b < 1 or b > 16 for b in bands):
+    bands = () if product=='ABI-L2-ACHAF' else tuple(sorted(set(map(int, bands))))
+    if product!='ABI-L2-ACHAF' and (not bands or any(b < 1 or b > 16 for b in bands)):
         raise ValueError("Select one or more ABI bands from 1 to 16.")
     if satellite not in (16, 17, 18, 19):
         raise ValueError("Select GOES-16, 17, 18, or 19.")
@@ -211,7 +211,7 @@ def acquisition_coverage(selection):
             expected = 4
         else:
             expected = None
-        multiplier = len(selection.bands) if "MCMIP" not in selection.product else 1
+        multiplier = len(selection.bands) if "CMIP" in selection.product and "MCMIP" not in selection.product else 1
         rows.append({"hour": iso(hour), "observed_files": len(assets),
                      "scan_modes": ",".join(sorted(modes)),
                      "expected_files": expected * multiplier if expected else None,
@@ -258,7 +258,10 @@ def native_window(ds, bbox, halo=0):
 
 
 def selected_variables(ds, bands, allow_missing=False):
-    if "CMI" in ds:
+    if 'HT' in ds:
+        names=['HT','DQF','goes_imager_projection','t']
+        names += [n for n in ds if ds[n].ndim==0 or ds[n].dims==ds.HT.dims]
+    elif "CMI" in ds:
         band = int(ds.band_id.values.item())
         if band not in bands:
             raise ValueError("The single-band file does not contain a requested band.")

@@ -12,7 +12,7 @@ Keep its dependencies isolated from active fetching. New helpers are in
 `processing`, `process_catalog`, `process_store`, `process_parallax`,
 `process_benchmarks`, `process_model` and the shared CLI/UI modules.
 Workstation derived arrays live on DAS; only the small live query index stays on
-Linux. A virtual snapshot still needs the original native archive paths.
+Linux. New derived datasets use compressed plain Zarr v3; optional virtual references still depend on the native ZIP paths.
 
 ## Set up a clean machine
 
@@ -314,7 +314,7 @@ bash -n jobs/polaris_goes.pbs jobs/polaris_mrms.pbs
 ## Maintenance and validation
 
 Tests are grouped under ingest, jobs, storage, reporting and processing. The CPU
-suite keeps small real-process I/O tests; optional Icechunk cases run in the separate
+suite keeps small real-process I/O tests; optional parallax cases run in the separate
 processing environment. Live network comparisons are explicit experiments.
 
 The November 2026 migration retained native archive paths, scientific IDs, all
@@ -328,3 +328,17 @@ Keep only current operational output and unresolved failures. Cleanup previews
 must not write files or access remote credentials. Unknown result folders are
 protected until their owner establishes they are disposable. See
 [optional exports](evidence/README.md) and [job entry points](../jobs/README.md).
+
+## Retiring generated data
+
+Retiring a workflow includes deleting its obsolete generated stores and state.
+Keep an old asset only for a documented current use or an explicit one-time
+migration/conversion path. An error saying the asset is unsupported does not
+justify preserving it. This applies to unused virtual catalogs as well as
+materialized arrays. Native observations and active research outputs are separate.
+
+For the plain-Zarr transition, first verify a bounded replacement and confirm
+the native inputs still exist. Then use `process retire-icechunk --unit PATH
+--apply` to remove old managed selections, stale preparation and index rows.
+The command holds ownership/reader locks and retains one aggregate receipt.
+Do not create compatibility wrappers or backups for disposable retired formats.

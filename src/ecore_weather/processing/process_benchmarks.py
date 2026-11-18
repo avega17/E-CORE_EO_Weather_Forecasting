@@ -15,6 +15,67 @@ import pandas as pd
 from ecore_weather.processing.transforms import atomic_json
 
 
+def processing_benchmark(preparation,destination,output,worker_counts=(8,16,32),repeats=1):
+    """Run the actual verified writer on a bounded, cached native selection."""
+    import threading
+    import psutil
+    from ecore_weather.processing.process_catalog import load_index
+    from ecore_weather.processing.process_store import materialize,_slots
+    info,_,_=load_index(preparation)
+    count=len(_slots(info))
+    if count>293:raise ValueError('Worker benchmarks require a selection of at most two days')
+    if not worker_counts or min(worker_counts)<1 or repeats<1:raise ValueError('Use positive worker counts/repeats')
+    root=Path(destination);root.mkdir(parents=True,exist_ok=True)
+    methods=[('thread',2)]+[('process',n) for n in worker_counts]
+    cases=[];reference=None
+    receipt=Path(output)/'worker-benchmark.json'
+    previous=json.loads(receipt.read_text()) if receipt.exists() else {}
+    initial=previous.get('initial_screening',[])
+    coordinator=psutil.Process()
+    for repeat in range(repeats):
+        for executor,workers in methods[repeat%len(methods):]+methods[:repeat%len(methods)]:
+            stopped=threading.Event();peak=[0];cpu={}
+            def sample():
+                while not stopped.is_set():
+                    total=0
+                    for process in [coordinator,*coordinator.children(recursive=True)]:
+                        try:
+                            total+=process.memory_info().rss
+                            usage=process.cpu_times();cpu[process.pid]=usage.user+usage.system
+                        except psutil.Error:pass
+                    peak[0]=max(peak[0],total);stopped.wait(.25)
+            start_cpu=sum(coordinator.cpu_times()[:2]);monitor=threading.Thread(target=sample,daemon=True)
+            with tempfile.TemporaryDirectory(prefix='ecore-process-workers-',dir=root) as temporary:
+                monitor.start();began=time.perf_counter()
+                try:
+                    result=materialize(preparation,temporary,workers=workers,memory_mib=65536,
+                        executor=executor,prefetch_batches=4)
+                    seconds=time.perf_counter()-began
+                finally:stopped.set();monitor.join()
+                unit=Path(result['units'][0]['path'])
+                state=json.loads((unit/'progress.json').read_text())
+                hashes=[b['sha256'] for b in state['batches']]
+                if reference is None:reference=hashes
+                if hashes!=reference:raise IOError('Parallel transform differs from the reference arrays')
+                child_cpu=sum(v for pid,v in cpu.items() if pid!=coordinator.pid)
+                used_cpu=sum(coordinator.cpu_times()[:2])-start_cpu+child_cpu
+                cases.append({'repeat':repeat,'executor':executor,'workers':workers,'slots':count,
+                    'wall_seconds':seconds,'slots_per_second':count/seconds,'peak_summed_rss_bytes':peak[0],
+                    'cpu_seconds':used_cpu,'average_cpu_cores':used_cpu/seconds,
+                    'metrics':state['metrics'],'verified':True,'prefetch_batches':4})
+                atomic_json(receipt,{'status':'running','cases':cases,'initial_screening':initial,
+                    'scope':'native reads through close, final read-back and completion; fresh application caches, OS caches not flushed'})
+    frame=pd.DataFrame(cases);summary=frame.groupby(['executor','workers']).wall_seconds.median()
+    process=summary.loc['process'];best=process.min()
+    winner=int(min(process[process<=best*1.05].index))
+    result={'status':'complete','cases':cases,'initial_screening':initial,
+        'selected_workers':winner,'selected_executor':'process',
+        'selection':str(preparation),'temporary_stores_removed':True,
+        'scope':'bounded production-path comparison including estimator/startup; no full-study speed guarantee'}
+    atomic_json(Path(output)/'worker-benchmark.json',result)
+    return result
+
+
 def disk_benchmark(destination,repeats=3,size_mib=1024):
     """Include flush/close; report cache ambiguity rather than claiming cold disks."""
     root=Path(destination);root.mkdir(parents=True,exist_ok=True)
@@ -54,47 +115,67 @@ def disk_benchmark(destination,repeats=3,size_mib=1024):
         'interpretation':'Measured filesystem throughput; not proof of physical bus saturation'}
 
 
-def window_benchmark(unit,destination,repeats=3,frames=12):
-    """Same transformed tensors, codecs and chunk candidates; clean every trial."""
-    import icechunk as ic
+def window_benchmark(unit,destination,repeats=3,frames=24,candidates=None,reader_counts=(1,2,4)):
+    """Compare whole scientific stores through the same ProcessedSource path."""
     import zarr
-    from zarr.codecs import BloscCodec,BloscShuffle
-    unit=Path(unit);saved=json.loads((unit/'progress.json').read_text())
-    repo=ic.Repository.open(ic.local_filesystem_storage(str(unit/'data.icechunk')))
-    source=zarr.open_group(repo.readonly_session(snapshot_id=saved['snapshot_id']).store,mode='r')
-    available=source['values'].shape[0]
-    # At most 24 frames; bounded enough for the Linux SSD comparison.
-    n=min(24,available);tensor=np.asarray(source['values'][:n])
-    if tensor.nbytes>2*1024**3:raise MemoryError('Benchmark sample exceeds 2 GiB; reduce variables or ROI')
+    from zarr.codecs import BloscCodec
+    from ecore_weather.processing.process_store import ProcessedSource
+    unit=Path(unit);source=zarr.open_group(str(unit/'data.zarr'),mode='r')
+    n=min(frames,source['values'].shape[0]);arrays={}
+    for name in source.keys():
+        array=source[name]
+        arrays[name]=np.asarray(array[:n] if array.metadata.dimension_names[0]=='time' else array[:])
+    if sum(a.nbytes for a in arrays.values())>2*1024**3:raise MemoryError('Layout sample exceeds 2 GiB')
     destination=Path(destination);destination.mkdir(parents=True,exist_ok=True)
-    rows=[]
-    candidates=[(codec,chunk) for codec in ('zstd','none') for chunk in (1,6,12)]
+    rows=[];candidates=candidates or [(1,0,0),(6,0,0),(1,24,0),(1,0,256)]
     for repeat in range(repeats):
-        for codec,chunk in candidates[repeat%len(candidates):]+candidates[:repeat%len(candidates)]:
+        order=candidates[repeat%len(candidates):]+candidates[:repeat%len(candidates)]
+        for chunk,shard,tile in order:
             with tempfile.TemporaryDirectory(prefix='ecore-window-benchmark-',dir=destination) as temp:
-                started=time.perf_counter();store=zarr.open_group(temp,mode='w')
-                array=store.create_array('values',data=tensor,chunks=(chunk,1,min(256,tensor.shape[2]),min(256,tensor.shape[3])),
-                    compressors=BloscCodec(cname='zstd',clevel=3,shuffle=BloscShuffle.shuffle) if codec=='zstd' else None)
-                write=time.perf_counter()-started
+                before=time.perf_counter();store=zarr.open_group(str(Path(temp)/'data.zarr'),mode='w',zarr_format=3)
+                for name,values in arrays.items():
+                    original=source[name];dims=original.metadata.dimension_names;options={}
+                    if values.ndim==4:
+                        spatial=tuple(min(tile,d) if tile else d for d in values.shape[2:])
+                        options['chunks']=(chunk,values.shape[1],*spatial)
+                        if shard:options['shards']=(shard,values.shape[1],*spatial)
+                    # Arrays are written once as complete time shards.
+                    store.create_array(name,data=values,dimension_names=dims,
+                        compressors=BloscCodec(cname='zstd',clevel=3),**options)
+                store.attrs.update(dict(source.attrs))
+                atomic_json(Path(temp)/'progress.json',{'schema':2,'verified_slots':n,'recipe_id':'layout-experiment'})
+                atomic_json(Path(temp)/'complete.json',{'slots':n,'recipe_id':'layout-experiment'})
+                write=time.perf_counter()-before
                 stored=sum(p.stat().st_size for p in Path(temp).rglob('*') if p.is_file())
-                for length in (6,12):
-                    if length>n:continue
-                    starts=np.random.default_rng(100+repeat).integers(0,n-length+1,size=12)
-                    for readers in (1,2,4):
-                        def load(first):
-                            # A fresh application handle does not flush filesystem caches.
-                            before=time.perf_counter();read=zarr.open_group(temp,mode='r')['values'][first:first+length]
-                            np.testing.assert_array_equal(read,tensor[first:first+length])
-                            return time.perf_counter()-before
-                        before=time.perf_counter()
-                        with ThreadPoolExecutor(max_workers=readers) as pool:latencies=list(pool.map(load,starts))
-                        seconds=time.perf_counter()-before
-                        rows.append({'repeat':repeat,'compression':codec,'chunk_time':chunk,'frames':length,
-                            'readers':readers,'write_seconds':write,'stored_bytes':stored,'logical_bytes':tensor.nbytes,
-                            'windows_per_second':len(starts)/seconds,'median_window_seconds':float(np.median(latencies)),
-                            'wall_seconds':seconds,'verified':True})
-    return {'path':str(destination),'cases':rows,'cache_scope':'fresh application handles; filesystem caches not flushed',
-        'temporary_stores_removed':True,'scope':f'cached regional tensors, first {n} observations; no NOAA reads'}
+                files=sum(1 for p in Path(temp).rglob('*') if p.is_file())
+                with ProcessedSource(temp) as reader:
+                    for length in (1,6,12):
+                        if length>n:continue
+                        starts=np.random.default_rng(repeat+100).integers(0,n-length+1,size=8)
+                        for readers in reader_counts:
+                            def load(first):
+                                began=time.perf_counter()
+                                values=reader(arrays['time'][first:first+length],arrays['variable']).values
+                                expected=np.where(arrays['pixel_valid'][first:first+length],arrays['values'][first:first+length],np.nan)
+                                np.testing.assert_array_equal(values,expected)
+                                return time.perf_counter()-began
+                            began=time.perf_counter()
+                            with ThreadPoolExecutor(max_workers=readers) as pool:latencies=list(pool.map(load,starts))
+                            seconds=time.perf_counter()-began
+                            rows.append({'repeat':repeat,'compression':'zstd','chunk_time':chunk,'shard_time':shard,
+                                'spatial_chunk':tile,'frames':length,'readers':readers,'write_seconds':write,
+                                'stored_bytes':stored,'physical_files':files,'logical_bytes':sum(a.nbytes for a in arrays.values()),
+                                'windows_per_second':len(starts)/seconds,'median_window_seconds':float(np.median(latencies)),
+                                'wall_seconds':seconds,'verified':True})
+    import pandas as pd
+    summary=pd.DataFrame(rows);six=summary[(summary.frames==6)&(summary.readers==1)]
+    selected=None
+    if len(six):
+        grouped=six.groupby(['chunk_time','shard_time','spatial_chunk']).agg(seconds=('median_window_seconds','median'),files=('physical_files','median')).reset_index()
+        best=grouped.seconds.min();winner=grouped[grouped.seconds<=best*1.05].sort_values(['files','seconds']).iloc[0]
+        selected={name:int(winner[name]) for name in ('chunk_time','shard_time','spatial_chunk')}
+    return {'cases':rows,'selected_layout':selected,'cache_scope':'fresh application handles; OS caches not flushed',
+        'temporary_stores_removed':True,'scope':f'{n} cached regional frames including validity, quality and source times'}
 
 
 def benchmark(unit,destination,output,repeats=3,size_mib=1024,linux_comparison=None):
@@ -104,13 +185,11 @@ def benchmark(unit,destination,output,repeats=3,size_mib=1024,linux_comparison=N
     result={'disk':disk_benchmark(destination,repeats,size_mib),
             'windows':window_benchmark(unit,destination,repeats),
             'model_consumption':'not measured until the model check succeeds; storage speed alone does not establish GPU starvation'}
-    import icechunk as ic,zarr
+    import zarr
     state=json.loads((Path(unit)/'progress.json').read_text())
-    repo=ic.Repository.open(ic.local_filesystem_storage(str(Path(unit)/'data.icechunk')))
-    metadata=zarr.open_group(repo.readonly_session(snapshot_id=state['snapshot_id']).store,mode='r')
+    metadata=zarr.open_group(str(Path(unit)/'data.zarr'),mode='r')
     preparation=metadata.attrs.get('scientific_selection')
-    if preparation and Path(preparation).is_dir():
-        result['native_windows']=native_window_benchmark(preparation,repeats)
+    # Native virtualization is a separate optional experiment, not routine work.
     if linux_comparison:
         result['linux_disk']=disk_benchmark(linux_comparison,repeats,min(size_mib,512))
         result['linux_windows']=window_benchmark(unit,linux_comparison,repeats)
@@ -123,12 +202,11 @@ def benchmark(unit,destination,output,repeats=3,size_mib=1024,linux_comparison=N
 
 
 def snapshot_window_benchmark(unit,repeats=3,cache_metadata=True,samples=4):
-    """Measure the actual Icechunk/ProcessedSource path as well as layout trials."""
-    import icechunk as ic,xarray as xr
+    """Measure the actual plain-Zarr/ProcessedSource path as well as layout trials."""
+    import xarray as xr
     from ecore_weather.processing.process_store import ProcessedSource
     state=json.loads((Path(unit)/'progress.json').read_text())
-    repo=ic.Repository.open(ic.local_filesystem_storage(str(Path(unit)/'data.icechunk')))
-    with xr.open_zarr(repo.readonly_session(snapshot_id=state['snapshot_id']).store,
+    with xr.open_zarr(str(Path(unit)/'data.zarr'),
                      consolidated=False,mask_and_scale=False,chunks=None) as dataset:
         times=dataset.time.values[:24];variables=dataset.variable.values.tolist()
     source=ProcessedSource(unit,cache_metadata=cache_metadata)
@@ -151,8 +229,8 @@ def snapshot_window_benchmark(unit,repeats=3,cache_metadata=True,samples=4):
                     'windows_per_second':len(starts)/seconds,'median_window_seconds':float(np.median(latencies)),
                     'cpu_seconds':time.process_time()-cpu,'wall_seconds':seconds,'verified':True})
     source.close()
-    return {'cases':cases,'snapshot_id':state['snapshot_id'],'unit':str(unit),
-        'scope':'actual compressed Icechunk snapshot, validity masks and model-facing source; up to 24 observations',
+    return {'cases':cases,'recipe_id':state['recipe_id'],'unit':str(unit),
+        'scope':'actual compressed plain-Zarr store, validity masks and model-facing source; up to 24 observations',
         'cache_scope':('one immutable metadata cache per source' if cache_metadata else 'fresh store handles')+
             '; filesystem caches not flushed; tensors verified against a cached reference'}
 

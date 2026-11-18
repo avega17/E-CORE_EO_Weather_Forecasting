@@ -33,7 +33,6 @@ dependencies:
   - python-dotenv
   - tabulate
   - pip:
-      - icechunk==2.2.0
       - virtualizarr==2.7.3
       - obstore==0.11.1
       - earth2studio==0.18.0

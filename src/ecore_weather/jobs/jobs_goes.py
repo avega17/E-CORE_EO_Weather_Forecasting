@@ -178,7 +178,7 @@ def main(argv=None):
     add_arguments(parser)
     parser.add_argument("--decode-workers", type=int, default=1,
                         help="Legacy CMIPF compatibility only; unused by MCMIPF")
-    parser.add_argument("--product", choices=("ABI-L2-MCMIPF", "ABI-L2-CMIPF"),
+    parser.add_argument("--product", choices=("ABI-L2-MCMIPF", "ABI-L2-CMIPF", "ABI-L2-ACHAF"),
                         default="ABI-L2-CMIPF")
     parser.add_argument("--read-profiles", help="Pinned per-band benchmark profiles JSON")
     parser.add_argument("--read-processes", type=int, default=2)
@@ -196,6 +196,9 @@ def main(argv=None):
                         help="Maximum run hours; 0 disables the time cutoff for local jobs (not PBS)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.product=='ABI-L2-ACHAF':
+        from ecore_weather.processing.process_parallax import fetch_height_study
+        return fetch_height_study(args)
     requested = None
     if args.start or args.end:
         if not (args.start and args.end) or args.phase != 'all':

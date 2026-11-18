@@ -22,6 +22,10 @@ if __name__ != '__mp_main__':
 # in the model environment. On the workstation both preparation artifacts and
 # materialized variants use separate directories on P:; Linux SSD use is bounded.
 # On Polaris keep reusable preparation on Eagle and variants on node scratch.
+# Materialization uses independent processes. The Processes control defaults to
+# 0, meaning all CPUs allowed by this machine or job. The workstation study
+# configuration reserves 64 GiB for workers and prefetched output; one writer
+# verifies and commits batches while later batches are being transformed.
 
 # %%
 if __name__ != '__mp_main__':
@@ -44,8 +48,8 @@ if __name__ != '__mp_main__':
 # ## Choose a sample and inspect its preparation
 # Indexing lists completed observations and identifies incomplete histories.
 # Six ten-minute observations span 50 minutes between the first and last times.
-# The virtual catalog points to compressed native chunks; it does not interpolate
-# or remove our dependency on those original ZIPs. Estimates read a small sample.
+# Preparation indexes point to unchanged native ZIPs. Materialization writes
+# calibrated arrays to data.zarr; estimates read a small sample.
 
 # %%
 if __name__ != '__mp_main__':
@@ -55,13 +59,13 @@ if __name__ != '__mp_main__':
 # ## What materialization produces
 # Each variant contains physical values, validity, source support, categorical
 # quality/missingness, actual source times and the common projected coordinates.
-# A full snapshot supports arbitrary eligible windows across months. Auto mode
+# A complete plain-Zarr store supports arbitrary eligible windows across months. Auto mode
 # chooses it when the complete selection fits with a 5% filesystem reserve;
 # otherwise temporal blocks provide a bounded working set. Both modes can resume.
-# Larger resolutions do not create extra measured detail in infrared bands.
+# Finer output grids do not create extra measured detail in infrared bands.
 #
 # ## Correction and model experiments
-# The parallax pilot uses separately matched cloud heights for C02/C13 and retains
+# The parallax pilot uses separately matched cloud heights for C01/C02/C03/C07/C13 and retains
 # uncertain-height boundaries. It does not silently correct water-vapor bands.
 # The experimental Caribbean model adapter is an engineering forward-pass check,
 # not a claim of regional forecast skill. Earth2Studio supplies solar-zenith
