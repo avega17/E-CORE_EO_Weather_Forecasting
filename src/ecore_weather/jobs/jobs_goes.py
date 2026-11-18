@@ -1,0 +1,443 @@
+"""Fetch the GOES ROI in resumable monthly batches, in chronological half-year stages."""
+
+from __future__ import annotations
+from ecore_weather.core.paths import repository_root, ReceiptPath
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+
+
+from ecore_weather.jobs.runlog import save as write_json
+from ecore_weather.core.common import utc
+
+
+def snapshot_environment():
+    """Keep CLI imports and spawned readers on this runner's code snapshot."""
+    root = repository_root()
+    env = os.environ.copy()
+    env['ECORE_REPO_ROOT'] = str(root)
+    env['PYTHONPATH'] = str(root / 'src') + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    return env
+
+
+STAGES = [
+    ("h1-2026", date(2026, 1, 1), date(2026, 7, 1)),
+    ("h2-2025", date(2025, 7, 1), date(2026, 1, 1)),
+    ("h1-2025", date(2025, 1, 1), date(2025, 7, 1)),
+    ("h2-2024", date(2024, 7, 1), date(2025, 1, 1)),
+    ("h1-2024", date(2024, 1, 1), date(2024, 7, 1)),
+    ("h2-2023", date(2023, 7, 1), date(2024, 1, 1)),
+    ("h1-2023", date(2023, 1, 1), date(2023, 7, 1)),
+    ("h2-2022", date(2022, 7, 1), date(2023, 1, 1)),
+    ("h1-2022", date(2022, 1, 1), date(2022, 7, 1)),
+    ("h2-2021", date(2021, 7, 1), date(2022, 1, 1)),
+    ("h1-2021", date(2021, 1, 1), date(2021, 7, 1)),
+]
+STAGES = list(reversed(STAGES))
+BANDS = (1, 2, 3, 7, 8, 9, 10, 13)
+
+
+def _months(start, end):
+    current = start
+    while current < end:
+        nxt = date(current.year + (current.month == 12),
+                   1 if current.month == 12 else current.month + 1, 1)
+        yield current, min(nxt, end)
+        current = nxt
+
+
+def _verify_month(report_dir):
+    # The CLI writes product reports under <month>/<product>/, so a direct
+    # glob at the month level misses successfully fetched monthly collections.
+    reports = sorted(Path(report_dir).rglob("*-monthly.json"),
+                     key=lambda path: path.stat().st_mtime_ns)
+    if not reports:
+        raise FileNotFoundError(f"No monthly fetch report found under {report_dir}")
+    report = json.loads(reports[-1].read_text())
+    if report.get("source") != "goes" or report.get("interrupted"):
+        raise IOError("GOES fetch report marks the month as failed or incomplete")
+    archives = []
+    for entry in report.get("monthly_archives", []):
+        archive = Path(entry.get("path", ""))
+        if entry.get("status") not in {"saved", "reused"}:
+            raise IOError(f"GOES monthly archive did not complete: {entry}")
+        if not archive.is_file() or not (archive.parent / "complete.json").is_file():
+            raise IOError(f"GOES archive or completion marker missing: {archive}")
+        marker = json.loads((archive.parent / "complete.json").read_text())
+        if marker.get("observations") != entry.get("observations"):
+            raise IOError(f"GOES observation count differs from marker: {archive}")
+        archives.append({"path": str(archive), "band": entry.get("band"),
+            "observations": entry.get("observations"), "stored_bytes": entry.get("stored_bytes")})
+    if not archives:
+        raise IOError("GOES fetch report contains no completed monthly archives")
+    available_bands = sorted({int(row["band"]) for row in report.get("monthly_archives", [])
+                              if row.get("band") is not None})
+    return report, archives, available_bands
+
+
+def _reusable_selection(report_dir, start, end, product):
+    """Reuse a saved STAC selection after interruption before its month fetch."""
+    path = Path(report_dir) / product / "collection.json"
+    if not path.is_file():
+        path = Path(report_dir) / product / "items.json"
+    if not path.is_file():
+        return None
+    from ecore_weather.storage.catalog import load_selection
+    selection = load_selection(path)
+    if (selection.source != "goes" or selection.product != product
+            or utc(selection.start) != utc(start) or utc(selection.end) != utc(end)
+            or tuple(selection.bbox) != (-70.24, 14.36, -62.56, 22.04)
+            or tuple(selection.bands) != BANDS or selection.scans_per_hour is not None):
+        return None
+    return path
+
+
+def satellite_segments(month):
+    """Split the operational handoff without combining different native grids."""
+    transition=utc('2025-04-07T15:00:00Z')
+    if not utc(month['start'])<transition<utc(month['end_excluded']):return [month]
+    segments=[]
+    for satellite,start,end in [(16,month['start'],'2025-04-07T15:00:00Z'),(19,'2025-04-07T15:00:00Z',month['end_excluded'])]:
+        command=list(month['command']);output=str(Path(month['report_dir'])/f'goes{satellite}')
+        for option,value in [('--start',start),('--end',end),('--output',output),('--satellite',str(satellite))]:
+            command[command.index(option)+1]=value
+        segments.append({**month,'start':start,'end_excluded':end,'report_dir':output,'command':command})
+    return segments
+
+
+def checkpoint_matches(saved, product, month=None):
+    """Old checkpoints may omit product, but every marker and ZIP must prove it."""
+    if saved.get('status') == 'unavailable':
+        coverage=saved.get('coverage',[])
+        return bool(month and saved.get('product')==product and saved.get('selected_assets')==0
+            and not saved.get('archives') and set(saved.get('bands',[]))==set(BANDS)
+            and utc(saved.get('start','1900-01-01'))==utc(month['start'])
+            and utc(saved.get('end_excluded','1900-01-01'))==utc(month['end_excluded'])
+            and coverage and all(r.get('files')==0 for r in coverage))
+    if saved.get("status") != "complete" or not saved.get("archives"):
+        return False
+    if saved.get("product") not in (None, product):
+        return False
+    if month is not None:
+        if not saved.get('start') or not saved.get('end_excluded'):
+            return False
+        if (utc(saved['start']), utc(saved['end_excluded'])) != (utc(month['start']), utc(month['end_excluded'])):
+            return False
+        requested = set(saved.get('bands', saved.get('available_bands', []) + saved.get('missing_bands', [])))
+        if requested != set(BANDS):
+            return False
+    from ecore_weather.storage.archives import open_raw
+    from ecore_weather.ingest.goes_monthly import _file_sha256
+    for item in saved["archives"]:
+        path = Path(item["path"])
+        marker_path = path.parent / "complete.json"
+        if not path.is_file() or not marker_path.is_file():
+            return False
+        marker = json.loads(marker_path.read_text())
+        if month is not None and (tuple(marker.get('region', ())) != (-70.24, 14.36, -62.56, 22.04)
+                                  or marker.get('band') not in BANDS):
+            return False
+        if marker.get("product") != product or marker.get("source") != "goes":
+            return False
+        if marker.get("archive_sha256") and _file_sha256(path) != marker["archive_sha256"]:
+            return False
+        # Product-less historical checkpoints require direct archive identity.
+        if saved.get("product") is None:
+            with open_raw(path) as ds:
+                if ds.attrs.get("product") != product:
+                    return False
+                if any(product not in str(a.get("source_url", "")) for a in marker.get("assets", [])):
+                    return False
+    return True
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--phase", choices=[row[0] for row in STAGES] + ["all"], default="all")
+    parser.add_argument('--start', help='ISO UTC start; supply with --end instead of --phase')
+    parser.add_argument('--end', help='ISO UTC exclusive end')
+    parser.add_argument('--storage-cap-gb', type=float, help='GOES archives and state limit in decimal GB')
+    parser.add_argument('--durable-progress', help='Atomic aggregate progress JSON on shared storage')
+    parser.add_argument('--checkpoint-dir', help='Durable native-band partial checkpoints; restored into local scratch on resubmission')
+    parser.add_argument('--checkpoint-fraction',type=float,default=.25,help='Fraction of selected scans between durable checkpoints; default 0.25, rounded to eight scans')
+    parser.add_argument('--drain-minutes', type=float, default=15, help='Minimum admission drain allowance before deadline')
+    parser.add_argument("--destination", default="/mnt/p/ecore_eo_datasets")
+    parser.add_argument("--output", default="results/study-goes-native")
+    parser.add_argument("--scratch", default="results/study-scratch")
+    parser.add_argument("--workers", type=int, default=8,
+                        help="Source threads/batch limit per reader; HDF5 serializes calls within each process. Use --read-processes for independent HDF5 reads.")
+    from ecore_weather.ingest.goes_shared import add_arguments
+    add_arguments(parser)
+    parser.add_argument("--decode-workers", type=int, default=1,
+                        help="Legacy CMIPF compatibility only; unused by MCMIPF")
+    parser.add_argument("--product", choices=("ABI-L2-MCMIPF", "ABI-L2-CMIPF"),
+                        default="ABI-L2-CMIPF")
+    parser.add_argument("--read-profiles", help="Pinned per-band benchmark profiles JSON")
+    parser.add_argument("--read-processes", type=int, default=2)
+    parser.add_argument('--read-mode', choices=['range','async_full','async_pipeline'], default='range')
+    parser.add_argument('--download-concurrency', type=int, default=32)
+    from ecore_weather.ingest.goes_shared import default_config
+    parser.add_argument('--staging-mib', type=int, default=default_config().staging_mib)
+    parser.add_argument("--prefetch-mib", type=int, default=512)
+    parser.add_argument("--block-size-kib", type=int, default=1024)
+    parser.add_argument("--reuse-cmipf-2km-from", metavar="ARCHIVE_ROOT",
+                        help="Build a separately labeled 2 km hybrid using matching CMIPF bands")
+    parser.add_argument("--stop-after-month", help="Pause with exit 75 after the verified YYYY-MM month")
+    parser.add_argument("--begin-month", help="Begin at this YYYY-MM month in the staged order")
+    parser.add_argument("--max-hours",type=float,default=12.,
+                        help="Maximum run hours; 0 disables the time cutoff for local jobs (not PBS)")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    requested = None
+    if args.start or args.end:
+        if not (args.start and args.end) or args.phase != 'all':
+            parser.error('Supply --start and --end together, without a specific --phase')
+        from ecore_weather.jobs.pbs import interval
+        try: requested = interval(args.start, args.end)
+        except ValueError as exc: parser.error(str(exc))
+    if args.max_hours < 0 or args.drain_minutes < 0:
+        parser.error('Nonnegative max-hours and drain-minutes required')
+    if args.max_hours == 0 and (os.getenv('PBS_JOBID') or args.pipeline != 'shared'):
+        parser.error('--max-hours 0 is supported only for local shared-pipeline jobs')
+    if not 0 < args.checkpoint_fraction <= 1:
+        parser.error('checkpoint-fraction must be greater than zero and at most one')
+    if args.checkpoint_dir and (args.pipeline != 'shared' or args.product != 'ABI-L2-CMIPF'):
+        parser.error('Durable partial checkpoints require the shared native CMIPF pipeline')
+    if args.storage_cap_gb is not None and args.storage_cap_gb <= 0:
+        parser.error('storage-cap-gb must be positive')
+    from ecore_weather.ingest.goes_shared import config_from_args
+    try:shared_config=config_from_args(args)
+    except ValueError as exc:parser.error(str(exc))
+    args.monthly_writers=shared_config.month_writers
+    if args.storage_cap_gb is not None and (args.pipeline != 'shared' or args.product != 'ABI-L2-CMIPF'):
+        parser.error('storage-cap-gb requires the shared native CMIPF pipeline')
+    if args.pipeline=='shared' and args.product=='ABI-L2-CMIPF' and args.read_profiles:
+        parser.error('Schema-1 per-band profiles require --pipeline legacy; shared limits are global')
+    if args.read_mode in ('async_full', 'async_pipeline') and args.product != 'ABI-L2-CMIPF':
+        parser.error('Async staging is supported only for native CMIPF')
+    if min(args.workers, args.monthly_writers, args.decode_workers,
+           args.read_processes, args.prefetch_mib, args.block_size_kib,
+           args.download_concurrency, args.staging_mib) < 1:
+        parser.error("Worker counts must be positive")
+    if args.stop_after_month and not any(
+            start.strftime("%Y-%m") == args.stop_after_month
+            for _, stage_start, stage_end in STAGES for start, _ in _months(stage_start, stage_end)):
+        parser.error("--stop-after-month must be a study month in YYYY-MM format")
+    if args.reuse_cmipf_2km_from and args.product != "ABI-L2-MCMIPF":
+        parser.error("CMIPF 2 km reuse requires --product ABI-L2-MCMIPF")
+    archive_product = "ABI-L2-CMI-2KM-HYBRID" if args.reuse_cmipf_2km_from else args.product
+    if not Path(args.destination).is_dir():
+        parser.error(f"Local dataset destination does not exist: {args.destination}")
+    stages = [row for row in STAGES if args.phase == "all" or row[0] == args.phase]
+    command_base = [sys.executable, str(repository_root() / "notebooks" / "02_goes.py"),
+        "--operation", "fetch", "--destination", args.destination,
+        "--bands", *map(str, BANDS), "--scans-per-hour", "0", "--satellite", "auto",
+        "--workers", str(args.workers), "--decode-workers", str(args.decode_workers),
+        "--monthly-writers", str(1 if args.product == "ABI-L2-MCMIPF" else args.monthly_writers),
+        "--scratch", args.scratch,
+        "--product", args.product, "--read-processes", str(args.read_processes),
+        "--prefetch-mib", str(args.prefetch_mib), "--block-size-kib", str(args.block_size_kib),
+        '--read-mode', args.read_mode, '--download-concurrency', str(args.download_concurrency),
+        '--staging-mib', str(args.staging_mib),
+        "--skip-index", "--pipeline", "legacy"]
+    if args.read_profiles:
+        from ecore_weather.jobs.jobs_policy import validate_profiles
+        validate_profiles(json.loads(Path(args.read_profiles).read_text()))
+        command_base += ["--read-profiles", str(Path(args.read_profiles).resolve())]
+    if args.reuse_cmipf_2km_from:
+        command_base += ["--reuse-cmipf-2km-from", args.reuse_cmipf_2km_from]
+    plan = []
+    for name, start, end in stages:
+        for left, right in _months(start, end):
+            month_start, month_end = utc(left), utc(right)
+            if requested:
+                month_start, month_end = max(month_start, requested[0]), min(month_end, requested[1])
+                if month_start >= month_end:
+                    continue
+            report_dir = Path(args.output) / name / f"{month_start:%Y-%m}"
+            start_text = month_start.isoformat() if requested else left.isoformat()
+            end_text = month_end.isoformat() if requested else right.isoformat()
+            command = command_base + ["--start", start_text, "--end", end_text,
+                "--output", str(report_dir)]
+            plan.append({"stage": name, "start": start_text,
+                "end_excluded": end_text, "report_dir": str(report_dir), "command": command})
+    if not plan:
+        parser.error('Requested dates do not intersect the supported 2021 through June 2026 study')
+    if requested and (utc(plan[0]['start']) != requested[0] or utc(plan[-1]['end_excluded']) != requested[1]):
+        parser.error('Explicit dates must be within 2021-01-01 through 2026-07-01')
+    if args.begin_month:
+        begin_index = next((i for i, month in enumerate(plan)
+                            if month["start"][:7] == args.begin_month), None)
+        if begin_index is None:
+            parser.error("--begin-month is not part of the chosen --phase")
+        plan = plan[begin_index:]
+    if args.stop_after_month:
+        stop_index = next((i for i, month in enumerate(plan)
+                           if month["start"][:7] == args.stop_after_month), None)
+        if stop_index is None:
+            parser.error("--stop-after-month is not part of the chosen --phase")
+        plan = plan[:stop_index + 1]
+    if args.pipeline=='shared' and args.product=='ABI-L2-CMIPF':
+        if args.dry_run:
+            print(json.dumps({'monthly_runs':[{k:v for k,v in row.items() if k!='command'} for row in plan],'global_config':shared_config.manifest(),
+                'durable_checkpoints':{'directory':args.checkpoint_dir,'fraction':args.checkpoint_fraction},
+                'scope':'one store-owner process per month; separate C02 tail slots'},indent=2))
+            return 0
+        return run_shared(plan,args,shared_config)
+    parser.error('Legacy study acquisition is retired; use the shared native CMIPF pipeline. Historical archives remain readable.')
+
+
+def run_shared(plan,args,config):
+    """Chronological admission without a whole-month completion barrier."""
+    from ecore_weather.storage import catalog as catalog
+    from ecore_weather.sources import goes
+    from ecore_weather.ingest.goes_shared import fetch_contexts
+    from ecore_weather.jobs.jobs_mrms import preflight
+    preflight(args.destination)
+    output=Path(args.output);output.mkdir(parents=True,exist_ok=True)
+    from ecore_weather.ingest.goes_memory import configure_study, MemoryGuard
+    configure_study(args.shared_profile,output/'memory.json')
+    if args.checkpoint_dir:
+        checkpoint_root=Path(args.checkpoint_dir).resolve()
+        checkpoint_root.mkdir(parents=True,exist_ok=True)
+        os.environ['ECORE_GOES_CHECKPOINT_ROOT']=str(checkpoint_root)
+        os.environ['ECORE_GOES_CHECKPOINT_FRACTION']=str(args.checkpoint_fraction)
+    else:
+        os.environ.pop('ECORE_GOES_CHECKPOINT_ROOT',None)
+        os.environ.pop('ECORE_GOES_CHECKPOINT_FRACTION',None)
+    from ecore_weather.ingest.goes_limits import configure, IntentionalPause
+    try:
+        configure(args.destination, os.getenv('ECORE_DURABLE_STATE', str(output)), args.scratch, args.storage_cap_gb,
+                  extra_roots=[args.checkpoint_dir] if args.checkpoint_dir else [])
+    except IntentionalPause as exc:
+        write_json(output/'paused.json', {'status':'paused','reason':str(exc),'completed_months':0})
+        return 75
+    if args.durable_progress:os.environ['ECORE_GOES_PROGRESS']=args.durable_progress
+    else:os.environ.pop('ECORE_GOES_PROGRESS',None)
+    os.environ['ECORE_SHARED_GOES']='1'
+    import hashlib
+    from ecore_weather.jobs.mrms_profile import hardware, code_identity
+    revision, snapshot_sha = code_identity()
+    profile_hash = hashlib.sha256(Path(args.shared_profile).read_bytes()).hexdigest() if args.shared_profile else None
+    write_json(output/'run_config.json',{'schema':2,'product':args.product,'bands':BANDS,
+        'git_revision':revision,'code_snapshot_sha256':snapshot_sha,'hardware':hardware(),
+        'profile_sha256':profile_hash,
+        'global_config':config.manifest(),'begin_month':args.begin_month,
+        'stop_after_month':args.stop_after_month,'start_order':'ascending half-year stages',
+        'start':plan[0]['start'],'end_excluded':plan[-1]['end_excluded'],
+        'storage_cap_gb':args.storage_cap_gb,'resolved_profile':args.shared_profile,
+        'checkpoint_dir':args.checkpoint_dir,'checkpoint_fraction':args.checkpoint_fraction,
+        'memory_policy':MemoryGuard.from_environment().summary()['policy'],
+        'rss_limit_bytes':int(os.getenv('ECORE_RSS_LIMIT_BYTES','0')),
+        'memory_report':os.getenv('ECORE_GOES_MEMORY_REPORT'),
+        'maximum_hours':args.max_hours,'minimum_drain_minutes':args.drain_minutes})
+    started=time.perf_counter();completed=[];requests=[];metadata={};segments_done={};durations=[];pending=[]
+    deadline=time.monotonic()+args.max_hours*3600 if args.max_hours else None
+    def checkpoint(month):return ReceiptPath(output/'checkpoints'/month['stage']/f"{month['start']}.json")
+    def monthly_requests():
+        # Validate completed months when chronological admission reaches them,
+        # not by rereading every future ZIP before the first unfinished month.
+        for month in plan:
+            path=checkpoint(month)
+            if path.is_file() and checkpoint_matches(json.loads(path.read_text()),args.product,month):
+                completed.append(json.loads(path.read_text()));continue
+            segments=satellite_segments(month)
+            segments_done[month['start']]=[]
+            for i,segment in enumerate(segments):
+                key=f"{month['start'][:7]}-{i}";metadata[key]=(month,segment,len(segments))
+                def load(segment=segment):
+                    saved=_reusable_selection(segment['report_dir'],segment['start'],segment['end_excluded'],args.product)
+                    if saved:selection=catalog.load_selection(saved)
+                    else:
+                        satellite=16 if utc(segment['start'])<utc('2025-04-07T15:00:00Z') else 19
+                        selection=goes.discover(segment['start'],segment['end_excluded'],bands=BANDS,satellite=satellite)
+                    catalog.save_selection(selection,Path(segment['report_dir'])/args.product)
+                    return selection
+                yield (key,load,str(Path(segment['report_dir'])/args.product))
+    requests=monthly_requests()
+    def finished(key,report):
+        if report.get('status')=='pending_sources':
+            pending.extend([{'month':key,**r} for r in report['monthly_archives'] if r['status']=='deferred'])
+            return
+        if report.get('interrupted'):raise OSError(f"Failed GOES month {key}: {report['monthly_archives']}")
+        month,segment,count=metadata[key]
+        segments_done[month['start']].append(report)
+        if len(segments_done[month['start']])!=count:return
+        reports=segments_done.pop(month['start']);archives=[a for r in reports for a in r['monthly_archives'] if a.get('status')!='unavailable']
+        bands=sorted({a['band'] for a in archives})
+        row={'status':'complete' if archives or any(r.get('source_issues') for r in reports) else 'unavailable','product':args.product,
+            'stage':month['stage'],'start':month['start'],'end_excluded':month['end_excluded'],
+            'bands':BANDS,'selected_assets':sum(r.get('selection_summary',{}).get('files',0) for r in reports),
+            'coverage':[r.get('selection_summary',{}) for r in reports],
+            'archives':archives,'available_bands':bands,'missing_bands':sorted(set(BANDS)-set(bands)),
+            'source_issues':[issue for r in reports for issue in r.get('source_issues',[])],
+            'read_bytes':sum(r.get('read_bytes',0) for r in reports),
+            'stored_bytes':sum(r.get('stored_bytes',0) for r in reports),
+            'wall_seconds':max((r.get('wall_s',0) for r in reports),default=0),
+            'timing_scope':'current attempt; maximum satellite-context wall time; concurrent global resources',
+            'global_config':config.manifest()}
+        write_json(checkpoint(month),row);completed.append(row);durations.append(row['wall_seconds'])
+        if args.shared_profile and any(a.get('status')=='saved' for a in archives):
+            review=output/'first-month-review.json'
+            previous=json.loads(review.read_text()) if review.exists() else {}
+            if previous.get('global_config')!=config.manifest():
+                from ecore_weather.jobs.goes_rollout import production_review
+                choice=json.loads(Path(args.shared_profile).read_text())
+                write_json(review,production_review(row,choice))
+        print(f"Completed and verified GOES {month['start']}: {len(archives)} archives",flush=True)
+        stage_rows=[r for r in completed if r['stage']==month['stage']]
+        expected=sum(m['stage']==month['stage'] for m in plan)
+        write_json(output/month['stage']/'summary.json',{'stage':month['stage'],
+            'verified_months':len(stage_rows),'expected_months':expected,
+            'status':'complete' if len(stage_rows)==expected else 'partial','months':stage_rows})
+    def paused():
+        allowance=args.drain_minutes*60 if args.checkpoint_dir else max(args.drain_minutes*60, 1.3*max(durations,default=0))
+        if (output/'pause.request').exists():return 'explicit pause.request; draining admitted months'
+        if deadline is None:return False
+        remaining=deadline-time.monotonic()
+        if remaining <= allowance:
+            policy='configured drain interval with durable partial checkpoints' if args.checkpoint_dir else '130% of longest completed month, with configured minimum'
+            return f'wall-time admission cutoff; {remaining/3600:.2f} hours remain, drain allowance {allowance/3600:.2f} hours ({policy})'
+        return False
+    try:
+        result=fetch_contexts(requests,args.destination,config,args.scratch,True,paused,finished,deadline=deadline)
+    except BaseException as exc:
+        if 'GOES intentional pause:' in str(exc):
+            detail={'status':'paused','reason':str(exc),'completed_months':len(completed),
+                'elapsed_seconds':time.perf_counter()-started,'maximum_hours':args.max_hours,
+                'checkpoint_dir':args.checkpoint_dir,
+                'memory_report':os.getenv('ECORE_GOES_MEMORY_REPORT'),
+                'recovery':'Verified monthly archives and published partial checkpoints survive; uncheckpointed node-local work does not'}
+            print(f'GOES intentionally paused: {detail["reason"]}',flush=True)
+            write_json(output/'paused.json',detail)
+            return 75
+        write_json(output/'failure.json',{'status':'failed','error':f'{type(exc).__name__}: {exc}'})
+        raise
+    summary={'status':'paused' if result['paused'] or args.stop_after_month else 'complete',
+        'completed_months':len(completed),
+        'months':[{'start':r['start'],'end_excluded':r['end_excluded'],'status':r['status'],
+                   'archives':len(r.get('archives',[])), 'read_bytes':r.get('read_bytes',0),
+                   'stored_bytes':r.get('stored_bytes',0),'wall_seconds':r.get('wall_seconds',0)}
+                  for r in sorted(completed,key=lambda r:r['start'])],
+        'elapsed_seconds':time.perf_counter()-started,'global_config':config.manifest(),
+        'global_metrics':result['global_metrics'],'pause_reason':result.get('pause_reason'),'pending_sources':pending}
+    write_json(output/'summary.json',summary)
+    if summary['status']=='paused':
+        detail={k:v for k,v in summary.items() if k not in ('months','global_metrics')}
+        detail['reason']=result.get('pause_reason') or 'requested stop-after-month boundary'
+        detail.update(checkpoint_dir=args.checkpoint_dir,summary_path=str(output/'summary.json'))
+        print(f'GOES intentionally paused: {detail["reason"]}',flush=True)
+        write_json(output/'paused.json',detail)
+        return 75
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

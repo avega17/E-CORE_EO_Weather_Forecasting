@@ -24,7 +24,7 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
         import os
         from pathlib import Path
         os.environ.setdefault("ECORE_REPO_ROOT", str(Path(__file__).resolve().parents[1]))
-        from ecore_weather.cli import main
+        from ecore_weather.ui.cli import main
         raise SystemExit(main(SOURCE))
 
 # %% [markdown]
@@ -57,7 +57,8 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
                      if (p / "src/ecore_weather").exists()), Path.cwd())
         os.chdir(root)
     print("Repository:", root)
-    print("Commit:", subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip())
+    if IN_COLAB:
+        print("Commit:", subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip())
 
 # %%
 if __name__ != "__mp_main__":  # Spawned readers must not construct notebook widgets.
@@ -69,13 +70,20 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
     from IPython.display import display
     if get_ipython() is not None:
         get_ipython().run_line_magic("matplotlib", "inline")
-    from ecore_weather import benchmark, catalog, diagnostics, storage, ui, validation, visualization, view_frames
-    from ecore_weather.common import PATCHES
+    from ecore_weather.reporting import benchmark
+    from ecore_weather.storage import catalog as catalog
+    from ecore_weather.reporting import diagnostics
+    from ecore_weather.storage import archives as storage
+    from ecore_weather.ui import fetch_controls as ui
+    from ecore_weather.reporting import benchmark as validation
+    from ecore_weather.ui import maps as visualization
+    from ecore_weather.ui import view_frames
+    from ecore_weather.core.common import PATCHES
     SMOKE = os.getenv("ECORE_NOTEBOOK_SMOKE") == "1"
 
 # %%
 if __name__ != "__mp_main__":  # Spawned readers must not construct notebook widgets.
-    from ecore_weather import mrms
+    from ecore_weather.sources import mrms
     READER = mrms
 # %% [markdown]
 # ## Choose files and save the selection
@@ -125,8 +133,8 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
 # %%
 if __name__ != "__mp_main__":  # Spawned readers must not construct notebook widgets.
     def fetch_data():
-        from ecore_weather import monthly
-        from ecore_weather.mrms_profile import job_memory_limit
+        from ecore_weather.ingest import monthly
+        from ecore_weather.jobs.mrms_profile import job_memory_limit
         reports = []
         for selection in chosen["value"]:
             product_dir = Path(controls["output"].value) / selection.product

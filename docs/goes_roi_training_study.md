@@ -191,7 +191,7 @@ Then run:
 ```bash
 python scripts/benchmark_goes_roi.py --output results/goes-roi-study --repeats 3 --budget-gib 2
 python scripts/summarize_goes_roi.py --output results/goes-roi-study
-python -m pytest tests/test_goes_roi.py -q
+python -m pytest tests/reporting/test_benchmarks.py -q
 ```
 
 The benchmark resumes recorded source/ROI rows rather than rerunning them;

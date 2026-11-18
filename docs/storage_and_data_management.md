@@ -122,7 +122,7 @@ pieces, called chunks, plus their coordinates and descriptive metadata. Our
 reader opens the ZIP directly. Choose an actual archive path in the example below:
 
 ```python
-from ecore_weather.storage import open_raw
+from ecore_weather.storage.archives import open_raw
 
 with open_raw('/path/to/month/raw.zarr.zip') as ds:
     print(ds.sizes)                          # observation count and grid dimensions
@@ -282,8 +282,8 @@ retrieve one monthly ZIP without downloading the other months. It checks the
 restored file's checksum and reuses a verified local copy on later visits.
 
 ```python
-from ecore_weather.storage import destination_root
-from ecore_weather.view_backup import list_bundles, inspect_bundle, restore_month
+from ecore_weather.storage.archives import destination_root
+from ecore_weather.storage.view_backup import list_bundles, inspect_bundle, restore_month
 
 bundles = list_bundles(destination_root('hf'), source='mrms')
 bundle = next(b for b in bundles

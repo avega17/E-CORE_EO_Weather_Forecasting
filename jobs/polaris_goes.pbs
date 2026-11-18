@@ -24,7 +24,7 @@ code_root="${ECORE_CODE_ROOT:-$PBS_O_WORKDIR}"
 ecore_code_directory
 ecore_phase=python-and-dates
 if ! test -x "$ECORE_PYTHON"; then ecore_fail "Prepared Python is not executable: $ECORE_PYTHON"; fi
-validated_dates="$("$ECORE_PYTHON" -m ecore_weather.pbs "$PBS_GOES_START" "$PBS_GOES_END" "$ECORE_PBS_MODE")"
+validated_dates="$("$ECORE_PYTHON" -m ecore_weather.jobs.pbs "$PBS_GOES_START" "$PBS_GOES_END" "$ECORE_PBS_MODE")"
 read -r start_date end_date <<< "$validated_dates"
 ecore_note "Dates verified | $start_date to $end_date (end excluded)"
 export HTTP_PROXY=http://proxy.alcf.anl.gov:3128
@@ -106,7 +106,7 @@ if test -n "${ECORE_GOES_JOB_SECONDS:-}"; then
 fi
 if test "${ECORE_GOES_NODE_ONLY:-0}" = 1 && test "$ECORE_PBS_MODE" = study && test "${ECORE_DRY_RUN:-0}" != 1; then
     ecore_phase=recovery-selections
-    prepare=("$ECORE_PYTHON" -m ecore_weather.jobs_multinode prepare --state "$state_root"
+    prepare=("$ECORE_PYTHON" -m ecore_weather.jobs.jobs_multinode prepare --state "$state_root"
         --legacy "${ECORE_GOES_LEGACY_STATE:-$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study}"
         --start "$start_date" --end "$end_date")
     if test -n "${ECORE_GOES_SOURCE_ISSUES:-}"; then prepare+=(--source-issues "$ECORE_GOES_SOURCE_ISSUES"); fi

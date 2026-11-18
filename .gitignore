@@ -1,5 +1,6 @@
 # Project specific
 docs/evidence/*
+!docs/evidence/README.md
 
 # ignore reference pdfs in root
 *.pdf

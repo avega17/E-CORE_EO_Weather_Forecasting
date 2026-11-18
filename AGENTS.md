@@ -255,6 +255,6 @@ Keep explanations readable for researchers inheriting the work.
 - Source `jobs/polaris.env.sh` for non-sensitive Polaris defaults and a fresh
   conservative quota estimate; it does not select a job mode or read `.env`.
   Refresh quota before each submission. A wrapper dry run tests local setup;
-  `python -m ecore_weather.pbs check-noaa --polaris-proxy` tests bounded real
+  `python -m ecore_weather.jobs.pbs check-noaa --polaris-proxy` tests bounded real
   GOES listing without imagery. Downloads, range reads, native cropping and
   Zarr verification belong in the existing bounded pilot, not a dry run.

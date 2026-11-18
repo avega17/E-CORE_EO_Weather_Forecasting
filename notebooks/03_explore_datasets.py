@@ -24,7 +24,7 @@
 if __name__ != "__mp_main__":
     from IPython import get_ipython
     if __name__ == "__main__" and get_ipython() is None:
-        from ecore_weather.viewer import main
+        from ecore_weather.ui.viewer import main
         raise SystemExit(main())
 
 # %% [markdown]
@@ -64,7 +64,8 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
         sys.path.remove(source_path)
     sys.path.insert(0, source_path)
     print("Repository:", root)
-    print("Commit:", subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip())
+    if IN_COLAB:
+        print("Commit:", subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip())
 
 # %% [markdown]
 # ## Choose data, then a view
@@ -119,7 +120,7 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
 
 # %%
 if __name__ != "__mp_main__":
-    from ecore_weather import viewer
+    from ecore_weather.ui import viewer
     print("Viewer module:", viewer.__file__)
     panel = viewer.controls()
 

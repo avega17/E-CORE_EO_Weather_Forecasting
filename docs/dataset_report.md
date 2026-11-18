@@ -25,7 +25,7 @@ Visible-band nighttime behavior is not automatically a data outage.
 Quartiles are calculated per observation and patch. Combining per-image
 quartiles does not yield a pooled pixel quartile; those summaries must stay
 separate. Full audits process each archive once in bounded batches, checkpoint
-completed observations, and invalidate prior results after content/code changes.
+completed observations, and invalidate prior results after content or scientific algorithm changes.
 
 Storage accounting keeps listed compressed source objects, returned network
 bytes, logical uncompressed arrays, retained ROI arrays and compressed archive
@@ -40,10 +40,10 @@ month-level network counters cannot yield measured day-level throughput.
 Network comparisons run only after other fetches pause at verified boundaries.
 A fresh application cache does not prove that OS caches are cold.
 
-The next model sprint needs native-band decoding, quality masks, validated
-cloud-top parallax correction and an explicit 1 km grid before temporal-window
-assembly. See [StormScope notes](StormScope-paper-notes.md) and
-[CorrDiff notes](CorrDiff-paper-notes.md). This sprint does not train or infer.
+Model preparation needs native-band decoding, quality masks, validated
+cloud-top parallax correction and an explicit training grid before temporal-window
+assembly. See [model notes](StormScope-paper-notes.md) and the separate
+[processing workflow](dataset_processing.md). Reporting does not train or infer.
 
 ## Commands and current evidence
 
@@ -70,14 +70,14 @@ when a :00 slot's source belongs to the previous month.
 
 Use the project's Conda interpreter. CLI and notebook diagnostics share the
 same functions. The separate `report.duckdb` stores audit hashes, per-observation
-patch rows and measurements. Exports include inventory.json, archives.csv,
-diagnostic-months.csv, a maximum 1,000-row diagnostic-preview.csv, audits.csv,
-diagnostic-days/weeks/years.csv, metadata-drift.csv, coverage-facts.json,
-measurements.csv, coverage-timeline.png and report.md. The Diagnostics tab also
-exports coverage-example.png with exclusive pixel classes on the native grid.
-Full diagnostic rows
-remain in DuckDB, avoiding a large duplicate CSV. Earlier results with another
-code/archive hash remain historical and are excluded from current exports.
+patch rows and measurements. Inventory writes inventory.json and archives.csv.
+An explicit report export writes report.html, report.md and a compact summary.
+Add `--tables` for aggregate CSVs; detailed diagnostic rows remain in DuckDB.
+Generated maps and figures go under figures/, separately from report state.
+Historical audits remain available. Duplicate observation/patch rows prefer the
+current scientific algorithm version; older versions are retained in the database.
+The legacy `code_hash` column now records that algorithm version, not source code
+identity. Archive hashes still protect data integrity.
 Inventory caches logical byte accounting by file identity for repeated requests.
 
 The report reads the fetch index with `read_only=True`; if another process
@@ -109,8 +109,8 @@ and cross-month tests; do not rewrite existing archives from these measurements.
 Successful temporary benchmark stores were removed. The source reads, reports
 and hashes are under ignored results/. The full audit and controlled network
 comparisons are resumable longer work; a sample report is not a completed full
-study diagnosis. Controlled network commands wait for the active MCMIPF writers
-to drain before mentor/NVIDIA/native/HF measurements. HF restore tests separate
+study diagnosis. Controlled network commands require active fetches to pause
+before mentor/NVIDIA/native/HF measurements. HF restore tests separate
 returned bytes, GET requests, transfer, hashing, file writing, opening, first
 window readiness and verified cache reuse. Annual containers use ZIP_STORED
 around already compressed monthly ZIPs.
@@ -143,7 +143,7 @@ restore caches are temporary and removed only after success.
 
 ## Cached summaries and shareable outputs
 
-Notebook 04 now builds its controls in `ecore_weather.report_ui`. Buttons use
+Notebook 04 now builds its controls in `ecore_weather.ui.report_ui`. Buttons use
 short labels, at least 145 px width and tooltips; actions disable controls while
 running. Cached views show pixel-weighted quality timelines, date/product
 heatmaps, patch comparisons, valid zeros and negatives, fill/bitmap gaps,
@@ -157,8 +157,8 @@ quartiles. The Performance tab separates byte representations, measured run
 throughput and imported benchmark/task phase costs. It does not invent daily
 network costs from monthly measurements.
 
-`report.html` embeds Plotly once and can be shared offline. Aggregate CSVs and
-readable Markdown accompany it. Export reads saved diagnostic results; full
+`report.html` embeds Plotly once and can be shared offline. Readable Markdown
+accompanies it; aggregate CSVs are optional through `--tables`. Export reads saved diagnostic results; full
 array audits remain explicit, resumable and memory bounded. Use
 `python scripts/dataset_report.py report` to export from the same functions.
 Controlled network benchmarks use `scripts/dataset_jobs.py benchmark` while
@@ -206,3 +206,13 @@ map PNG/SVG files go under `figures/mrms-<period>/`; selections, counts and
 resume state stay under `results/dataset-report/`. An explicit `--start` and
 `--end` support partial years such as January–June 2026. See the
 [radar guide](mrms_roi_and_radar_coverage.md) before starting new source reads.
+
+## Output ownership
+
+The report DB is results/dataset-report/report.duckdb, independent of notebook
+working directory. Explicit --output remains supported. Report generation writes
+HTML/Markdown; add --tables for CSV exports or --evidence-dir docs/evidence for a
+compact optional summary. Native archive hashes still protect research data.
+The legacy audits.code_hash column now stores an explicit scientific algorithm
+version for new rows; it does not trigger source-code inspection. Historical
+rows remain available, and overlapping observations are counted once.

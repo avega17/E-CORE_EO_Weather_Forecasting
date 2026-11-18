@@ -58,26 +58,22 @@ preprocessed arrays, validation datasets and model assets remains unestimated.
 
 ## Where changes belong
 
-| Area | Modules |
+| Package | Responsibility |
 |---|---|
-| NOAA discovery and native reads | `mrms`, `goes`, `goes_native`, `goes_staging` |
-| Earth2Studio-compatible source and storage | `earth2_sources`, `earth2_io`, `monthly`, `monthly_stream` |
-| Concurrent GOES scheduling | `goes_shared`, `goes_rollout`, `jobs_goes` |
-| MRMS jobs | `jobs_mrms`, `mrms_profile`, `mrms_pipeline`, `mrms_tuning` |
-| Operational records and index | `runlog`, `index`, `job_status` |
-| Notebook controls and CLI | `ui`, `cli`, `viewer`, `report_ui`, `report_cli` |
-| Quality/reporting | `diagnostics`, `dataset_report`, `report_views`, `mrms_radar_figures` |
-| HF backup/restore | `goes_backup`, `jobs_backup`, `hf_storage`, `view_backup` (MRMS restoration) |
+| core | Types, paths, transport, UTC and serialization |
+| sources | Native NOAA discovery, decoding and Earth2Studio adapters |
+| ingest | GOES/MRMS pipelines, monthly writers and recovery |
+| storage | Zarr archives, remote storage and annual backups |
+| jobs | CLI, status/index, profiles, cleanup and Polaris orchestration |
+| processing | Separate derived scientific transformations and stores |
+| reporting | Diagnostics, metrics, reference comparisons and radar figures |
+| ui | Fetch controls, explorer, rendering and report controls |
 
-Keep scripts thin: `scripts/dataset_jobs.py` for operations and
-`scripts/dataset_report.py` for diagnostics/exports. Avoid new one-off watchers.
-The report script also exposes `radar-figure`; its annual full-CARIB source
-read should follow the one-day pilot and run only while GOES is paused. It
-stores derived counts and figure files, never another raw GRIB archive. See
-[the MRMS coverage guide](mrms_roi_and_radar_coverage.md).
-Use the supported verified-pause handoff to change worker settings; never edit a
-running snapshot. GOES global limits do not multiply by band count. MRMS retains
-four product-month writers, eight downloads each and one decode slot each.
+All repository imports use these packages. Do not add old flat-module wrappers.
+The two script entry points and five notebooks call the same shared functions.
+Default report paths resolve from the project root even when Jupyter starts in
+notebooks/. Explicit user paths remain caller-relative. CPU ingestion must not
+require optional processing or GPU packages just to import its commands.
 
 ## Notebooks and checks
 
@@ -85,7 +81,7 @@ Author `.py` percent-format sources and regenerate clean `.ipynb` partners:
 
 ```bash
 python -m jupytext --to ipynb notebooks/02_goes.py
-python -m pytest tests/test_goes_shared.py tests/test_job_status.py tests/test_jobs.py -q
+python -m pytest tests/ingest/test_goes_shared.py tests/jobs/test_job_status.py tests/jobs/test_jobs.py -q
 ```
 
 Choose tests for the changed behavior. Validate source values, coordinates,
@@ -269,7 +265,7 @@ placement, external access or a production speedup.
 Run the focused orchestration checks with:
 
 ```bash
-python -m pytest -q tests/test_goes_multinode.py tests/test_polaris_goes.py
+python -m pytest -q tests/jobs/test_goes_multinode.py tests/jobs/test_polaris_goes.py
 bash -n jobs/polaris_goes_multinode.pbs jobs/polaris_goes.pbs
 ```
 
@@ -310,7 +306,25 @@ shell syntax and Python compilation. This is fixture-based workstation evidence,
 not a completed live Polaris GOES pilot. A short repeatable subset is:
 
 ```bash
-python -m pytest -q tests/test_polaris_goes.py tests/test_goes_shared.py \
-  tests/test_jobs.py tests/test_mrms_profiles.py
+python -m pytest -q tests/jobs/test_polaris_goes.py tests/ingest/test_goes_shared.py \
+  tests/jobs/test_jobs.py tests/jobs/test_resources.py
 bash -n jobs/polaris_goes.pbs jobs/polaris_mrms.pbs
 ```
+
+## Maintenance and validation
+
+Tests are grouped under ingest, jobs, storage, reporting and processing. The CPU
+suite keeps small real-process I/O tests; optional Icechunk cases run in the separate
+processing environment. Live network comparisons are explicit experiments.
+
+The November 2026 migration retained native archive paths, scientific IDs, all
+596 historical sample audits and 1,784 diagnostic rows. Completed study task
+receipts now live in one atomic study.json per study; older files remain readable.
+Status queries continue to use typed tasks and avoid ephemeral paths. Default
+reports require neither Git metadata nor code-file hashes; scientific algorithm
+versions and data integrity hashes have distinct roles.
+
+Keep only current operational output and unresolved failures. Cleanup previews
+must not write files or access remote credentials. Unknown result folders are
+protected until their owner establishes they are disposable. See
+[optional exports](evidence/README.md) and [job entry points](../jobs/README.md).

@@ -89,12 +89,14 @@ Choose the same scratch path as the recorded run when recovering partial work.
 To change resource settings after a verified drain:
 
 ```bash
-python scripts/dataset_jobs.py handoff goes --wait-for-pause \
+python scripts/dataset_jobs.py pause goes --output results/study-goes-native
+# Wait for verified exit 75, run an explicit benchmark if needed, then:
+python scripts/dataset_jobs.py resume goes --shared-profile jobs/goes_workstation.json
   --profile jobs/goes_workstation.json --output results/study-goes-native \
   --scratch results/study-scratch
 ```
 
-The waiting handoff pins its replacement code/configuration immediately so later
+The waiting handoff copies its replacement code/configuration immediately so later
 workspace edits cannot change it. After the pause receipt, mount, capacity and
 completed checkpoints verify, it launches the earliest unfinished chronological month.
 It does not rerun benchmarks. Half-year stages advance automatically, switching
@@ -172,7 +174,9 @@ The handoff can schedule this comparison in the gap between a verified drain
 and the next GOES run:
 
 ```bash
-python scripts/dataset_jobs.py handoff goes --wait-for-pause \
+python scripts/dataset_jobs.py pause goes --output results/study-goes-native
+# Wait for verified exit 75, run an explicit benchmark if needed, then:
+python scripts/dataset_jobs.py resume goes --shared-profile jobs/goes_workstation.json
   --mrms-source-benchmark --profile jobs/goes_workstation.json \
   --output results/study-goes-native --scratch results/study-scratch
 ```
@@ -200,13 +204,13 @@ The reader rechecks ordered source identities and raw-array batch checksums on
 resume; any untrusted tail is preserved for diagnosis and replayed. Do not remove
 scratch or use an old “running” launcher label as evidence of active work.
 
-Use a newly pinned code snapshot and `resume goes --phase all --begin-month
+Use a consistent execution copy and `resume goes --phase all --begin-month
 YYYY-MM --pipeline shared --shared-profile /pinned/jobs/goes_workstation.json`,
 with the normal destination, scratch and Linux-local index paths. The starting
 month must be the earliest unfinished month established by the checkpoints.
 Existing later partial months are retained and reused when admitted. The
 October 6 recovery starts in October 2021 after July–September archive checks.
-The launch record contains the exact command, snapshot hash and selected limits.
+The launch record contains the exact command, resolved configuration and selected limits.
 Confirm advancing committed counts before declaring the job active.
 
 Completed archives are hash-checked as chronological admission reaches their
@@ -868,7 +872,7 @@ To inspect the allocation use `qstat -f JOBID` and later `qstat -x -f JOBID`.
 To leave the readable per-partition tables running:
 
 ```bash
-watch -n 30 -t -- "$ECORE_PYTHON" -m ecore_weather.jobs_multinode status \
+watch -n 30 -t -- "$ECORE_PYTHON" -m ecore_weather.jobs.jobs_multinode status \
   --state "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study"
 ```
 
@@ -916,7 +920,7 @@ checking that **no fetch or snapshot publisher is running**, consolidate them
 from a short compute allocation using local SSD:
 
 ```bash
-"$ECORE_PYTHON" -m ecore_weather.jobs_multinode merge \
+"$ECORE_PYTHON" -m ecore_weather.jobs.jobs_multinode merge \
   --state "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study" \
   --scratch /local/scratch/ecore-index-merge \
   --destination "$ECORE_PROJECT_ROOT/ecore-weather/state/archive_index.duckdb"
@@ -927,57 +931,15 @@ this merge operation also preserves run, task, benchmark and backup history.
 No research archives are deleted by consolidation. The workstation fetch and
 its database remain independent.
 
-### Single-node recovery for September 2024 through April 2025
+<a id="single-node-recovery-for-september-2024-through-april-2025"></a>
+### Single-node recovery
 
-Use the normal `jobs/polaris_goes.pbs` wrapper with explicit dates. To include
-**all of April**, the end is **2025-05-01**, excluded. `2025-04-01` would stop
-before April. GOES-16/19 requests split automatically at the April 7 handoff.
-Verified archives from either satellite are reused when encountered.
+Use the same destination and shared partial-checkpoint directory when resubmitting.
+Set PBS_GOES_START and PBS_GOES_END to the intended UTC interval; end is excluded.
+Follow [submission](#study-submission-and-monitoring). Do not overlap another node's
+source-month ownership. Existing verified monthly archives are reused and published
+partial batches are restored before additional NOAA reads.
 
-First let the older multi-node allocation finish before updating its checkout
-or launching overlapping fetches. Make the tested recovery changes available
-in the Polaris repository, then submit from that repository:
-
-```bash
-source jobs/polaris.env.sh
-export PBS_GOES_START=2024-09-01
-export PBS_GOES_END=2025-05-01
-qsub -A "$ECORE_PBS_ACCOUNT" \
-  -v "$ECORE_PBS_ENV_VARS,ECORE_PBS_MODE=study,PBS_GOES_START,PBS_GOES_END" \
-  jobs/polaris_goes.pbs
-```
-
-This uses one node, the existing Polaris profile and a 24-hour request. No new
-profile, credential export or code-lineage check is required. Actual runtime
-is not guaranteed; exit 75 remains resumable. The default shared recovery root
-is the same `ecore-weather/state/goes/study/partial-archives` used by the
-multi-node job. Its store identity depends on native scientific selections and
-canonical destination paths, not partition names or physical hosts. Compatible
-part-1 and part-2 recovery data can therefore be reused by this single-node run.
-If an earlier job used a custom destination or checkpoint root, retain those
-explicit overrides rather than silently writing somewhere else.
-
-The single-node progress snapshot is at the study root, rather than under a
-partition directory:
-
-```bash
-watch -n 30 -t -- "$ECORE_PYTHON" scripts/dataset_jobs.py status goes \
-  --progress "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study/progress.json" \
-  --start 2024-09-01 --end 2025-05-01
-```
-
-The source-recovery update distinguishes three outcomes: successful range/full
-reads, checksum-confirmed unavailable observations, and deferred unconfirmed
-reads. A confirmed malformed source is recorded automatically and the band
-continues. Deferred bands keep their verified prefixes and leave the month
-incomplete; the job returns 75 with pending-source details. Other bands continue.
-Do not reset saved selections or remove partial checkpoint folders to work
-around the old file-signature error. See [the recovery policy](developer_guide.md#automatic-source-error-recovery).
-
-A closed index snapshot is published at the study root on completion/shutdown.
-Retain it for consolidation with earlier partition history; never open an Eagle
-snapshot for concurrent writes. PBS submission and a live recovery test remain
-manual: fixture tests do not establish remote success.
 
 ### GOES memory protection and recovery
 
@@ -1060,174 +1022,24 @@ same dates, destination and state on resubmission. Pull only when no active job
 uses that checkout, and submit a **fresh PBS wrapper** for the new environment
 settings; releasing an older queued script retains its old exported RSS limit.
 
-### Debugging a GOES job that ends without output
+<a id="debugging-a-goes-job-that-ends-without-output"></a>
+### Debugging startup
 
-PBS `job_state = F` means finished, not successful. Pilot **7762801** ended
-with `Exit_status = 1`, no recorded CPU work and empty output. Its start/exit
-timestamps span ten seconds even though sampled walltime is zero. The scheduler
-allocated a node; this was not a continued queue wait. `Stageout_status = 1`
-means stage-out succeeded, not that an output error occurred, according to the
-[PBS reference guide](https://help.altair.com/2024.1.0/PBS%20Professional/PBSReferenceGuide2024.1.pdf).
-With joined output (`Join_Path = oe`), the `.e` file may normally be empty.
+Inspect qstat -x -f JOBID, especially Exit_status, comment, walltime and output paths.
+Omit Variable_List when sharing output because it can contain credentials.
+The wrapper prints its entry, failing phase and actual exit status. Use a bounded
+compute-node pilot to test imports, NOAA access, range/full reads and archive
+publication. A wrapper dry run validates setup only. Never use Git cleanliness or
+revision checks as job-startup conditions. Follow the pilot instructions above.
 
-The old wrapper could exit silently at its revision/clean-checkout checks. A
-local reproduction returned exit 1 with zero bytes on both output streams.
-This explains a possible failure, not a confirmed remote cause. Those Git
-checks are now **removed**, including the required revision variable, from
-both wrappers. Do not reintroduce commit or code-hash checks unless explicitly
-requested by the developer; optional lineage metadata must never stop a job.
 
-Both wrappers print a message immediately, name setup phases and report the
-exit status. One small `startup.log` in the source/mode state directory retains
-wrapper messages and is overwritten on the next attempt. Application output
-continues through PBS. No environment dump or general shell tracing is used.
-An exit before the first message still needs shell-startup/PBS investigation.
+### Coordinator database recovery
 
-1. **Recover scheduler evidence.** Run this for the pilot and job 7762846. It
-   deliberately excludes potentially sensitive environment values:
+The historical failure came from mixing read-only and writable DuckDB connections
+inside one coordinator. Coordinator queries now share its writer lock/configuration;
+external viewers remain read-only. Never replace an index while its writer is active.
+See [recovery](#progress-and-recovery) and the developer guide for source failures.
 
-   ```bash
-   qstat -x -f -F json JOBID | jq '.Jobs | map_values({
-     Job_Name, job_state, Exit_status, comment, Output_Path, Error_Path,
-     resources_used, exec_host, stime, obittime, Stageout_status
-   })'
-   ```
-
-   Read the actual `Output_Path` (PBS prefixes it with a hostname), and confirm
-   its parent directory is writable. See [PBS output issues](https://docs.alcf.anl.gov/running-jobs/known-issues/).
-
-2. **Use a short interactive allocation.** Keep any competing queued fetch held
-   and confirm no GOES job is using the same archives/state. From the repository:
-
-   ```bash
-   source jobs/polaris.env.sh
-   qsub -I -A "$ECORE_PBS_ACCOUNT" -q debug \
-     -l select=1:system=polaris:ncpus=64 \
-     -l filesystems=home:eagle -l walltime=00:20:00 \
-     -v "$ECORE_PBS_ENV_VARS"
-   ```
-
-   Once PBS gives a compute-node shell, run a short study **dry run**:
-
-   ```bash
-   cd /eagle/lighthouse-upr/ecore-weather/repo
-   export ECORE_PBS_MODE=study ECORE_DRY_RUN=1
-   export PBS_GOES_START=2021-01-01 PBS_GOES_END=2021-01-02
-   bash jobs/polaris_goes.pbs
-   ```
-
-   This checks the wrapper, Python/date handling, quota, scratch and MPI launch,
-   then prints the plan. The script's `#PBS` lines are comments when run inside
-   an allocation. Inspect the terminal and `ecore-weather/state/goes/study/startup.log`.
-
-   **In that same compute allocation, test real NOAA discovery next:**
-
-   ```bash
-   timeout 120s "$ECORE_PYTHON" -m ecore_weather.pbs check-noaa \
-     --polaris-proxy --start 2021-01-01T12:00:00Z --minutes 60 --satellite 16
-   ```
-
-   This uses the production GOES discovery function and anonymous S3 listing,
-   with the documented outbound proxy and all eight study bands. It reports
-   matching files/scans and listed object bytes; **no imagery is downloaded**.
-   Listing transfers a small metadata response. Zero matching observations is
-   distinguished from a failed network request. The 120-second timeout prevents
-   a connection failure from consuming the interactive allocation. It proves
-   listing access, not GET/range-read, HDF5 or archive-writing performance.
-   Exit the interactive shell after these checks. This follows the
-   [documented Polaris approach](https://docs.alcf.anl.gov/polaris/running-jobs/).
-
-3. **Validate imagery in pilot mode.** After local setup and discovery succeed,
-   repeat the existing four-context pilot with its 32 GiB ceiling and short
-   pilot date window. Require exit 0, `pilot-summary.json`, exact archive checks
-   and no-download reuse before another study job. The pilot exercises staged
-   downloads, C02 range reads, HDF5 cropping, local/Eagle Zarr publication and
-   reuse. A full day is a separate larger validation run, not a dry run: it can
-   consume substantial transfer and should wait until this pilot passes.
-   A one-year study uses
-   `PBS_GOES_START=2021-01-01` and `PBS_GOES_END=2022-01-01`.
-
-Publish wrapper updates to Polaris before testing them. **Already submitted
-jobs contain the old PBS script**: updating a repository file does not update
-that stored script. Replace an old queued submission with a fresh one using the
-corrected wrapper. Only one job may write these archives/state at a time.
-If an immediate startup message is still absent, ask ALCF support to investigate
-shell startup/output delivery; do not assume the NOAA reader was reached.
-
-### Recovery after GOES job 7765036
-
-The October 21 study failed in the coordinator's task-index update with:
-
-```text
-Connection Error: Can't open a connection to same database file
-with a different configuration than existing connections
-```
-
-The heartbeat/progress monitor opened the live database read-only while another
-thread in that same coordinator opened it writable. This was an application
-connection-mode race, not evidence of a damaged Zarr archive, an S3 error or an
-external user's long-held SQL lock. The fixed internal monitor uses the same
-writable connection configuration and lock as updates and closed index copies.
-External viewers remain read-only; Polaris status uses the shared progress JSON.
-See [DuckDB concurrency guidance](https://duckdb.org/docs/stable/connect/concurrency).
-Repetitive worker-cancellation tracebacks are suppressed; the root failure is
-still reported. Scratch messages now state the PBS durability limitation.
-
-The user-supplied final progress table records:
-
-| Source month | Selected band observations | Verified observations | In completed Eagle archives | In unfinished node-local stores |
-| --- | ---: | ---: | ---: | ---: |
-| 2021-01 | 35,560 | 21,637 | 4,445 | 17,192 |
-| 2021-02 | 32,256 | 21,120 | 0 | 21,120 |
-| 2021-03 | 35,285 | 18,504 | 0 | 18,504 |
-| 2021-04 | 34,396 | 18,128 | 0 | 18,128 |
-| Total | 137,497 | 79,389 | 4,445 | 74,944 |
-
-One band observation means one scan of one band, not a complete eight-band
-model input. These counts describe the last saved snapshot, not a fresh archive
-inventory. January C02 is the only reported completed band-month. Its physical
-ZIP and `complete.json` on Eagle are reusable independently of the other bands
-and a whole-month completion report. The next fetch validates that archive.
-
-The other 74,944 observations had verified eight-scan batches on the node, but
-their arrays were not published to Eagle. Shared progress JSON/SQL counts do
-not contain those pixels. ALCF [wipes node SSD between jobs](https://docs.alcf.anl.gov/data-management/filesystem-and-storage/#local-node-ssd).
-Under this wrapper, treat those partial observations as requiring refetching
-after the allocation ends. A new job also uses a different job-specific scratch
-directory. No automatic cross-job partial-store restoration is implemented.
-Thus 5.6% of the reported verified observation count was in a completed archive;
-this is not a percentage of retained storage or elapsed compute time.
-
-The rounded rows total 2,343.31 GiB (about 2.52 decimal TB) returned in 5:56:43,
-approximately 940 Mb/s across the application. Individual 20–40 Mb/s band rates
-are not the aggregate network rate. January C02 accounts for 175.24 GiB of
-returned source bytes, not retained Zarr size. These figures do not identify a
-proxy, CPU or NIC bottleneck and do not justify changing concurrency alone.
-
-Use the existing monitor and canonical markers to inspect recovery evidence:
-
-```bash
-"$ECORE_PYTHON" scripts/dataset_jobs.py status goes \
-  --progress "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study/progress.json" \
-  --start 2021-01-01 --end 2022-01-01
-find "$ECORE_PROJECT_ROOT/ecore_eo_datasets/goes/ABI-L2-CMIPF" \
-  -name complete.json -exec jq -r \
-  '[input_filename, .band, .observations, .stored_bytes] | @tsv' {} +
-```
-
-The first command is historical progress; the second lists durable completion
-markers and retained bytes. It does not replace the fetcher's archive read-back.
-Do not delete the index or partial research data to resolve this connection race.
-
-For a queued continuation, hold it with `qhold JOBID`, update the repository on
-Polaris while no fetch uses it, then release it with `qrls JOBID`. This fix is
-in Python modules, so an already-queued job using the current wrapper can load
-the correction at startup; no PBS-script replacement is needed for this fix.
-Keep the same study dates and archive destination to reuse completed bands.
-Confirm that January C02 is reused and fresh checkpoint counts advance.
-Only completed band-months remain durable recovery points on Eagle. Preserving
-partial months across allocations would require a separate storage/workflow
-change; it is not part of this connection fix.
 
 ### Completed MRMS production evidence
 
@@ -1244,3 +1056,47 @@ The allocation is in **node-hours**. One node for 1:14:14 is approximately
 execution time; it is not the allocation deduction. A transaction may take time
 to become visible. Per-band average transfer rates include waiting and processing
 and are not historical NIC-speed measurements.
+
+
+## Read-only database queries
+
+
+The canonical live monitor is `python scripts/dataset_jobs.py status goes`.
+It checks process identity and reads current aggregate counters. SQL alone cannot
+prove that a job is alive. Use read-only connections, retry brief coordinator
+locks, and never rebuild/replace a live index while the job writes.
+
+```python
+from pathlib import Path
+import duckdb
+with duckdb.connect('results/archive_index.duckdb', read_only=True) as db:
+    display(db.execute(Path('docs/sql/fetch_progress.sql').read_text()).fetchdf())
+```
+
+The query uses typed band/product-month tasks, not per-source rows or ephemeral
+scratch paths. Unknown attempt timestamps stay null. Completed counts and saved
+checkpoints mean different things; changing table status does not verify an archive.
+`goes_2026_progress.sql` is a fixed-window example for January–June 2026. For other
+windows prefer CLI date filters. Inspect current table schemas before adapting SQL.
+
+HF annual ZIPs are backup containers. They can expose small year manifests without
+restoring all data, but DuckDB does not make Zarr pixels into rows automatically.
+The earlier bounded remote probe found useful month-summary access; its obsolete
+probe directories are removed. We do not claim that caches eliminate fresh
+network transfers. Restore a selected verified month with notebook 03 before
+reading bounded xarray/Zarr pixel batches, then register aggregate tables if needed.
+Use known manifest/member paths rather than repeatedly scanning every annual ZIP.
+See [storage](storage_and_data_management.md) for remote identity, receipts and byte representations.
+
+## Compact records and cleanup
+
+The jobs package reads older individual month receipts and the new coordinator-owned
+study.json journal. New completions update that single atomic journal. Consolidate
+older completed receipts with `dataset_jobs.py cleanup --consolidate-receipts`;
+preview is read-only and `--apply` requires no active fetch. Raw archives and
+partial scan batches are separate and must be retained.
+
+Routine output contains the current run/configuration, source-specific progress,
+one bounded log and portable study receipts. Historical measurements remain in
+DuckDB. Unknown folders and unresolved recovery cases are protected. Optional
+[evidence exports](evidence/README.md) are never required for normal resume.

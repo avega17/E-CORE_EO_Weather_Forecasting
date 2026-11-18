@@ -35,7 +35,7 @@ ecore_refresh_quota() {
         return 1
     fi
     if ! quota_value="$(printf '%s\n' "$quota_output" | "$quota_python" \
-        "$ECORE_CODE_ROOT/src/ecore_weather/pbs.py" quota --project "$ECORE_QUOTA_PROJECT" --filesystem eagle)"; then
+        "$ECORE_CODE_ROOT/src/ecore_weather/jobs/pbs.py" quota --project "$ECORE_QUOTA_PROJECT" --filesystem eagle)"; then
         return 1
     fi
     export ECORE_QUOTA_FREE_GIB="$quota_value"

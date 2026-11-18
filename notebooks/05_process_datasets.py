@@ -12,7 +12,7 @@ if __name__ != '__mp_main__':
     import sys
     if __name__ == '__main__' and get_ipython() is None:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
-        from ecore_weather.process_cli import main
+        from ecore_weather.processing.process_cli import main
         raise SystemExit(main())
 
 # %% [markdown]
@@ -38,7 +38,7 @@ if __name__ != '__mp_main__':
     os.chdir(root)
     sys.path.insert(0,str(root/'src'))
     from IPython.display import display
-    from ecore_weather.process_ui import create
+    from ecore_weather.ui.process_ui import create
 
 # %% [markdown]
 # ## Choose a sample and inspect its preparation

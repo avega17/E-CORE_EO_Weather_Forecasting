@@ -20,7 +20,7 @@ ecore_code_directory
 if ! test -x "$ECORE_PYTHON"; then ecore_fail "Prepared Python is not executable: $ECORE_PYTHON"; fi
 ecore_walltime 600
 ecore_phase=multi-node-launch
-command=("$ECORE_PYTHON" -m ecore_weather.jobs_multinode launch
+command=("$ECORE_PYTHON" -m ecore_weather.jobs.jobs_multinode launch
     --config "${ECORE_GOES_PARTITIONS:-$code_root/jobs/goes_polaris_partitions.json}"
     --nodefile "$PBS_NODEFILE" --code-root "$code_root" --python "$ECORE_PYTHON"
     --state "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/$ECORE_PBS_MODE"

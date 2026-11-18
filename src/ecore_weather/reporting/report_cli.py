@@ -1,0 +1,92 @@
+"""Diagnostics and performance report from completed, read-only research archives."""
+from __future__ import annotations
+import argparse
+from pathlib import Path
+import sys
+
+from ecore_weather.reporting import dataset_report as report
+from ecore_weather.core.common import PATCHES
+
+
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('operation',choices=['inventory','diagnose','benchmark','report','radar-figure'])
+    p.add_argument('--location',default='/mnt/p/ecore_eo_datasets')
+    p.add_argument('--output',default=report.DEFAULT_OUTPUT)
+    p.add_argument('--tables',action='store_true',help='Include aggregate CSV tables in explicit report exports')
+    p.add_argument('--evidence-dir',help='Optional compact evidence export directory; never used by routine runs')
+    p.add_argument('--source',choices=['goes','mrms'])
+    p.add_argument('--product');p.add_argument('--band',type=int)
+    p.add_argument('--start');p.add_argument('--end',help='UTC exclusive end')
+    p.add_argument('--patch',nargs='+',choices=['Whole ROI',*PATCHES],
+                   help='Named Caribbean patches; whole ROI is always included. Omit to include all patches.')
+    p.add_argument('--full',action='store_true',help='Audit every selected completed observation; otherwise sample by quarter')
+    p.add_argument('--batch-frames',type=int,default=8);p.add_argument('--memory-mib',type=int,default=512)
+    p.add_argument('--benchmark-kind',choices=['local','cross-month','backend','goes-network','mentor','hf'],default='local')
+    p.add_argument('--hf-root',help='HF bucket root, without credentials; restore verified backup members first')
+    p.add_argument('--repeats',type=int,default=3)
+    p.add_argument('--logs',nargs='*',default=[])
+    p.add_argument('--year',type=int,help='UTC year for the MRMS radar-quality figure; default 2022')
+    p.add_argument('--figures-dir',default='figures',help='Directory for generated figures')
+    p.add_argument('--view',choices=['macro','regional','both'],default='both')
+    p.add_argument('--render-only',action='store_true',help='Render an existing radar summary without any NOAA access')
+    p.add_argument('--pilot-day',help='UTC YYYY-MM-DD: check one day and source-to-archive equality before the annual read')
+    p.add_argument('--workers',type=int,default=4,help='Bounded full-grid MRMS source readers for radar-figure')
+    p.add_argument('--center-lon',type=float,default=-66.4)
+    p.add_argument('--center-lat',type=float,default=18.2)
+    p.add_argument('--training-side-km',type=float,default=512)
+    p.add_argument('--future-side-km',type=float,default=1024)
+    args=p.parse_args(argv)
+    filters={k:getattr(args,k) for k in ('source','product','band','start','end')}
+    if args.operation=='radar-figure':
+        from ecore_weather.reporting import mrms_radar_figures as radar
+        if args.year is not None and (args.start or args.end):p.error('Use --year or --start/--end, not both')
+        if args.pilot_day and args.render_only:p.error('A pilot reads sources; do not combine with --render-only')
+        if args.pilot_day:
+            result=radar.pilot_day(args.location,args.pilot_day,args.output,workers=args.workers)
+        else:
+            result=radar.run(args.location,args.year or (int(args.start[:4]) if args.start else 2022),args.output,workers=args.workers,
+                center=(args.center_lon,args.center_lat),training_side_km=args.training_side_km,
+                future_side_km=args.future_side_km,start=args.start,end=args.end,figures_dir=args.figures_dir,
+                view=args.view,render_only=args.render_only)
+    elif args.operation=='inventory':result=report.inventory(args.location,args.output,**filters)[0]
+    elif args.operation=='diagnose':
+        result=report.diagnose(args.location,args.output,full=args.full,batch_frames=args.batch_frames,
+            memory_mib=args.memory_mib,patches=None if args.patch is None else {name:PATCHES[name] for name in args.patch if name!='Whole ROI'},
+            progress=lambda done,reused,path,stamp:print(f'{done} diagnosed; {reused} reused; {stamp} {path}',flush=True),**filters)
+    elif args.operation=='report':
+        report.inventory(args.location,args.output,**filters)
+        report.index_measurements(args.output)
+        if args.logs:report.import_measurements(args.logs,args.output)
+        result=report.export_report(args.output,tables=args.tables)
+        if args.evidence_dir:
+            from ecore_weather.core.common import write_json
+            write_json(Path(args.evidence_dir)/'summary.json', result)
+    else:
+        from ecore_weather.reporting import report_benchmarks as bench
+        if args.benchmark_kind=='local':result=bench.local_reads(args.location,args.output,args.repeats,**filters)
+        elif args.benchmark_kind=='cross-month':result=bench.cross_month_reads(args.location,args.output,args.repeats,**filters)
+        elif args.benchmark_kind=='backend':result=bench.backends(args.location,args.output,args.repeats,**filters)
+        elif args.benchmark_kind=='hf':
+            if not args.hf_root:p.error('--hf-root required')
+            result=bench.hf_restore(args.hf_root,args.output)
+        else:
+            from ecore_weather.jobs.jobs_policy import ensure_paused
+            ensure_paused()
+            if args.benchmark_kind=='goes-network':
+                from ecore_weather.reporting.jobs_benchmarks import main as benchmark_main
+                return benchmark_main(['--output',str(Path(args.output)/'goes-final')])
+            from ecore_weather.reporting import benchmark
+            from ecore_weather.sources import mrms
+            results=[]
+            for begin,end in [('2022-09-18','2022-09-25'),('2024-09-15','2024-09-22')]:
+                selection=benchmark.comparable_hours(mrms.discover(begin,end,product=mrms.DEFAULT_PRODUCT,cadence_minutes=60))
+                table,records=benchmark.run_mrms(selection,report_dir=Path(args.output)/'mentor',repeats=args.repeats,variants=['legacy','s3fs-1','obstore-4','obstore-process-4'])
+                if not records.matches_legacy.all():raise AssertionError('Mentor output equality failed')
+                results.append(table.to_dict('records'))
+            from ecore_weather.core.common import write_json
+            result={'weeks':results};write_json(Path(args.output)/'mentor.json',result)
+    print(result if args.operation!='diagnose' else {'processed':result['processed'],'reused':result['reused']})
+    return 0
+
+if __name__=='__main__':raise SystemExit(main())

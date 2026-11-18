@@ -40,20 +40,22 @@ if __name__ != '__mp_main__':
     import ipywidgets as w
     import pandas as pd
     from IPython.display import display,Markdown
-    from ecore_weather import dataset_report as report,report_benchmarks as bench
-    from ecore_weather.common import PATCHES
-    print('Repository commit:',subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip())
+    from ecore_weather.reporting import dataset_report as report
+    from ecore_weather.reporting import report_benchmarks as bench
+    from ecore_weather.core.common import PATCHES
+    if IN_COLAB:
+        print('Repository commit:',subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip())
 
 # %%
 if __name__ != '__mp_main__':
-    from ecore_weather.report_ui import create
+    from ecore_weather.ui.report_ui import create
     display(create())
 
 # %% [markdown]
 # ## Expected outputs
 # The report folder holds a separate DuckDB database, inventory, compact
 # summaries, a bounded diagnostic preview and benchmark evidence. Full audits
-# resume verified observation rows; code or archive changes create a new audit.
+# resume verified observation rows; changes to diagnostic definitions or archive contents create a separate audit.
 # Quartiles describe individual observations and patches, not pooled pixels.
 # Archive/source size ratios compare different representations; network bytes
 # and compressed NOAA object sizes are reported separately. Use notebook 03

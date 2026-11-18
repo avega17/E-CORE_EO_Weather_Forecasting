@@ -22,7 +22,7 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
         sys.path.insert(0, str(root / "src"))
         os.environ["ECORE_REPO_ROOT"] = str(root)
         os.environ["PYTHONPATH"] = str(root / "src") + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
-        from ecore_weather.cli import main
+        from ecore_weather.ui.cli import main
         raise SystemExit(main(SOURCE))
 
 # %% [markdown]
@@ -55,7 +55,8 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
                      if (p / "src/ecore_weather").exists()), Path.cwd())
         os.chdir(root)
     print("Repository:", root)
-    print("Commit:", subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip())
+    if IN_COLAB:
+        print("Commit:", subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip())
 
 # %%
 if __name__ != "__mp_main__":  # Spawned readers must not construct notebook widgets.
@@ -67,13 +68,20 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
     from IPython.display import display
     if get_ipython() is not None:
         get_ipython().run_line_magic("matplotlib", "inline")
-    from ecore_weather import benchmark, catalog, diagnostics, storage, ui, validation, visualization, view_frames
-    from ecore_weather.common import PATCHES
+    from ecore_weather.reporting import benchmark
+    from ecore_weather.storage import catalog as catalog
+    from ecore_weather.reporting import diagnostics
+    from ecore_weather.storage import archives as storage
+    from ecore_weather.ui import fetch_controls as ui
+    from ecore_weather.reporting import benchmark as validation
+    from ecore_weather.ui import maps as visualization
+    from ecore_weather.ui import view_frames
+    from ecore_weather.core.common import PATCHES
     SMOKE = os.getenv("ECORE_NOTEBOOK_SMOKE") == "1"
 
 # %%
 if __name__ != "__mp_main__":  # Spawned readers must not construct notebook widgets.
-    from ecore_weather import goes
+    from ecore_weather.sources import goes
     READER = goes
 # %% [markdown]
 # ## Choose files and save the selection
@@ -144,7 +152,7 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
 # %%
 if __name__ != "__mp_main__":  # Spawned readers must not construct notebook widgets.
     def fetch_data():
-        from ecore_weather import monthly
+        from ecore_weather.ingest import monthly
         with ui.FetchProgress(len(chosen["value"].assets), "GOES") as progress:
             report = monthly.fetch(chosen["value"], destination=controls["destination"].value,
                 workers=controls["workers"].value, report_dir=controls["output"].value,
@@ -155,7 +163,7 @@ if __name__ != "__mp_main__":  # Spawned readers must not construct notebook wid
                 read_profiles=__import__('json').loads(Path(controls['read_profiles'].value).read_text()) if controls['read_profiles'].value else None,
                 download_concurrency=controls['download_concurrency'].value,
                 staging_mib=controls['staging_mib'].value,
-                shared_config=(__import__('ecore_weather.goes_shared',fromlist=['SharedConfig']).SharedConfig(
+                shared_config=(__import__('ecore_weather.ingest.goes_shared',fromlist=['SharedConfig']).SharedConfig(
                     month_writers=controls['monthly_writers'].value,tail_months=controls['tail_months'].value,
                     download_concurrency=controls['download_concurrency'].value,local_readers=controls['local_readers'].value,
                     range_readers=controls['range_readers'].value,roi_budget_mib=controls['prefetch_mib'].value,

@@ -88,7 +88,7 @@ destination="${ECORE_DESTINATION:-$ECORE_PROJECT_ROOT/ecore_eo_datasets}"
 if test "$ECORE_PBS_MODE" != tune; then
     ecore_phase=python-and-dates
     ecore_require PBS_MRMS_START PBS_MRMS_END
-    validated_dates="$("$ECORE_PYTHON" -m ecore_weather.pbs "$PBS_MRMS_START" "$PBS_MRMS_END" "$ECORE_PBS_MODE")"
+    validated_dates="$("$ECORE_PYTHON" -m ecore_weather.jobs.pbs "$PBS_MRMS_START" "$PBS_MRMS_END" "$ECORE_PBS_MODE")"
     read -r start_date end_date <<< "$validated_dates"
 fi
 if test "$ECORE_PBS_MODE" = pilot; then

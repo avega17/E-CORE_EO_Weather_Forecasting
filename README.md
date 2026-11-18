@@ -1,38 +1,11 @@
 # NOAA radar and satellite subsets for Puerto Rico
 
-> Chronological GOES continuation reuses verified archives with two normal month owners
-> plus one C02-only tail. Use the status command for current completion counts. See
-> [current operating settings](docs/goes_parallel_pipeline.md).
 
-The local continuation supports continuous execution with `--max-hours 0` and
-`--backup-after-complete`: finish the native GOES study through June 2026, then
-upload verified annual backups containing all eight bands. The workstation
-profile uses 8 GiB queued ROI memory and 64 GiB Linux-disk source staging. See
-[launch and backup commands](docs/study_jobs.md#local-fetch-followed-by-annual-hf-backup).
-The project now has a user-confirmed **10 TB Eagle quota**, sufficient for the
-current raw GOES study estimate. Preprocessed data, validation datasets and model
-weights still need separate storage estimates. Eagle is the intended ALCF home;
-HF remains backup/transfer storage, with optional GOES restoration still future work.
-
-For Polaris startup failures or empty PBS output, use the
-[short interactive debugging procedure](docs/study_jobs.md#debugging-a-goes-job-that-ends-without-output).
-PBS jobs do not require commit checks or a clean Git checkout.
-Polaris GOES now uses three normal month owners and durable incremental partial
-checkpoints, so a later allocation can restore verified partial work. See
-[walltime and resubmission](docs/study_jobs.md#capacity-walltime-and-resubmission).
-Production RAM protection is separate from bounded benchmark limits; see
-[the RSS explanation and recovery guide](docs/study_jobs.md#goes-memory-protection-and-recovery)
-after job 7776485's application-imposed 64 GiB stop.
-
-Source [the Polaris configuration](jobs/polaris.env.sh) for non-sensitive job
-settings and an automatically refreshed project-quota estimate.
-
-
-GOES source recovery now retries recognized read failures, falls back to a bounded
-full-file read when needed, and records checksum-confirmed malformed observations
-as explicit gaps. Unconfirmed failures defer only the affected band; its month
-remains incomplete. Existing Eagle partial checkpoints are reusable. See the
-[final single-node recovery job](docs/study_jobs.md#single-node-recovery-for-september-2024-through-april-2025).
+Start with the [notebooks](docs/notebooks.md), [storage overview](docs/storage_and_data_management.md)
+and [job instructions](jobs/README.md). Source code is grouped by responsibility
+in eight subpackages; the [developer guide](docs/developer_guide.md) maps them.
+Native datasets and derived processing remain separate. Use live status commands
+for job progress; historical documentation is not evidence of an active fetch.
 
 This project prepares reproducible raw subsets from NOAA MRMS radar and GOES
 satellite archives for weather-forecasting research. The notebooks use custom
@@ -129,9 +102,9 @@ and installs the notebook dependencies. Never store credentials in a notebook.
 - [Dataset processing, virtual catalogs, DAS variants and Polaris scratch](docs/dataset_processing.md)
 - [GOES acquisition ROI and future training context](docs/goes_roi_training_study.md)
 - [MRMS ROI and 2022 radar-quality figure](docs/mrms_roi_and_radar_coverage.md) — CARIB grid, measured reflectivity footprint, mean RQI, and illustrative training regions.
-- [Mentor implementation review](docs/original_code_review.md)
-- [StormScope](docs/StormScope-paper-notes.md) and [CorrDiff](docs/CorrDiff-paper-notes.md) research notes
-- [Current plan](docs/development_plan.md), [documentation consolidation](docs/documentation_review.md) and [agent instructions](AGENTS.md)
+- [Mentor implementation review](docs/goes_parallel_pipeline.md)
+- [StormScope](docs/StormScope-paper-notes.md) and [CorrDiff](docs/StormScope-paper-notes.md) research notes
+- [Current plan](docs/development_plan.md), [documentation consolidation](docs/developer_guide.md) and [agent instructions](AGENTS.md)
 
 Use `scripts/dataset_jobs.py` for operational jobs and `scripts/dataset_report.py`
 for research reports. The portable MRMS wrapper is `jobs/mrms_study.sh`; configure

@@ -131,7 +131,7 @@ observations. Their timestamps span 50 minutes. Pixel gaps do not become missing
 files, and complete timestamps do not imply complete pixel coverage.
 
 ```python
-from ecore_weather.process_store import ProcessedSource
+from ecore_weather.processing.process_store import ProcessedSource
 
 source = ProcessedSource('/path/to/processed/selection/full')
 window = source(
@@ -167,7 +167,7 @@ limit. Resume skips completed blocks when applying the limit. A small consumer i
 while the current block is read:
 
 ```python
-from ecore_weather.process_store import iter_materialized_blocks
+from ecore_weather.processing.process_store import iter_materialized_blocks
 
 for source in iter_materialized_blocks(preparation, scratch_destination, release=True):
     # Read eligible windows listed in source.path / 'windows.parquet'.
