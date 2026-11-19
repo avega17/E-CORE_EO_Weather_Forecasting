@@ -11,7 +11,7 @@ phase=startup
 trap 'status=$?; echo "E-CORE processing ended | phase $phase | exit $status"' EXIT
 : "${ECORE_PROJECT_ROOT:?Source jobs/polaris.env.sh before submission}"
 task="${ECORE_PROCESS_TASK:-materialize}"
-case "$task" in setup|benchmark|materialize) ;; *) echo 'Use setup, benchmark or materialize for ECORE_PROCESS_TASK' >&2; exit 2;; esac
+case "$task" in setup|setup-benchmark|benchmark|materialize) ;; *) echo 'Use setup, setup-benchmark, benchmark or materialize for ECORE_PROCESS_TASK' >&2; exit 2;; esac
 code="${ECORE_CODE_ROOT:-$ECORE_PROJECT_ROOT/ecore-weather/repo}"
 python="${ECORE_PROCESS_PYTHON:-$ECORE_PROJECT_ROOT/ecore-weather/envs/processing/bin/python}"
 start="${ECORE_PROCESS_START:-2022-09-18}"
@@ -24,7 +24,7 @@ export TMPDIR="$scratch/tmp"
 mkdir -p "$TMPDIR"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 cd "$code"
-if [[ "$task" == setup ]]; then
+if [[ "$task" == setup || "$task" == setup-benchmark ]]; then
   phase=processing-environment
   : "${ECORE_PYTHON:?Set ECORE_PYTHON to the existing CPU ingestion environment}"
   module use /soft/modulefiles
@@ -40,7 +40,8 @@ if [[ "$task" == setup ]]; then
   "$python" -m pip install scipy==1.18.1 pyresample==1.35.0 satpy==0.59.0 virtualizarr==2.7.3
   "$python" -m pip check
   "$python" -c 'import scipy,pyresample,satpy,zarr,pyarrow; print("CPU processing imports passed")'
-  exit 0
+  if [[ "$task" == setup ]]; then exit 0; fi
+  task=benchmark
 fi
 phase=walltime
 walltime="$(qstat -f "$PBS_JOBID" | sed -n 's/^[[:space:]]*Resource_List.walltime = //p')"

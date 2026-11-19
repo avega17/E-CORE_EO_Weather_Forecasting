@@ -25,8 +25,8 @@ processing does not build a virtual catalog or require Icechunk.
 Create `environment-processing.yml` for CPU work. GPU packages belong in
 `environment-model.yml`; never upgrade acquisition to enable model experiments.
 
-On Polaris, `jobs/polaris_process.pbs` also provides `ECORE_PROCESS_TASK=setup`
-and `benchmark`. Setup runs on a compute node, clones the project's existing
+On Polaris, `jobs/polaris_process.pbs` also provides `ECORE_PROCESS_TASK=setup`,
+`benchmark` and `setup-benchmark`. Setup runs on a compute node, clones the project's existing
 CPU Conda environment into a separate processing environment, then installs the
 processing dependencies. It leaves the ingestion environment unchanged.
 
@@ -34,12 +34,12 @@ For a short 3 km timing comparison, source `jobs/polaris.env.sh` and submit:
 
 ```bash
 qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v "$ECORE_PBS_ENV_VARS,ECORE_PROCESS_TASK=setup" jobs/polaris_process.pbs
-# After setup exits successfully:
-qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
-  -v "$ECORE_PBS_ENV_VARS,ECORE_PROCESS_TASK=benchmark,ECORE_PROCESS_START=2022-09-18T12:00:00Z,ECORE_PROCESS_END=2022-09-18T20:00:00Z,ECORE_PROCESS_RESOLUTION=3" \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PROCESS_TASK=setup-benchmark,ECORE_PROCESS_START=2022-09-18T12:00:00Z,ECORE_PROCESS_END=2022-09-18T20:00:00Z,ECORE_PROCESS_RESOLUTION=3" \
   jobs/polaris_process.pbs
 ```
+
+Combining setup and benchmarking avoids requiring two queued debug jobs. With
+an already prepared environment, use `benchmark` alone.
 
 The benchmark compares 8/16/32/64 independent processes and a two-thread
 reference on the same eight-hour selection, with three rotated trials. These
