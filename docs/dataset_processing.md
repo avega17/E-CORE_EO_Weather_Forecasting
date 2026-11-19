@@ -26,9 +26,10 @@ Create `environment-processing.yml` for CPU work. GPU packages belong in
 `environment-model.yml`; never upgrade acquisition to enable model experiments.
 
 On Polaris, `jobs/polaris_process.pbs` also provides `ECORE_PROCESS_TASK=setup`,
-`benchmark` and `setup-benchmark`. Setup runs on a compute node, clones the project's existing
-CPU Conda environment into a separate processing environment, then installs the
-processing dependencies. It leaves the ingestion environment unchanged.
+`benchmark` and `setup-benchmark`. Setup runs on a compute node, builds a separate Conda environment from the Polaris Linux package lock through
+the site proxy, then installs the processing dependencies. It checks imports and
+a Zarr write and read-back. The previous offline clone failed when its package cache
+was incomplete.
 
 For a short 3 km timing comparison, source `jobs/polaris.env.sh` and submit:
 
@@ -242,6 +243,32 @@ allowance. The live run record is
 `process status` to read the durable checkpoint. Index coverage and an estimate
 do not establish that the full materialization has completed.
 
+## From observations to model windows
+
+```mermaid
+flowchart TD
+  G["Native GOES bands, separate grids"] --> Q["Decode calibration and check quality"]
+  M["Native MRMS reflectivity and bitmap"] --> Q
+  Q --> T["Match observations to ten-minute UTC slots using scan end times"]
+  T --> P["Optional cloud-height parallax correction"]
+  T --> R["Resample once onto the selected grid"]
+  P --> R
+  R --> A["1 km · 864 by 840 cells"]
+  R --> B["2 km · 432 by 420 cells"]
+  R --> C["3 km · 288 by 280 cells"]
+  A --> Z["Write a separate compressed Zarr for each grid"]
+  B --> Z
+  C --> Z
+  Z --> V["Read back batches and advance the verified prefix"]
+  V --> W["Choose six consecutive observations and separate verification targets"]
+```
+
+The three grids use the same projected bounds. Grid spacing controls the training
+and storage cost. A 1 km output grid retains finer source measurements where they
+exist, such as GOES C02. Infrared observations still have their native information
+content. GOES uses bilinear interpolation with valid contributors. MRMS uses the
+nearest native value, and quality flags remain categorical.
+
 ## Cloud heights and parallax
 
 The auxiliary native product is ABI-L2-ACHAF, not another forecast channel:
@@ -274,7 +301,48 @@ height evidence/native geometry/target grids; caches are bounded.
 [Satpy's parallax API](https://satpy.readthedocs.io/en/stable/api/satpy.modifiers.parallax.html)
 can replace undefined heights internally, so an independent uncertainty mask is
 required. It does not guarantee that existing native ROI margins support every
-corrected boundary pixel. Figures belong under figures/dataset-processing.
+corrected boundary pixel. Parallax figures belong under
+`figures/dataset-processing/parallax/`, and bounded model comparison figures
+belong under `figures/dataset-processing/model-checks/`.
+
+### Compare the effect of cloud height
+
+```mermaid
+flowchart TD
+  C["One GOES CMI cloud-band scan"] --> H["Find verified ACHAF from the same satellite"]
+  H --> T["Require height scan end at or before CMI end, within 20 minutes"]
+  T --> Q["Use finite heights with good quality flags"]
+  Q --> S["Shift apparent cloud positions using height and viewing geometry"]
+  S --> R["Resample directly onto the selected 1, 2 or 3 km grid"]
+  Q --> X["Keep unknown height and unsupported edges masked"]
+  X --> R
+  C --> U["Uncorrected resampling onto the same grid"]
+  U --> D["Compare both images on their common valid area"]
+  R --> D
+```
+
+Tall clouds can appear displaced from where they sit over the surface. That
+matters when comparing cloud structure with radar or associating features across
+channels. Notebook 05's **Compare parallax** button holds the source scan, band,
+grid, and common valid area fixed. Change the UTC slot and grid independently
+to see how interior shifts and edge losses behave. C08/C09/C10 stay unshifted
+under the current recipe.
+
+To start the storm windows first, add `--storm-heights-first --workers 4` to the
+ACHAF acquisition command above. The job includes earlier heights for the demo's
+input histories and then continues through the requested study period. The
+small `process parallax` investigation has its own 4 GiB transfer limit.
+The 17 verified pilot scans occupied 649,121 bytes across three ZIPs. Scaling
+that sample to an uninterrupted ten-minute study suggests about 11 GB of retained
+height data. Grid changes, quality and compression can change that estimate,
+and source transfer and temporary packing space are separate.
+
+On the workstation, resume the interrupted DAS build with the existing study
+configuration and its saved preparation selection after a successful disk
+write/read probe. The writer verifies every committed batch before advancing.
+That scan can take substantial time on the DAS while the displayed committed
+count stays fixed. The background height launcher starts only once the first new
+3 km checkpoint is written.
 
 ## Statistics, stock loading and inference
 
@@ -357,17 +425,79 @@ last input image. One January example beat that baseline across all eight bands
 at both leads; it does not establish regional forecasting skill. See the model
 notes for timings, static-field uncertainty and the example comparison.
 
-## NWP audit and minimal outputs
+## NAM/RRFS audit and storm demo
 
-`process nam-audit` probes one representative cycle in each study month and reads
-bounded indexed GRIB messages. Exact byte ranges and decoded fields/levels must
-match. The report distinguishes sample availability from complete cycle coverage,
-retains initialization/lead/valid time and accumulation units, and measures crop
-compression. It is not a bulk NWP ingest. The updated NOAA transition is checked
-separately from historical study coverage.
+The [metadata-only NAM audit](nam_audit.md) covers the full study period
+and includes a field catalog and storage estimates. It reads object listings
+and text indexes without downloading GRIB forecasts.
 
-Keep one processing database and current compact operation summaries. No per-pixel
-or per-source operational logs. Preserve source provenance in canonical native
-metadata. Successful disposable tests and retired formats are removed. Model
-training, full-study corrected materialization and forecast-skill validation are
-subsequent work.
+The earlier sample audit also decodes selected messages. From the checkout
+with the processing environment active:
+
+```bash
+python scripts/dataset_jobs.py process nam-audit --output results/dataset-processing
+```
+
+The 4 GiB audit checks each storm hour and samples three NAM cycles per study
+month. It reads only selected GRIB ranges and inspects one operational RRFS
+Puerto Rico case separately. Open the generated `nam-rrfs-audit.md` for readable
+coverage and size tables. The companion JSON preserves the selected run, lead,
+S3 availability timestamp and fallback evidence for each hour. Source reports
+are bounded samples outside the seven storm windows. An S3 archive timestamp
+cannot establish availability when the file was added or replaced after the
+forecast cutoff. Keep such hours visible as gaps.
+
+The November 19 audit found eligible NAM reflectivity in all 180 requested hours
+across Earl, Fiona, Philippe, Ernesto, and Erin. No eligible Puerto Rico nest
+files were found for Fred or Grace's combined 52 hours. It sampled 198 monthly
+cycles and decoded 133 NAM messages, plus one operational RRFS temperature
+message. The measured NAM footprint covers about 91.0% of the acquisition box
+on the 3 km grid and 95.9% of the centered model crop.
+
+Notebook 07 loads one NAM and GOES pair on demand. Notebook 08 uses a public
+storm catalog and fetches a single two-hour block on request. The three rows are
+independent ten-minute Flash forecasts. For the center hour H the model uses
+H−60 through H−10. NAM uses the newest exact-hour forecast available by H−10
+and falls back through older runs. The same NAM field appears in each row for
+hourly context, with its own units. Report GOES error only on common valid
+forecast and observation pixels.
+
+The demo data are published at the end of this guide. Colab uses a separate
+Python 3.12 environment for the CUDA 13 model wheels while the widget kernel may
+run a newer Python. For a Colab test of local, unpublished source, create a
+source-only bundle and place it at `/content/ecore-demo-source.zip` before setup.
+The first setup builds Earth2Grid against the runtime's CUDA compiler and can
+take several minutes. The model environment includes SciPy and uses a headless
+plotting backend. The notebook kernel displays the comparison figure.
+
+```bash
+python - <<'PY'
+from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
+with ZipFile('ecore-demo-source.zip', 'w', ZIP_DEFLATED) as bundle:
+    for path in Path('src/ecore_weather').rglob('*.py'):
+        bundle.write(path, path.as_posix())
+PY
+```
+
+[Public seven-storm dataset](https://huggingface.co/datasets/asvnpr/ecore-stormscope-demo)
+
+The public export is produced from verified 3 km stores:
+
+```bash
+python scripts/dataset_jobs.py process demo-export --demo-unit /path/to/full \
+  --elevation /path/to/caribbean-elevation.tif --demo-root /path/to/demo \
+  --output results/dataset-processing
+```
+
+Repeat `--demo-unit` for verified bounded stores covering an unfinished part of
+the study. The export keeps the documented approximate elevation calibration and
+the original native archives. The Colab execution checks an experimental
+Caribbean adaptation of the CONUS checkpoint against GOES observations.
+An L4 check produced all three ten-minute forecasts for one hour each of Fiona,
+Fred and Erin. Matching NAM fields were available for Fiona and Erin. Preparing
+the three forecast rows took about seven seconds per hour after the data and
+model had loaded.
+
+Keep one processing database and current compact operation summaries. Preserve
+source provenance with the native archives.

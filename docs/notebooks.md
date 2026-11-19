@@ -12,6 +12,8 @@ excluded. Restart the kernel and rerun setup after editing imported modules.
 | [03 Explore datasets](../notebooks/03_explore_datasets.ipynb) | Search local/HF archives, choose a band/time and visualize | Single map, bounded one-day/multi-day animations, storage summary, and an optional cached 2022 radar-quality figure |
 | [04 Dataset report](../notebooks/04_dataset_report.ipynb) | Inspect diagnostics and measured performance, export a report | Cached report tables, interactive summaries, CSV/Markdown/HTML exports |
 | [05 Process datasets](../notebooks/05_process_datasets.ipynb) | Decode and align native observations; create regional variants | Portable scientific indices, plain-Zarr physical arrays/masks, storage estimates, cloud-height correction and training-only statistics |
+| [07 NAM and GOES](../notebooks/07_baseline_forecasts_ESDA.ipynb) | Select an exact hour and compare the NAM Puerto Rico forecast with GOES | Matched maps and source times |
+| [08 StormScope Flash](../notebooks/08_StormScope_Flash_Inference_Testing.ipynb) | Load an hourly storm block and run the Flash engineering comparison | Three ten-minute forecasts with GOES observations and hourly NAM context |
 
 ## Fetch notebooks
 
@@ -100,7 +102,7 @@ at the :10 UTC slot of each hour, updates a cumulative summary after each
 month, and exports separate overview/regional PNG/SVG maps. Use `--render-only`
 to redraw a saved summary without NOAA access.
 Notebook 03 opens the two finished local PNGs under
-`figures/mrms-2022/`; opening the notebook never starts the annual NOAA read.
+`figures/mrms-radar-coverage/2022/`; opening the notebook never starts the annual NOAA read.
 [The MRMS coverage guide](mrms_roi_and_radar_coverage.md)
 explains the acquisition box, native pixels, and illustrative 512/1,024 km
 regions.

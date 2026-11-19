@@ -107,11 +107,38 @@ def create():
                     figure.savefig(target/f'{variable.value}-preview.png',dpi=150)
                 display(figure);plt.close(figure)
             except Exception as exc:display(Markdown(f'**{type(exc).__name__}:** {exc}'))
+    correction_day=w.DatePicker(value=datetime.date(2022,9,18),description='Preview date')
+    correction_time=w.TimePicker(value=datetime.time(16,10),description='Time UTC')
+    correction_band=w.Dropdown(options=[(f'C{b:02}',b) for b in (1,2,3,7,13)],value=13,description='Cloud band')
+    compare=w.Button(description='Compare parallax',layout=w.Layout(min_width='150px'),
+                     tooltip='Read one verified native GOES and ACHAF pair; use the selected grid')
+    def compare_frame(_):
+        compare.disabled=True
+        try:
+            with output:
+                output.clear_output(wait=True)
+                from matplotlib import pyplot as plt
+                from ecore_weather.ui.forecast_ui import parallax_comparison
+                from ecore_weather.core.paths import repository_root
+                stamp=f'{correction_day.value}T{correction_time.value}Z'
+                fig=parallax_comparison(location.value,stamp,correction_band.value,resolution.value)
+                if save.value:
+                    target=repository_root()/'figures/dataset-processing/parallax'
+                    target.mkdir(parents=True,exist_ok=True)
+                    fig.savefig(target/f'parallax-preview-C{correction_band.value:02d}-{correction_day.value}T{correction_time.value:%H%M}Z-{resolution.value}km.png',dpi=150)
+                display(fig)
+                plt.close(fig)
+        except (ValueError,OSError,KeyError) as exc:
+            with output: print(exc)
+        finally:
+            compare.disabled=False
+    compare.on_click(compare_frame)
     preview.on_click(draw);buttons.append(preview)
     return w.VBox([instructions,location,preparation,destination,w.HBox([start,end]),
         w.HBox([resolution,quality]),w.Box([mode,compression,layout,correction],layout=w.Layout(display='flex',flex_flow='row wrap')),w.HBox([bands,radar]),selection,unit,
         w.Box(actions,layout=w.Layout(display='flex',flex_flow='row wrap',gap='8px')),
-        w.HBox([workers,memory]),w.HBox([variable,preview,save]),output])
+        w.HBox([workers,memory]),w.HBox([variable,preview,save]),
+        w.HBox([correction_day,correction_time,correction_band,compare]),output])
 
 
 def export_report(output):

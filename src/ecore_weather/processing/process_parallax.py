@@ -212,14 +212,26 @@ def fetch_height_study(args):
     completed=0;transition=utc('2025-04-07T15:00:00Z')
     try:
         from datetime import timedelta
-        for first,next_month in _months(start.date(),end.date()+timedelta(days=1)):
-            begin=max(start,utc(first.isoformat()));finish=min(end,utc(next_month.isoformat()))
-            if begin>=finish:continue
+        from ecore_weather.processing.storm_windows import STORMS
+        windows=[]
+        if args.storm_heights_first:
+            for _,event_start,event_end in STORMS.values():
+                begin=max(start,utc(event_start)-timedelta(minutes=100))
+                finish=min(end,utc(event_end))
+                if begin<finish:windows.append((begin,finish))
+        windows.append((start,end))
+        segments=[]
+        for begin,finish in windows:
+            for first,next_month in _months(begin.date(),finish.date()+timedelta(days=1)):
+                a=max(begin,utc(first.isoformat()))
+                b=min(finish,utc(next_month.isoformat()))
+                if a<b:segments.append((a,b))
+        for begin,finish in segments:
             edges=sorted({begin,finish,*([transition] if begin<transition<finish else [])})
             for a,b in zip(edges,edges[1:]):
                 if stopped[0] or time.monotonic()>=deadline:return 75
                 satellite=goes.east_satellite(a,b)
-                saved=root/'months'/f'{a:%Y-%m}'/f'goes{satellite}.json'
+                saved=root/'months'/f'{a:%Y-%m}'/f'goes{satellite}-{a:%dT%H%M}-{b:%dT%H%M}.json'
                 if args.dry_run:
                     print(f'ACHAF {iso(a)} to {iso(b)} GOES-{satellite}',flush=True);continue
                 catalog=root/'pending'/f'{a:%Y%m%dT%H%M}-{b:%Y%m%dT%H%M}-goes{satellite}'/'collection.json'

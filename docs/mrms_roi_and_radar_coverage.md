@@ -18,8 +18,8 @@ and data availability; it does not establish a fixed station range.
 PNG and SVG figures live in `figures/`; numerical working state stays out of
 Git under `results/`. Open the 2022 examples:
 
-- [Caribbean overview](../figures/mrms-2022/mrms-rqi-macro-2022.png)
-- [Puerto Rico region](../figures/mrms-2022/mrms-rqi-regional-2022.png)
+- [Caribbean overview](../figures/mrms-radar-coverage/2022/mrms-rqi-macro-2022.png)
+- [Puerto Rico region](../figures/mrms-radar-coverage/2022/mrms-rqi-regional-2022.png)
 
 Each has an SVG partner. Numerical counts and the compressed source selection
 stay under `results/dataset-report/mrms-radar-2022/`; no generated assets are
@@ -92,12 +92,12 @@ original reflectivity completion markers still match their recorded hashes.
 
 | Period | Reflectivity hours | RQI hours | Missing hours, reflectivity / RQI | Returned MB | Aggregation minutes | Maps |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| 2021 | 8,739 | 8,738 | 21 / 22 | 473.4 | 17.5 | [Overview](../figures/mrms-2021/mrms-rqi-macro-2021.png), [regional](../figures/mrms-2021/mrms-rqi-regional-2021.png) |
-| 2022 | 8,757 | 8,752 | 3 / 8 | 507.5 | 16.3 | [Overview](../figures/mrms-2022/mrms-rqi-macro-2022.png), [regional](../figures/mrms-2022/mrms-rqi-regional-2022.png) |
-| 2023 | 8,756 | 8,746 | 4 / 14 | 469.7 | 16.5 | [Overview](../figures/mrms-2023/mrms-rqi-macro-2023.png), [regional](../figures/mrms-2023/mrms-rqi-regional-2023.png) |
-| 2024 | 8,783 | 8,783 | 1 / 1 | 504.5 | 16.3 | [Overview](../figures/mrms-2024/mrms-rqi-macro-2024.png), [regional](../figures/mrms-2024/mrms-rqi-regional-2024.png) |
-| 2025 | 8,760 | 8,760 | 0 / 0 | 457.4 | 16.3 | [Overview](../figures/mrms-2025/mrms-rqi-macro-2025.png), [regional](../figures/mrms-2025/mrms-rqi-regional-2025.png) |
-| 2026-h1 | 4,344 | 4,344 | 0 / 0 | 220.7 | 7.6 | [Overview](../figures/mrms-2026-h1/mrms-rqi-macro-2026-h1.png), [regional](../figures/mrms-2026-h1/mrms-rqi-regional-2026-h1.png) |
+| 2021 | 8,739 | 8,738 | 21 / 22 | 473.4 | 17.5 | [Overview](../figures/mrms-radar-coverage/2021/mrms-rqi-macro-2021.png), [regional](../figures/mrms-radar-coverage/2021/mrms-rqi-regional-2021.png) |
+| 2022 | 8,757 | 8,752 | 3 / 8 | 507.5 | 16.3 | [Overview](../figures/mrms-radar-coverage/2022/mrms-rqi-macro-2022.png), [regional](../figures/mrms-radar-coverage/2022/mrms-rqi-regional-2022.png) |
+| 2023 | 8,756 | 8,746 | 4 / 14 | 469.7 | 16.5 | [Overview](../figures/mrms-radar-coverage/2023/mrms-rqi-macro-2023.png), [regional](../figures/mrms-radar-coverage/2023/mrms-rqi-regional-2023.png) |
+| 2024 | 8,783 | 8,783 | 1 / 1 | 504.5 | 16.3 | [Overview](../figures/mrms-radar-coverage/2024/mrms-rqi-macro-2024.png), [regional](../figures/mrms-radar-coverage/2024/mrms-rqi-regional-2024.png) |
+| 2025 | 8,760 | 8,760 | 0 / 0 | 457.4 | 16.3 | [Overview](../figures/mrms-radar-coverage/2025/mrms-rqi-macro-2025.png), [regional](../figures/mrms-radar-coverage/2025/mrms-rqi-regional-2025.png) |
+| 2026-h1 | 4,344 | 4,344 | 0 / 0 | 220.7 | 7.6 | [Overview](../figures/mrms-radar-coverage/2026-h1/mrms-rqi-macro-2026-h1.png), [regional](../figures/mrms-radar-coverage/2026-h1/mrms-rqi-regional-2026-h1.png) |
 
 MB means decimal megabytes. Timings sum monthly source reads and aggregation,
 excluding listing, pilots and rendering; concurrent periods overlap in wall time.

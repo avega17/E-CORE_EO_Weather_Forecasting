@@ -13,7 +13,7 @@ trap 'status=$?; echo "E-CORE processing ended | phase $phase | exit $status"' E
 task="${ECORE_PROCESS_TASK:-materialize}"
 case "$task" in setup|setup-benchmark|benchmark|materialize) ;; *) echo 'Use setup, setup-benchmark, benchmark or materialize for ECORE_PROCESS_TASK' >&2; exit 2;; esac
 code="${ECORE_CODE_ROOT:-$ECORE_PROJECT_ROOT/ecore-weather/repo}"
-python="${ECORE_PROCESS_PYTHON:-$ECORE_PROJECT_ROOT/ecore-weather/envs/processing/bin/python}"
+python="${ECORE_PROCESS_PYTHON:-$ECORE_PROJECT_ROOT/ecore-weather/envs/processing-3km/bin/python}"
 start="${ECORE_PROCESS_START:-2022-09-18}"
 end="${ECORE_PROCESS_END:-2022-09-19}"
 scratch="${ECORE_NODE_SCRATCH:-/local/scratch}/ecore-process-${USER}-${PBS_JOBID%%.*}"
@@ -26,20 +26,32 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_TH
 cd "$code"
 if [[ "$task" == setup || "$task" == setup-benchmark ]]; then
   phase=processing-environment
-  : "${ECORE_PYTHON:?Set ECORE_PYTHON to the existing CPU ingestion environment}"
   module use /soft/modulefiles
   module load conda/2026-10-01
   export HTTP_PROXY=http://proxy.alcf.anl.gov:3128 HTTPS_PROXY=http://proxy.alcf.anl.gov:3128
   export http_proxy="$HTTP_PROXY" https_proxy="$HTTPS_PROXY"
   export CONDA_PKGS_DIRS="$ECORE_PROJECT_ROOT/ecore-weather/conda-cache"
   export MAMBA_EXTRACT_THREADS=4 CONDA_DEFAULT_THREADS=4 CONDA_EXECUTE_THREADS=2 CONDA_VERIFY_THREADS=2
-  prefix="$(dirname "$(dirname "$python")")"
-  if [[ ! -x "$python" ]]; then
-    conda create --yes --offline --prefix "$prefix" --clone "${ECORE_PYTHON%/bin/python}"
+  prefix="${python%/bin/python}"
+  if [[ "$prefix" == "$python" ]]; then
+    echo 'ECORE_PROCESS_PYTHON must end in /bin/python' >&2
+    exit 2
   fi
-  "$python" -m pip install scipy==1.18.1 pyresample==1.35.0 satpy==0.59.0 virtualizarr==2.7.3
+  if [[ ! -x "$python" ]]; then
+    conda create --yes --prefix "$prefix" --file "$code/jobs/environment-polaris-linux-64.lock"
+  fi
+  "$python" -m pip install obstore==0.11.1 earth2studio==0.18.0 scipy==1.18.1 pyresample==1.35.0 satpy==0.59.0 virtualizarr==2.7.3
   "$python" -m pip check
-  "$python" -c 'import scipy,pyresample,satpy,zarr,pyarrow; print("CPU processing imports passed")'
+  "$python" - <<'PY_CHECK'
+import tempfile
+import numpy as np
+import scipy, pyresample, satpy, pyarrow, zarr
+with tempfile.TemporaryDirectory() as directory:
+    values = np.arange(4)
+    zarr.save_array(directory, values, zarr_format=3)
+    np.testing.assert_array_equal(zarr.open_array(directory, mode="r")[:], values)
+print("CPU processing imports and Zarr round trip passed")
+PY_CHECK
   if [[ "$task" == setup ]]; then exit 0; fi
   task=benchmark
 fi

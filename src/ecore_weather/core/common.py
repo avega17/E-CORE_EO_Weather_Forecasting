@@ -163,10 +163,11 @@ class Transport:
     are summed task time, not elapsed wall time when requests run concurrently.
     """
 
-    def __init__(self, backend="s3fs", decode_workers=1):
+    def __init__(self, backend="s3fs", decode_workers=1, *, budget=None):
         if backend not in {"s3fs", "obstore"}:
             raise ValueError("Choose s3fs or obstore.")
         self.backend = backend
+        self.budget = budget
         self.bytes = self.requests = self.retries = self.failed_requests = 0
         self.seconds = 0.0
         self._lock = threading.Lock()
@@ -184,7 +185,7 @@ class Transport:
     def read(self, asset: Asset, start=None, end=None):
         before = time.perf_counter()
         from ecore_weather.core.transfer_budget import active, BudgetExceeded
-        budget=active()
+        budget=self.budget if self.budget is not None else active()
         for attempt in range(3):
             reservation=budget.reserve(end-start if start is not None else asset.size) if budget else None
             try:

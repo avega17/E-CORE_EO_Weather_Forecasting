@@ -202,7 +202,7 @@ Cached-tensor IO measurements are separate from source-download comparisons.
 
 `radar-figure --year 2022 --render-only` redraws the cached summary without
 NOAA reads. Use `--view macro`, `--view regional`, or the default `both`. All
-map PNG/SVG files go under `figures/mrms-<period>/`; selections, counts and
+map PNG/SVG files go under `figures/mrms-radar-coverage/<period>/`; selections, counts and
 resume state stay under `results/dataset-report/`. An explicit `--start` and
 `--end` support partial years such as January–June 2026. See the
 [radar guide](mrms_roi_and_radar_coverage.md) before starting new source reads.

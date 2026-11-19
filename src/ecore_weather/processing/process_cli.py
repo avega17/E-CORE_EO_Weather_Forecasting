@@ -13,7 +13,7 @@ from ecore_weather.processing.transforms import BANDS, Recipe, atomic_json
 
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('operation',choices=['inventory','index','catalog','estimate','materialize','validate','benchmark','parallax','model-sample','model-check','model-compare','loader-check','nam-audit','report','stats','retire-icechunk','status'])
+    p.add_argument('operation',choices=['inventory','index','catalog','estimate','materialize','validate','benchmark','parallax','model-sample','model-check','model-compare','loader-check','nam-audit','demo-export','report','stats','retire-icechunk','status'])
     p.add_argument('--config',help='JSON settings; explicitly supplied options override the file')
     p.add_argument('--location',default='/mnt/p/ecore_eo_datasets')
     p.add_argument('--preparation-root',default='/mnt/p/ecore_eo_datasets/preparation')
@@ -51,6 +51,8 @@ def parser():
     p.add_argument('--disk-mib',type=int,default=1024)
     p.add_argument('--linux-comparison',help='Small optional Linux SSD benchmark directory')
     p.add_argument('--allow-contended',action='store_true',help='Explicitly label measurements alongside active fetching')
+    p.add_argument('--metadata-only',action='store_true',
+                   help='For nam-audit, inventory every cycle between --start and --end and sample text indexes without reading forecasts')
     p.add_argument('--experimental-caribbean',action='store_true',help='Opt in to geographic model adaptation for an engineering test')
     p.add_argument('--reference-conus',action='store_true',help='Run a bounded stock Flash reference in its supported CONUS domain; downloads model weights and six source scans')
     p.add_argument('--model-package',help='Local model package directory (registry, normalizers, expert weights)')
@@ -59,8 +61,11 @@ def parser():
     p.add_argument('--sample-time',help='UTC final observation slot for a six-frame model input')
     p.add_argument('--sample',help='Portable verified model-sample NPZ and its JSON manifest')
     p.add_argument('--forecast',help='Bounded regional forecast NPZ returned by model-check')
+    p.add_argument('--demo-unit',action='append',help='Verified 3 km store for demo export; repeat for disjoint periods')
+    p.add_argument('--demo-storm',action='append',help='Export only this storm slug; repeat to select more')
+    p.add_argument('--demo-root',help='Output directory for the portable storm catalog and blocks')
     from ecore_weather.core.paths import repository_root
-    p.add_argument('--figure-dir',default=str(repository_root()/'figures/dataset-processing'),help='Directory for model comparison figures')
+    p.add_argument('--figure-dir',default=str(repository_root()/'figures/dataset-processing/model-checks'),help='Directory for model comparison figures')
     p.add_argument('--crop-size',type=int,default=256,help='Bounded square model crop in prepared 3 km pixels')
     p.add_argument('--allow-partial',action='store_true',help='Freeze only committed frames from the active materialization prefix')
     p.add_argument('--allow-approximate-topography',action='store_true',help='Explicit engineering-only use of a documented empirical topography calibration')
@@ -89,6 +94,12 @@ def main(argv=None):
         raise
     Path(args.output).mkdir(parents=True,exist_ok=True)
     printable={k:v for k,v in result.items() if k not in ('entries','cases','months','samples')}
+    if args.operation=='nam-audit':
+        printable.pop('storms',None)
+        if args.metadata_only:
+            printable={k:v for k,v in printable.items() if k in
+                       ('status','start','end_excluded','totals','index_samples','index_sample_bytes',
+                        'grib_payload_bytes','report')}
     if args.operation=='benchmark':
         printable={k:v for k,v in result.items() if k not in ('cases','initial_screening','disk','windows','linux_disk','linux_windows','native_windows','current_snapshot_reads')}
         if 'cases' in result:printable['case_count']=len(result['cases'])
@@ -157,8 +168,23 @@ def run(args):
             result['contention']='other fetching permitted' if args.allow_contended else 'fetch pause checked'
             return result
     if args.operation=='nam-audit':
-        from ecore_weather.processing.process_pilots import nam_audit
-        return nam_audit(args.output)
+        if args.metadata_only:
+            from ecore_weather.processing.nam_inventory import inventory
+            result=inventory(args.start,args.end)
+            report=Path(args.output)/'nam-metadata-inventory.json'
+            Path(args.output).mkdir(parents=True,exist_ok=True)
+            atomic_json(report,result)
+            return result | {'report':str(report)}
+        from ecore_weather.processing.nwp import audit
+        return audit(args.output, location=args.location)
+    if args.operation=='demo-export':
+        from ecore_weather.processing.storm_demo import export_demo
+        from ecore_weather.processing.storm_windows import STORMS
+        if not args.demo_unit or not args.demo_root or not args.elevation:
+            raise ValueError('Supply --demo-unit, --demo-root, and --elevation')
+        if set(args.demo_storm or ())-STORMS.keys():
+            raise ValueError(f"Choose a storm from {', '.join(STORMS)}")
+        return export_demo(args.demo_unit,args.elevation,args.demo_root,args.output,args.demo_storm)
     if args.operation=='report':
         from ecore_weather.ui.process_ui import export_report
         return export_report(args.output)

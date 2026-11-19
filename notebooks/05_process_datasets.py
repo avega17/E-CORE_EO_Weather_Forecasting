@@ -48,6 +48,8 @@ if __name__ != '__mp_main__':
 # ## Choose a sample and inspect its preparation
 # Indexing lists completed observations and identifies incomplete histories.
 # Six ten-minute observations span 50 minutes between the first and last times.
+# Compare parallax opens one verified GOES image and its matched cloud height.
+# Select a UTC slot, cloud band and grid spacing to compare the shared valid area.
 # Preparation indexes point to unchanged native ZIPs. Materialization writes
 # calibrated arrays to data.zarr; estimates read a small sample.
 

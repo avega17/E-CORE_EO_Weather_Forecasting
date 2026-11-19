@@ -525,7 +525,7 @@ def run(location: str | Path, year: int = 2022, output: str | Path = "results/da
             raise ValueError("Cached summary covers a different interval")
     else:
         summary, selection, metadata = summarize_year(location, year, output, workers, start, end)
-    figures = plot_quality(summary, Path(figures_dir) / f"mrms-{label}", center,
+    figures = plot_quality(summary, Path(figures_dir) / "mrms-radar-coverage" / label, center,
                            training_side_km, future_side_km, view=view)
     counts, _ = load_summary(summary)
     reflectivity_frequency = counts["reflectivity_count"] / metadata["reflectivity_reads"]

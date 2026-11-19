@@ -180,6 +180,8 @@ def main(argv=None):
                         help="Legacy CMIPF compatibility only; unused by MCMIPF")
     parser.add_argument("--product", choices=("ABI-L2-MCMIPF", "ABI-L2-CMIPF", "ABI-L2-ACHAF"),
                         default="ABI-L2-CMIPF")
+    parser.add_argument("--storm-heights-first", action="store_true",
+                        help="Fetch cloud heights for demo storms and their input histories before the full interval")
     parser.add_argument("--read-profiles", help="Pinned per-band benchmark profiles JSON")
     parser.add_argument("--read-processes", type=int, default=2)
     parser.add_argument('--read-mode', choices=['range','async_full','async_pipeline'], default='range')
@@ -199,6 +201,8 @@ def main(argv=None):
     if args.product=='ABI-L2-ACHAF':
         from ecore_weather.processing.process_parallax import fetch_height_study
         return fetch_height_study(args)
+    if args.storm_heights_first:
+        parser.error("--storm-heights-first requires ABI-L2-ACHAF")
     requested = None
     if args.start or args.end:
         if not (args.start and args.end) or args.phase != 'all':

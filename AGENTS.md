@@ -86,6 +86,10 @@ Keep explanations readable for researchers inheriting the work.
   MRMS bitmap/sentinel distinctions and negative reflectivity remain intact.
   QPE is outside the current processing sprint. Parallax supports C01/C02/C03/C07/C13,
   same-platform heights and explicit unknown-height masks; no generic water-vapor shift.
+- Notebook 08's hourly storm comparison runs three independent ten-minute forecasts.
+  At valid hour H, its input ends at H−10. NAM uses the newest eligible exact-hour
+  field available in the archive by that cutoff, with older-cycle fallback.
+  Preserve gap evidence. Treat NAM and GOES as distinct fields and units.
 - Controlled DAS/model-window benchmarks require the supported fetch pause.
   Record cache conditions, processing/write/read costs and physical storage separately.
   Successful disposable benchmark stores are removed; processed research data are not.

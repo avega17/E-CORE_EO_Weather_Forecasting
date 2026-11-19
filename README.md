@@ -20,6 +20,11 @@ monthly Zarr archives and keep analysis steps separate from the raw data.
 | [Dataset explorer](notebooks/03_explore_datasets.ipynb) · [Python source](notebooks/03_explore_datasets.py) | Browse monthly archives, prepare one month from an HF yearly backup, compare storage sizes, and preview samples or sequences on a portable map that works in VS Code. |
 | [Dataset report](notebooks/04_dataset_report.ipynb) · [Python source](notebooks/04_dataset_report.py) | Audit raw quality, compare storage and I/O, and review future model preparation. |
 | [Process datasets](notebooks/05_process_datasets.ipynb) · [Python source](notebooks/05_process_datasets.py) | Build causal window indices and virtual catalogs, materialize separate 1/2/3 km variants on DAS or Polaris scratch, and run bounded storage/parallax/model checks. |
+| [NAM and GOES comparison](notebooks/07_baseline_forecasts_ESDA.ipynb) | Select an exact UTC hour and inspect a Puerto Rico NAM forecast and GOES observation. |
+| [StormScope Flash demo](notebooks/08_StormScope_Flash_Inference_Testing.ipynb) | Select a storm and compare three ten-minute Flash forecasts with GOES observations and hourly NAM context. |
+
+See the [NAM archive audit](docs/nam_audit.md) for Puerto Rico coverage, variable
+definitions and storage estimates for a precipitation forecasting pilot.
 
 ## Set up
 

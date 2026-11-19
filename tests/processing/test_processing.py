@@ -582,3 +582,85 @@ def test_process_workers_match_serial_and_resume_committed_batches(native_select
     b=json.loads((Path(parallel['units'][0]['path'])/'progress.json').read_text())
     assert a['batches']==b['batches']
     assert b['execution']['executor']=='process' and b['execution']['workers']==2
+
+
+def test_rolling_storm_demo_feeds_only_six_preceding_frames():
+    from ecore_weather.processing.storm_demo import CHANNELS, comparison_inputs
+    times=np.arange(np.datetime64('2022-09-17T18:50','ns'),
+                    np.datetime64('2022-09-17T20:20','ns'),np.timedelta64(10,'m'))
+    stamps=times.astype('int64')
+    frames=np.broadcast_to(np.arange(len(times))[:,None,None,None],(len(times),8,2,2))
+    payload={'time_ns':stamps,'source_end_ns':np.broadcast_to(stamps[:,None],(len(times),8)),
+             'values':frames,'pixel_valid':np.ones_like(frames,bool),
+             'inside_bbox':np.ones((2,2),bool),'variables':np.asarray(CHANNELS)}
+    rows=list(comparison_inputs(payload,'2022-09-17T20:00Z'))
+    assert len(rows)==3
+    for i,(valid,history,values,support,target) in enumerate(rows):
+        assert history[-1]<valid
+        np.testing.assert_array_equal(values[:,0,0,0],range(i,i+6))
+        assert support.all() and target==i+6
+    assert rows[1][1][0].isoformat()=='2022-09-17T19:00:00+00:00'
+    assert rows[1][1][-1].isoformat()=='2022-09-17T19:50:00+00:00'
+
+
+def test_nam_falls_back_to_exact_older_forecast_before_cutoff(monkeypatch):
+    from ecore_weather.core.common import utc
+    from ecore_weather.processing.nwp import ForecastArchive
+    obj=ForecastArchive(object(),client=object())
+    newest=utc('2022-09-17T18:00Z')
+    older=utc('2022-09-17T12:00Z')
+    listings={}
+    for cycle,lead,published in ((newest,2,'2022-09-17T19:51Z'),(older,8,'2022-09-17T13:40Z')):
+        key=f'nam.{cycle:%Y%m%d}/nam.t{cycle:%H}z.priconest.hiresf{lead:02}.tm00.grib2'
+        listings[cycle]={key:{'LastModified':utc(published),'ETag':'etag'},key+'.idx':{}}
+    monkeypatch.setattr(obj,'cycle',lambda when:listings.get(when,{}))
+    monkeypatch.setattr(obj,'fields',lambda *args:[{'field':'REFC','level':'entire atmosphere'}])
+    result=obj.select_nam('2022-09-17T20:00Z')
+    assert result['lead_hours']==8 and result['valid_time']=='2022-09-17T20:00:00Z'
+    assert result['skipped']=={'archive-object-after-cutoff':1}
+
+
+def test_index_with_multifield_offsets_preserves_exact_byte_bounds():
+    from ecore_weather.processing.nwp import parse_index
+    records=parse_index('1:0:d=2022091718:REFC:entire atmosphere:2 hour fcst:\n'
+                        '2.1:120:d=2022091718:UGRD:10 m above ground:2 hour fcst:\n'
+                        '2.2:120:d=2022091718:VGRD:10 m above ground:2 hour fcst:',240)
+    assert [(r['start'],r['stop']) for r in records]==[(0,120),(120,240),(120,240)]
+
+
+def test_nam_metadata_only_uses_index_and_preserves_accumulation_window():
+    from io import BytesIO
+    from types import SimpleNamespace
+    from ecore_weather.core.common import utc
+    from ecore_weather.processing.nam_inventory import CORE, availability, matches, sample_index
+
+    key = 'nam.t00z.priconest.hiresf03.tm00.grib2'
+    index = (b'1:0:d=2023010100:APCP:surface:0-3 hour acc fcst:\n'
+             b'2:100:d=2023010100:PRATE:surface:2-3 hour max fcst:\n'
+             b'3:200:d=2023010100:PRATE:surface:3 hour fcst:\n')
+    obj = {'Key': key, 'Size': 300, 'LastModified': utc('2023-01-01T01:30Z')}
+    idx = {'Key': key + '.idx', 'Size': len(index), 'ETag': 'index'}
+    cycle = utc('2023-01-01T00:00Z')
+    assert availability({cycle: {3: (obj, idx)}}, utc('2023-01-01T03:00Z')) == (
+        True, True, (cycle, 3, (obj, idx))
+    )
+
+    def get_object(**kwargs):
+        assert kwargs == {'Bucket': 'noaa-nam-pds', 'Key': key + '.idx', 'IfMatch': 'index'}
+        return {'Body': BytesIO(index)}
+
+    archive = SimpleNamespace(client=SimpleNamespace(get_object=get_object))
+    _, lead, records, returned, _ = sample_index(archive, (cycle, 3, (obj, idx), {'hourly'}))
+    assert returned == len(index)
+    assert matches(records[0], CORE['precipitation_accumulation'], lead)
+    assert not matches(records[1], CORE['precipitation_rate'], lead)
+    assert matches(records[2], CORE['precipitation_rate'], lead)
+
+
+def test_parallax_stem_uses_satellite_band_utc_and_grid_spacing():
+    from ecore_weather.processing.process_pilots import _parallax_stem
+    from ecore_weather.processing.transforms import Recipe, target_grid
+
+    grid = target_grid(Recipe(resolution_km=3))
+    record = {'satellite': 16, 'variable': 'abi13c', 'time': '2022-09-18T15:10:20.500000Z'}
+    assert _parallax_stem(record, grid) == 'goes16-C13-2022-09-18T1510Z-3km'

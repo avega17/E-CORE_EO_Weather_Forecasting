@@ -153,7 +153,7 @@ if __name__ != "__mp_main__":
 # %%
 if __name__ != "__mp_main__":
     from IPython.display import Image, display
-    radar_figures = [Path(f"figures/mrms-2022/mrms-rqi-{view}-2022.png") for view in ("macro", "regional")]
+    radar_figures = [Path(f"figures/mrms-radar-coverage/2022/mrms-rqi-{view}-2022.png") for view in ("macro", "regional")]
     for path in radar_figures:
         if path.is_file():
             display(Image(filename=str(path)))

@@ -631,8 +631,8 @@ def controls():
     def show_export(frames,name,mode):
         state['frames'],state['name'],state['mode']=frames,name,mode
         export_button.disabled=False;export_row.layout.display=None
-        default={'single':'figures/dataset-view.png','day':'figures/dataset-day.html','multi':'figures/dataset-multi.html'}[mode]
-        if export_path.value in ('figures/dataset-view.png','figures/dataset-day.html','figures/dataset-multi.html') or not export_path.value:
+        default={'single':'figures/dataset-view.png','day':'figures/animations/dataset-day.html','multi':'figures/animations/dataset-multi.html'}[mode]
+        if export_path.value in ('figures/dataset-view.png','figures/animations/dataset-day.html','figures/animations/dataset-multi.html') or not export_path.value:
             export_path.value=default
     def render_single(_):
         with single_output:
@@ -749,5 +749,5 @@ def main(argv=None):
         with ui.FetchProgress(len(rows),'Display frames') as progress:
             frames=view_frames.prepare(rows,name,not args.show_invalid,args.hide_zero,
                 progress=progress,max_frames=MAX_VIEW_FRAMES)
-        print(view_frames.save_animation(frames,args.output or 'figures/dataset-animation.html'))
+        print(view_frames.save_animation(frames,args.output or 'figures/animations/dataset-animation.html'))
     return 0
