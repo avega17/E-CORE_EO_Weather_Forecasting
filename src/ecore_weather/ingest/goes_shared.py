@@ -564,8 +564,28 @@ def write_month(month, selection, groups, config, requests, replies, events, scr
             return {'path':target,'band':band,'status':'failed','error':client.error}
     try:
         with ThreadPoolExecutor(max_workers=max(1,len(groups))) as pool:results = list(pool.map(write,groups))
-        events.put({'op':'month_done','month':month,'results':results})
     finally:client.close()
+    # No reader or store remains owned when the coordinator admits a new month.
+    events.put({'op':'month_done','month':month,'results':results})
+
+
+def _reap_month_writers(finishing, timeout=120):
+    """Poll closed-store owners without blocking unrelated progress and events.
+
+    A completion event proves archive publication, not interpreter shutdown.
+    Python still has to flush multiprocessing queues and release its resources.
+    Keep checking real exit codes, with a separate bounded shutdown deadline.
+    """
+    for key, (process, began) in list(finishing.items()):
+        process.join(0)
+        if process.is_alive():
+            if time.monotonic()-began >= timeout:
+                raise RuntimeError(f'Monthly writer {key} did not exit within {timeout}s after verified completion')
+            continue
+        if process.exitcode != 0:
+            raise RuntimeError(f'Monthly writer {key} exited {process.exitcode} after archive publication')
+        process.close()
+        del finishing[key]
 
 
 def _groups(selection,destination):
@@ -636,7 +656,7 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
     context=mp.get_context('spawn');events=context.Queue();slots=MonthSlots(config.month_writers,config.tail_months)
     iterator=iter(requests);exhausted=False;admission_paused=False;pause_reason=None;active={};reports=[];failures=[];started=time.perf_counter()
     completed_observations=0
-    pending=[]
+    pending=[];finishing={}
     from ecore_weather.ingest.goes_memory import MemoryGuard
     memory_guard=MemoryGuard.from_environment()
     def notify_progress(status='checkpointed'):
@@ -652,7 +672,8 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
     with SharedReads(config,context) as broker:
         heartbeat=0
         try:
-            while active or not exhausted:
+            while active or finishing or not exhausted:
+                _reap_month_writers(finishing)
                 if broker.error:raise OSError(f'Global GOES pipeline failed: {broker.error}')
                 # Production samples every five seconds; benchmark policy
                 # remains strict. Record the actual node headroom as well as
@@ -784,8 +805,7 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                     elif message['op']=='failed':
                         failures.append(message);broker.error=OSError(message['error']);broker.stop.set()
                     elif message['op']=='month_done':
-                        entry['process'].join(10)
-                        if entry['process'].is_alive():raise RuntimeError('Monthly writer did not exit after completion')
+                        finishing[key]=(entry['process'],time.monotonic())
                         results=message['results'];sel=entry['selection']
                         by_band={r['band']:r for r in results}
                         from ecore_weather.ingest.monthly import _band, _identity
@@ -836,6 +856,10 @@ def fetch_contexts(requests,destination,config=None,scratch=None,index_results=T
                 for entry in active.values():
                     entry['process'].join(30)
                     if entry['process'].is_alive():entry['process'].terminate();entry['process'].join(10)
+            for process,_ in finishing.values():
+                process.join(30)
+                if process.is_alive():process.terminate();process.join(10)
+                process.close()
             events.close()
         metrics=broker.snapshot()
     return {'reports':reports,'interrupted':bool(failures),'wall_s':time.perf_counter()-started,

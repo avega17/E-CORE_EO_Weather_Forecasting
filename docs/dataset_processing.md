@@ -24,6 +24,33 @@ processing does not build a virtual catalog or require Icechunk.
 
 Create `environment-processing.yml` for CPU work. GPU packages belong in
 `environment-model.yml`; never upgrade acquisition to enable model experiments.
+
+On Polaris, `jobs/polaris_process.pbs` also provides `ECORE_PROCESS_TASK=setup`
+and `benchmark`. Setup runs on a compute node, clones the project's existing
+CPU Conda environment into a separate processing environment, then installs the
+processing dependencies. It leaves the ingestion environment unchanged.
+
+For a short 3 km timing comparison, source `jobs/polaris.env.sh` and submit:
+
+```bash
+qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PROCESS_TASK=setup" jobs/polaris_process.pbs
+# After setup exits successfully:
+qsub -A "$ECORE_PBS_ACCOUNT" -q debug -l walltime=01:00:00 \
+  -v "$ECORE_PBS_ENV_VARS,ECORE_PROCESS_TASK=benchmark,ECORE_PROCESS_START=2022-09-18T12:00:00Z,ECORE_PROCESS_END=2022-09-18T20:00:00Z,ECORE_PROCESS_RESOLUTION=3" \
+  jobs/polaris_process.pbs
+```
+
+The benchmark compares 8/16/32/64 independent processes and a two-thread
+reference on the same eight-hour selection, with three rotated trials. These
+are CPU-affinity-aware processes, not extra threads per core. It includes
+native reads, transforms, writing, closing and final read-back; successful
+temporary stores are removed. The compact `worker-benchmark.json` and selection
+description stay in `ecore-weather/state/processing/` on Eagle. Change
+`ECORE_PROCESS_STATE` to isolate simultaneous reports, and pass that variable
+through `qsub -v`. Fetches should be stopped for this controlled comparison.
+Use the measured result before selecting workers for a larger build; the
+workstation's eight-process result does not establish the Polaris setting.
 The latter uses Earth2Studio 0.20.0, PhysicsNeMo 2.2.2 and a matched Torch/NATTEN
 wheel pair. Verify target-machine driver compatibility before installation.
 

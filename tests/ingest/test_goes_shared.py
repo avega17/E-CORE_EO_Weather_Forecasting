@@ -12,6 +12,28 @@ from ecore_weather.core.common import Asset,Selection
 from ecore_weather.ingest.goes_shared import MonthSlots,SharedConfig,SharedReads,ReaderClient
 
 
+@pytest.mark.parametrize('exitcode,expired',[(0,False),(1,False),(0,True)])
+def test_completed_month_shutdown_does_not_block_coordinator(exitcode,expired):
+    from types import SimpleNamespace
+    from ecore_weather.ingest.goes_shared import _reap_month_writers
+    joined=[];closed=[];alive=[True]
+    process=SimpleNamespace(join=lambda seconds:joined.append(seconds),is_alive=lambda:alive[0],
+        exitcode=exitcode,close=lambda:closed.append(True))
+    pending={'jan':(process,time.monotonic()-(121 if expired else 0))}
+    if expired:
+        with pytest.raises(RuntimeError,match='within 120s'):_reap_month_writers(pending)
+        assert pending and not closed
+    else:
+        _reap_month_writers(pending)
+        assert pending and joined==[0] and not closed
+        alive[0]=False
+        if exitcode:
+            with pytest.raises(RuntimeError,match='exited 1'):_reap_month_writers(pending)
+        else:
+            _reap_month_writers(pending)
+            assert not pending and closed==[True]
+
+
 @pytest.mark.parametrize('cancellation',[False,True])
 def test_worker_keeps_root_errors_but_does_not_repeat_coordinator_cancellation(tmp_path,monkeypatch,capsys,cancellation):
     from ecore_weather.ingest import goes_shared

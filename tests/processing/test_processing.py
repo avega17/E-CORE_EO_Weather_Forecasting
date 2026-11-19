@@ -341,21 +341,36 @@ def test_regional_adapter_preserves_weights_and_rebuilds_geometry(monkeypatch):
     assert calls==pytest.approx([18.2])
 
 
-@pytest.mark.parametrize('exit_code',[0,75,1])
-def test_pbs_process_wrapper_arguments_and_exit(tmp_path,exit_code):
+@pytest.mark.parametrize('task,exit_code',[('materialize',0),('materialize',75),('materialize',1),('benchmark',0)])
+def test_pbs_process_wrapper_arguments_and_exit(tmp_path,task,exit_code):
     import os,subprocess,sys
     tools=tmp_path/'bin';tools.mkdir()
     for name,script in [('qstat','#!/bin/bash\necho "Resource_List.walltime = 00:20:00"\n'),
-        ('mpiexec','#!/bin/bash\nprintf "%s\\n" "$@" > "$ECORE_MOCK_ARGS"\nexit "$ECORE_MOCK_EXIT"\n')]:
+        ('mpiexec','''#!/bin/bash
+printf "%s\\n" "$@" > "$ECORE_MOCK_ARGS"
+if [[ " $* " == *" process index "* ]]; then
+  mkdir -p "$ECORE_MOCK_PREPARATION"
+  printf '{"result":{"preparation_path":"%s"}}' "$ECORE_MOCK_PREPARATION" > "$ECORE_PROCESS_STATE/latest.json"
+  printf '{}' > "$ECORE_MOCK_PREPARATION/selection.json"
+  touch "${ECORE_NODE_SCRATCH}/ecore-process-${USER}-1234/process.duckdb"
+fi
+exit "$ECORE_MOCK_EXIT"
+''')]:
         path=tools/name;path.write_text(script);path.chmod(0o755)
     args=tmp_path/'arguments'
     env={**os.environ,'PATH':str(tools)+os.pathsep+os.environ['PATH'],'PBS_JOBID':'1234.pbs',
         'ECORE_PROJECT_ROOT':str(tmp_path/'project'),'ECORE_CODE_ROOT':str(Path.cwd()),
         'ECORE_PROCESS_PYTHON':sys.executable,'ECORE_NODE_SCRATCH':str(tmp_path/'scratch'),
+        'ECORE_PROCESS_TASK':task,'ECORE_PROCESS_STATE':str(tmp_path/'state'),
+        'ECORE_MOCK_PREPARATION':str(tmp_path/'preparation'),
         'ECORE_MOCK_ARGS':str(args),'ECORE_MOCK_EXIT':str(exit_code),'ECORE_REVISION':'not-a-job-gate'}
     result=subprocess.run(['bash','jobs/polaris_process.pbs'],env=env,text=True,capture_output=True)
     assert result.returncode==exit_code,result.stdout+result.stderr
     words=args.read_text().splitlines()
+    if task=='benchmark':
+        assert words[words.index('--worker-counts')+1:words.index('--repeats')]==['8','16','32','64']
+        assert (tmp_path/'state/benchmark-selection.json').is_file()
+        return
     assert words[words.index('--reserve-percent')+1]=='5'
     assert words[words.index('--destination')+1].startswith(str(tmp_path/'scratch'))
     assert words[words.index('--max-hours')+1]==str(300/3600)

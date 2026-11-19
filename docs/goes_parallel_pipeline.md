@@ -117,6 +117,11 @@ The corrected first-frame rule briefly drains established reads when a new band'
 initial size-measuring read is waiting. Eight-scan checkpoints verify stored pixels
 and retire matching staged files. Finalizers operate only on closed stores.
 A band completion is recorded immediately; the full month verifies after all bands.
+After reporting completion, a month process may still be releasing Python and
+queue resources. The coordinator polls its exit without blocking other months,
+checks its exit code, and allows up to two minutes for this final cleanup.
+Archive verification and process shutdown are separate steps; a slow shutdown
+does not undo an already verified archive.
 
 A month with only C02 remaining can become the single tail month, freeing a
 normal slot for the next chronological month. At most three month-owner processes

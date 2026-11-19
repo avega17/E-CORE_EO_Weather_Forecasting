@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -l
 #PBS -N ecore_process
 #PBS -l select=1:system=polaris
 #PBS -l walltime=06:00:00
@@ -10,6 +10,8 @@ echo "E-CORE processing wrapper entered | job ${PBS_JOBID:-local} | host $(hostn
 phase=startup
 trap 'status=$?; echo "E-CORE processing ended | phase $phase | exit $status"' EXIT
 : "${ECORE_PROJECT_ROOT:?Source jobs/polaris.env.sh before submission}"
+task="${ECORE_PROCESS_TASK:-materialize}"
+case "$task" in setup|benchmark|materialize) ;; *) echo 'Use setup, benchmark or materialize for ECORE_PROCESS_TASK' >&2; exit 2;; esac
 code="${ECORE_CODE_ROOT:-$ECORE_PROJECT_ROOT/ecore-weather/repo}"
 python="${ECORE_PROCESS_PYTHON:-$ECORE_PROJECT_ROOT/ecore-weather/envs/processing/bin/python}"
 start="${ECORE_PROCESS_START:-2022-09-18}"
@@ -22,9 +24,43 @@ export TMPDIR="$scratch/tmp"
 mkdir -p "$TMPDIR"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 cd "$code"
+if [[ "$task" == setup ]]; then
+  phase=processing-environment
+  : "${ECORE_PYTHON:?Set ECORE_PYTHON to the existing CPU ingestion environment}"
+  module use /soft/modulefiles
+  module load conda/2026-10-01
+  export HTTP_PROXY=http://proxy.alcf.anl.gov:3128 HTTPS_PROXY=http://proxy.alcf.anl.gov:3128
+  export http_proxy="$HTTP_PROXY" https_proxy="$HTTPS_PROXY"
+  export CONDA_PKGS_DIRS="$ECORE_PROJECT_ROOT/ecore-weather/conda-cache"
+  export MAMBA_EXTRACT_THREADS=4 CONDA_DEFAULT_THREADS=4 CONDA_EXECUTE_THREADS=2 CONDA_VERIFY_THREADS=2
+  prefix="$(dirname "$(dirname "$python")")"
+  if [[ ! -x "$python" ]]; then
+    conda create --yes --offline --prefix "$prefix" --clone "${ECORE_PYTHON%/bin/python}"
+  fi
+  "$python" -m pip install scipy==1.18.1 pyresample==1.35.0 satpy==0.59.0 virtualizarr==2.7.3
+  "$python" -m pip check
+  "$python" -c 'import scipy,pyresample,satpy,zarr,pyarrow; print("CPU processing imports passed")'
+  exit 0
+fi
 phase=walltime
 walltime="$(qstat -f "$PBS_JOBID" | sed -n 's/^[[:space:]]*Resource_List.walltime = //p')"
 hours="$($python -c 'import sys; h,m,s=map(int,sys.argv[1].split(":")); total=h*3600+m*60+s; print(max(1,total-900)/3600)' "$walltime")"
+if [[ "$task" == benchmark ]]; then
+  phase=processing-index
+  mpiexec -n 1 --ppn 1 --depth 64 "$python" scripts/dataset_jobs.py process index \
+    --location "$archives" --preparation-root "$scratch/preparation" \
+    --index-path "$scratch/process.duckdb" --output "$state" \
+    --start "$start" --end "$end" --resolution-km "${ECORE_PROCESS_RESOLUTION:-3}"
+  selection="$($python -c 'import json,sys; print(json.load(open(sys.argv[1]))["result"]["preparation_path"])' "$state/latest.json")"
+  cp "$selection/selection.json" "$state/benchmark-selection.json"
+  read -r -a worker_counts <<< "${ECORE_PROCESS_WORKER_COUNTS:-8 16 32 64}"
+  phase=processing-benchmark
+  mpiexec -n 1 --ppn 1 --depth 64 "$python" scripts/dataset_jobs.py process benchmark \
+    --selection "$selection" --worker-counts "${worker_counts[@]}" \
+    --repeats "${ECORE_PROCESS_REPEATS:-3}" --destination "$scratch/benchmark" --output "$state"
+  cp "$scratch/process.duckdb" "$state/closed-index.duckdb"
+  exit 0
+fi
 phase=materialization
 set +e
 mpiexec -n 1 --ppn 1 --depth 64 "$python" scripts/dataset_jobs.py process materialize \
