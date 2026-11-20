@@ -13,7 +13,7 @@ excluded. Restart the kernel and rerun setup after editing imported modules.
 | [04 Dataset report](../notebooks/04_dataset_report.ipynb) | Inspect diagnostics and measured performance, export a report | Cached report tables, interactive summaries, CSV/Markdown/HTML exports |
 | [05 Process datasets](../notebooks/05_process_datasets.ipynb) | Decode and align native observations; create regional variants | Portable scientific indices, plain-Zarr physical arrays/masks, storage estimates, cloud-height correction and training-only statistics |
 | [07 NAM and GOES](../notebooks/07_baseline_forecasts_ESDA.ipynb) | Select an exact hour and compare the NAM Puerto Rico forecast with GOES | Matched maps and source times |
-| [08 StormScope Flash](../notebooks/08_StormScope_Flash_Inference_Testing.ipynb) | Load an hourly storm block and run the Flash engineering comparison | Three ten-minute forecasts with GOES observations and hourly NAM context |
+| [08 StormScope Flash](../notebooks/08_StormScope_Flash_Inference_Testing.ipynb) | Choose an initialization hour, GOES band, NAM field and correction variant | Six ten-minute Flash steps, corresponding GOES observations and hourly NAM context |
 
 ## Fetch notebooks
 

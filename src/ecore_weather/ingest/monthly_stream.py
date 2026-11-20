@@ -193,6 +193,7 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
         started = time.perf_counter()
         native = selection.source == "goes" and selection.product == "ABI-L2-CMIPF"
         height_product=selection.product=='ABI-L2-ACHAF'
+        process_height = height_product and reader_factory is not None
         resumable = native or height_product or selection.source == "mrms"
         identity = hashlib.sha256(json.dumps({"target": str(target.resolve()),
             "ids": [r["asset_id"] for r in original_rows]}, sort_keys=True).encode()).hexdigest()[:24]
@@ -260,6 +261,10 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                         read_processes, prefetch_mib, block_size, metrics, backend,
                         read_mode, download_concurrency, staging_mib, parent/"source-cache"))
                     stack.callback(native_reads.close)
+                if process_height:
+                    new_rows = [r for i,r in enumerate(rows) if i not in saved and r['kind']=='new']
+                    height_reads = reader_factory(new_rows, selection, parent, metrics)
+                    stack.callback(height_reads.close)
                 if selection.source == 'mrms':
                     from ecore_weather.ingest.mrms_pipeline import ordered_reads as mrms_ordered_reads
                     new_rows = [r for i,r in enumerate(rows) if i not in saved and r['kind']=='new']
@@ -278,7 +283,7 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                     except StopIteration:
                         return False
                     future = (pool.submit(_read_new, row["asset"], selection, band,
-                        transport, block_size) if row["kind"] == "new" and not native and selection.source != 'mrms' and row["asset_id"] not in saved_asset_ids else None)
+                        transport, block_size) if row["kind"] == "new" and not native and not process_height and selection.source != 'mrms' and row["asset_id"] not in saved_asset_ids else None)
                     queue.append((row, future))
                     return True
 
@@ -303,6 +308,12 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                         read_row, (ds, _) = next(native_reads)
                         if read_row["asset_id"] != row["asset_id"]:
                             raise IOError("Native read ordering changed")
+                        raw_meta = _source_metadata(ds)
+                        source = _science(ds, band)
+                    elif process_height and row['kind'] == 'new':
+                        read_row, (ds, _) = next(height_reads)
+                        if read_row['asset_id'] != row['asset_id']:
+                            raise IOError('ACHAF read ordering changed')
                         raw_meta = _source_metadata(ds)
                         source = _science(ds, band)
                     elif selection.source == 'mrms' and row['kind'] == 'new':
@@ -372,7 +383,7 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                     # Reopening a verified prefix must not rewrite its batches
                     # or make the durable progress counter move backwards.
                     if resumable and index not in saved and ((index+1) % 8 == 0 or index+1 == len(rows)):
-                        if not native:metrics["read_bytes"]=initial_read_bytes+transport.bytes
+                        if not native and not process_height:metrics["read_bytes"]=initial_read_bytes+transport.bytes
                         begin = (index//8)*8
                         batch = {"rows": [{"index": j, "row": actual_rows[j],
                             "metadata": observed_metadata[j],
@@ -436,7 +447,7 @@ def _write_one(selection, assets, target, band, workers=16, backend="obstore",
                         for name, values in auxiliary.items()}}
                 (directory / "ecore_metadata.json").write_text(json.dumps(metadata, sort_keys=True))
                 zarr.consolidate_metadata(str(directory))
-                if not native:metrics["read_bytes"]=initial_read_bytes+transport.bytes
+                if not native and not process_height:metrics["read_bytes"]=initial_read_bytes+transport.bytes
                 read_bytes = metrics.get("read_bytes", transport.bytes)
                 source_retries = metrics.get("source_retries", transport.retries)
                 failed_requests = metrics.get("failed_requests", transport.failed_requests)

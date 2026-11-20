@@ -303,10 +303,10 @@ def test_config_explicit_arguments_override_json(tmp_path):
 
 
 def test_controls_are_inert(monkeypatch):
-    from ecore_weather.ui.process_ui import create
+    from ecore_weather.ui.process_ui import processing_sections
     from ecore_weather.processing import process_cli
     monkeypatch.setattr(process_cli,'run',lambda *args:pytest.fail('Construction must not process data'))
-    assert len(create().children)>5
+    assert len(processing_sections()) == 5
 
 
 def test_process_dispatch_uses_shared_interface(monkeypatch):
@@ -664,3 +664,154 @@ def test_parallax_stem_uses_satellite_band_utc_and_grid_spacing():
     grid = target_grid(Recipe(resolution_km=3))
     record = {'satellite': 16, 'variable': 'abi13c', 'time': '2022-09-18T15:10:20.500000Z'}
     assert _parallax_stem(record, grid) == 'goes16-C13-2022-09-18T1510Z-3km'
+
+
+def test_managed_store_requires_exact_replacement_and_waits_for_readers(tmp_path):
+    import json
+    from ecore_weather.processing.managed_store import build
+    from ecore_weather.processing.process_store import reader_lease
+
+    old = tmp_path / 'original'
+    unit = old / 'full'
+    unit.mkdir(parents=True)
+    (unit / 'progress.json').write_text(json.dumps({'verified_slots': 400}))
+    size = {'required_bytes': 0, 'disk': {'reserve_bytes': 0}}
+    with pytest.raises(ValueError, match='Explicitly confirm replacement'):
+        build(None, tmp_path, size, 'smaller', None, lambda: pytest.fail('must confirm'))
+    with reader_lease(unit):
+        with pytest.raises(RuntimeError, match='reader is active'):
+            build(None, tmp_path, size, 'smaller', old, lambda: pytest.fail('reader is active'))
+        assert unit.exists()
+
+    def write_new():
+        assert not old.exists()
+        (tmp_path / 'smaller').mkdir()
+        return 'done'
+
+    assert build(None, tmp_path, size, 'smaller', old, write_new) == 'done'
+    assert build(None, tmp_path, size, 'smaller', None, lambda: 'resumed') == 'resumed'
+
+
+def test_storm_window_has_distinct_history_and_verification():
+    from ecore_weather.processing.storm_cube import sample_times
+
+    times = sample_times('2022-09-17T20:00Z')
+    assert len(times) == 12
+    assert times[0] == np.datetime64('2022-09-17T19:10')
+    assert times[5] == np.datetime64('2022-09-17T20:00')
+    assert times[6] == np.datetime64('2022-09-17T20:10')
+    assert times[-1] == np.datetime64('2022-09-17T21:00')
+
+
+def test_demo_rollout_uses_one_causal_iterator(monkeypatch):
+    import torch
+    from ecore_weather.processing import process_model
+    from ecore_weather.processing.storm_cube import sample_times
+    from ecore_weather.processing.storm_demo import CHANNELS, forecast_rows
+
+    hour = '2022-09-17T20:00:00Z'
+    times = sample_times(hour).astype('int64')
+    values = np.ones((12,8,2,2), dtype='float32')
+    values[6:] = 900.
+    arrays = dict(time_ns=times, variables=np.array(CHANNELS), values=values,
+                  source_end_ns=np.repeat(times[:,None],8,axis=1),
+                  pixel_valid=np.ones_like(values,dtype=bool),
+                  inside_bbox=np.ones((2,2),dtype=bool),
+                  latitude=np.ones((2,2)),longitude=np.ones((2,2)),
+                  x=np.arange(2),y=np.arange(2))
+    real_tensor = torch.as_tensor
+    monkeypatch.setattr(torch, 'as_tensor', lambda x, **kw: real_tensor(x))
+    monkeypatch.setattr(process_model,'regional_topography',lambda *a,**kw:None)
+    starts = []
+
+    class FakeFlash:
+        def create_iterator(self, inputs, coords):
+            starts.append(1)
+            assert tuple(inputs.shape) == (1,1,6,8,2,2)
+            assert torch.all(inputs == 1)
+            yield inputs, coords
+            forecast = inputs[:,:,:1]
+            for step in range(1,7):
+                forecast = forecast + 1
+                yield forecast, {**coords,'lead_time':np.array([np.timedelta64(step*10,'m')])}
+
+    monkeypatch.setattr(process_model,'caribbean_adapter',lambda model,*args:model)
+    rows = list(forecast_rows(FakeFlash(),arrays,hour,None))
+    assert starts == [1] and len(rows) == 6
+    assert rows[-1]['valid_time'] == '2022-09-17T21:00:00Z'
+    assert (rows[-1]['forecast'] == 7).all()
+    assert (rows[-1]['truth'] == 900).all()
+
+
+def test_nam_events_crossing_overlap_and_all_timely_cycles(tmp_path):
+    import csv
+    from ecore_weather.core.common import utc
+    from ecore_weather.processing.nam_events import latest_cycle, requests_for, ranges
+    from ecore_weather.processing.storm_events import select_events
+
+    snapshot = tmp_path/'atlantic.csv'
+    with snapshot.open('w', newline='') as stream:
+        writer = csv.writer(stream)
+        writer.writerow(('SID','NAME','TRACK_TYPE','ISO_TIME','USA_LAT','USA_LON'))
+        writer.writerows([
+            ('storm-a','Example','MAIN','2022-09-17 00:00:00',18.2,-71),
+            ('storm-a','Example','MAIN','2022-09-17 06:00:00',18.2,-61),
+            ('nearby','Nearby','MAIN','2022-09-17 00:00:00',22.5,-65),
+            ('spur','Spur','spur','2022-09-17 00:00:00',18,-65),
+        ])
+    cohort = select_events('2022-09-16', '2022-09-19', snapshot)
+    assert [event['sid'] for event in cohort['events']] == ['storm-a']
+    assert [row['sid'] for row in cohort['nearby']] == ['nearby']
+    event = cohort['events'][0]
+    hours = requests_for([event, event], utc(cohort['end_excluded']), 1)
+    assert len(hours) == 2 and all(len(members) == 1 for members in hours.values())
+
+    hour = '2022-09-17T12:00:00Z'
+    following = '2022-09-17T13:00:00Z'
+    old, new = '2022-09-17T00:00:00Z', '2022-09-17T06:00:00Z'
+    fields = {'composite_reflectivity': {'start': 7, 'stop': 11},
+              'wind_u_10m': {'start': 7, 'stop': 11}}
+    rows = [dict(initialization=cycle, valid=valid,
+                 available=following if cycle == new and valid == following else old,
+                 fields=fields)
+            for cycle in (old, new) for valid in (hour, following)]
+    assert latest_cycle(rows, hour, 'composite_reflectivity') == old
+    assert list(ranges(rows[0])) == [(7,11)]
+
+
+def test_nam_month_resumes_verified_rows(tmp_path, monkeypatch):
+    import zarr
+    from zarr.codecs import BloscCodec
+    from ecore_weather.processing import nam_events
+    from ecore_weather.processing.process_store import _arrays_hash
+
+    rows = [{'key':str(i), 'lead':i, 'initialization':'2022-09-17T00:00:00Z',
+             'valid':f'2022-09-17T0{i}:00:00Z'} for i in range(2)]
+    calls = []
+    failed = True
+
+    def read(_, row):
+        calls.append(row['key'])
+        if row['key'] == '1' and failed:
+            raise OSError('simulated interruption')
+        return {'composite_reflectivity': {
+            'latitude':np.array([[18.]]), 'longitude':np.array([[-66.]]),
+            'values':np.array([[float(row['lead'])]], dtype='float32'),
+            'units':'dBZ', 'step_type':'instant', 'step_range':str(row['lead']),
+            'level':'entire atmosphere',
+        }}
+
+    monkeypatch.setattr(nam_events, 'read_forecast', read)
+
+    def build():
+        return nam_events.write_month(tmp_path, rows, None, 1, zarr, BloscCodec, _arrays_hash)
+
+    with pytest.raises(OSError, match='simulated'):
+        build()
+    assert len(json.loads((tmp_path/'progress.json').read_text())['rows']) == 1
+    assert not (tmp_path/'complete.json').exists()
+    failed = False
+    calls.clear()
+    assert build()['rows'] == 2 and calls == ['1']
+    calls.clear()
+    assert build()['rows'] == 2 and not calls

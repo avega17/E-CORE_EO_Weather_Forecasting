@@ -13,14 +13,14 @@ from ecore_weather.processing.transforms import BANDS, Recipe, atomic_json
 
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('operation',choices=['inventory','index','catalog','estimate','materialize','validate','benchmark','parallax','model-sample','model-check','model-compare','loader-check','nam-audit','demo-export','report','stats','retire-icechunk','status'])
+    p.add_argument('operation',choices=['inventory','index','catalog','estimate','materialize','validate','benchmark','parallax','model-sample','model-check','model-compare','loader-check','nam-audit','nam-events','demo-export','report','stats','retire-icechunk','status'])
     p.add_argument('--config',help='JSON settings; explicitly supplied options override the file')
     p.add_argument('--location',default='/mnt/p/ecore_eo_datasets')
     p.add_argument('--preparation-root',default='/mnt/p/ecore_eo_datasets/preparation')
     p.add_argument('--destination',default='/mnt/p/ecore_eo_datasets/processed')
     p.add_argument('--selection',help='Existing preparation selection directory')
     p.add_argument('--unit',help='Materialized full/block directory')
-    p.add_argument('--start',default='2022-09-18');p.add_argument('--end',default='2022-09-19')
+    p.add_argument('--start');p.add_argument('--end')
     p.add_argument('--resolution-km',type=int,choices=[1,2,3],default=1)
     p.add_argument('--bands',nargs='*',type=int,choices=BANDS,default=list(BANDS))
     p.add_argument('--radar',nargs='*',choices=['refc','refc_base'],default=['refc','refc_base'])
@@ -34,6 +34,8 @@ def parser():
     p.add_argument('--height-age-minutes',type=int,default=20)
     p.add_argument('--train-start',default='2021-01-01');p.add_argument('--train-end',default='2025-01-01')
     p.add_argument('--apply',action='store_true',help='Apply retirement after replacement verification; default previews')
+    p.add_argument('--managed-store',action='store_true',help='Build the single managed full dataset')
+    p.add_argument('--replace-store',help='Explicit path of the managed dataset to remove before building')
     p.add_argument('--mode',choices=['auto','full','blocks'],default='auto')
     p.add_argument('--reserve-percent',type=float,default=5)
     p.add_argument('--workers',type=int,default=0,help='Independent transform processes; 0 uses every CPU allowed by job affinity')
@@ -53,6 +55,13 @@ def parser():
     p.add_argument('--allow-contended',action='store_true',help='Explicitly label measurements alongside active fetching')
     p.add_argument('--metadata-only',action='store_true',
                    help='For nam-audit, inventory every cycle between --start and --end and sample text indexes without reading forecasts')
+    p.add_argument('--ibtracs', help='Optional local North Atlantic IBTrACS CSV snapshot')
+    p.add_argument('--event-storm', action='append', help='Select an IBTrACS storm name or SID')
+    p.add_argument('--event-limit', type=int, help='Keep the closest N storm tracks')
+    p.add_argument('--event-max-hours', type=int, help='Limit forecast hours per encounter for a pilot')
+    p.add_argument('--event-rain', action='store_true', help='Summarize local verified Pass2 QPE where available')
+    p.add_argument('--event-plan', help='Saved selection.json.gz for nam-events --apply')
+    p.add_argument('--max-transfer-gib', type=float, help='Cumulative NAM GRIB transfer ceiling')
     p.add_argument('--experimental-caribbean',action='store_true',help='Opt in to geographic model adaptation for an engineering test')
     p.add_argument('--reference-conus',action='store_true',help='Run a bounded stock Flash reference in its supported CONUS domain; downloads model weights and six source scans')
     p.add_argument('--model-package',help='Local model package directory (registry, normalizers, expert weights)')
@@ -63,7 +72,10 @@ def parser():
     p.add_argument('--forecast',help='Bounded regional forecast NPZ returned by model-check')
     p.add_argument('--demo-unit',action='append',help='Verified 3 km store for demo export; repeat for disjoint periods')
     p.add_argument('--demo-storm',action='append',help='Export only this storm slug; repeat to select more')
-    p.add_argument('--demo-root',help='Output directory for the portable storm catalog and blocks')
+    p.add_argument('--demo-root',help='Fresh directory for the storm Zarr store')
+    p.add_argument('--demo-hour',action='append',help='Limit demo export to selected UTC initialization hours')
+    p.add_argument('--demo-shard-time',type=int,choices=(0,12,24),default=0)
+    p.add_argument('--demo-without-nam',action='store_true',help='Skip NAM during a bounded GOES layout trial')
     from ecore_weather.core.paths import repository_root
     p.add_argument('--figure-dir',default=str(repository_root()/'figures/dataset-processing/model-checks'),help='Directory for model comparison figures')
     p.add_argument('--crop-size',type=int,default=256,help='Bounded square model crop in prepared 3 km pixels')
@@ -84,6 +96,9 @@ def main(argv=None):
         if set(config)-allowed:p.error(f'Unknown configuration keys: {sorted(set(config)-allowed)}')
         p.set_defaults(**config)
     args=p.parse_args(arguments)
+    if args.operation != 'nam-events':
+        args.start = args.start or '2022-09-18'
+        args.end = args.end or '2022-09-19'
     print(f'E-CORE processing | {args.operation}',flush=True)
     try:
         result=run(args)
@@ -167,6 +182,23 @@ def run(args):
             result=benchmark(args.unit,args.destination,args.output,args.repeats,args.disk_mib,args.linux_comparison)
             result['contention']='other fetching permitted' if args.allow_contended else 'fetch pause checked'
             return result
+    if args.operation=='nam-events':
+        from ecore_weather.processing.nam_events import archive_events, plan_events
+        from ecore_weather.processing.storm_events import START, END
+        workers = args.workers or 8
+        if args.apply:
+            if not args.event_plan:
+                raise ValueError('nam-events --apply requires --event-plan')
+            return archive_events(args.event_plan, args.location, args.output, workers,
+                                  args.max_transfer_gib)
+        if args.event_max_hours is not None and args.event_max_hours < 1:
+            raise ValueError('event-max-hours must be positive')
+        config = {'top':args.event_limit, 'storm':args.event_storm, 'hours':args.event_max_hours}
+        start = args.start or START
+        end = args.end or END
+        return plan_events(start, end, args.ibtracs, config, args.output,
+                           Path(args.figure_dir)/'nam-storm-tracks.png', workers,
+                           args.location if args.event_rain else None)
     if args.operation=='nam-audit':
         if args.metadata_only:
             from ecore_weather.processing.nam_inventory import inventory
@@ -178,13 +210,15 @@ def run(args):
         from ecore_weather.processing.nwp import audit
         return audit(args.output, location=args.location)
     if args.operation=='demo-export':
-        from ecore_weather.processing.storm_demo import export_demo
+        from ecore_weather.processing.storm_cube import export_cube
         from ecore_weather.processing.storm_windows import STORMS
         if not args.demo_unit or not args.demo_root or not args.elevation:
             raise ValueError('Supply --demo-unit, --demo-root, and --elevation')
         if set(args.demo_storm or ())-STORMS.keys():
             raise ValueError(f"Choose a storm from {', '.join(STORMS)}")
-        return export_demo(args.demo_unit,args.elevation,args.demo_root,args.output,args.demo_storm)
+        return export_cube(args.demo_unit,args.elevation,args.demo_root,args.location,
+            storms=args.demo_storm, shard_time=args.demo_shard_time, workers=args.workers or 4,
+            include_nam=not args.demo_without_nam, hours_filter=args.demo_hour)
     if args.operation=='report':
         from ecore_weather.ui.process_ui import export_report
         return export_report(args.output)
@@ -213,10 +247,19 @@ def run(args):
             previous[signum]=signal.getsignal(signum)
             signal.signal(signum,lambda *unused:stopped.__setitem__(0,True))
     try:
-        return materialize(preparation,args.destination,args.mode,args.reserve_percent,args.workers,args.memory_mib,
-            args.block_hours,stop=lambda:stopped[0] or (args.max_hours>0 and time.monotonic()-started>=args.max_hours*3600),max_blocks=args.max_blocks,
-            progress=lambda done,total,path:print(f'Verified derived slots {done}/{total} | {path}',flush=True),
-            executor=args.executor,prefetch_batches=args.prefetch_batches)
+        def execute(mode):
+            return materialize(preparation,args.destination,mode,args.reserve_percent,args.workers,args.memory_mib,
+                args.block_hours,stop=lambda:stopped[0] or (args.max_hours>0 and time.monotonic()-started>=args.max_hours*3600),max_blocks=args.max_blocks,
+                progress=lambda done,total,path:print(f'Verified derived slots {done}/{total} | {path}',flush=True),
+                executor=args.executor,prefetch_batches=args.prefetch_batches)
+        managed = (Path(args.destination).expanduser() / '.managed-selection.json').is_file()
+        if args.managed_store or args.replace_store or managed:
+            if args.mode == 'blocks':
+                raise ValueError('Choose a separate output root for explicit block processing')
+            from ecore_weather.processing.managed_store import build
+            size=estimate(preparation,args.destination,memory_mib=args.memory_mib,reserve_percent=args.reserve_percent)
+            return build(preparation,args.destination,size,info['selection_id'],args.replace_store,lambda:execute('full'))
+        return execute(args.mode)
     finally:
         for signum,handler in previous.items():signal.signal(signum,handler)
 

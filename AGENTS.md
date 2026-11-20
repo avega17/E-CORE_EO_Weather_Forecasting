@@ -73,6 +73,8 @@ Keep explanations readable for researchers inheriting the work.
 - Restore per-scan calibration and scientific sidecars when virtualizing ZIPs.
   Keep native grids separate. Virtual references do not perform transformations
   and depend on their source paths. Cache only reproducible preparation artifacts.
+- Notebook 05 manages one full processed store per output root. A different
+  selection requires confirmation of the exact store to replace.
 - New derived stores use plain compressed Zarr v3. One coordinator writes complete
   chunks/shards, verifies them and atomically advances the committed prefix.
   Readers hold leases; no deletion or replacement behind live readers.
@@ -86,10 +88,10 @@ Keep explanations readable for researchers inheriting the work.
   MRMS bitmap/sentinel distinctions and negative reflectivity remain intact.
   QPE is outside the current processing sprint. Parallax supports C01/C02/C03/C07/C13,
   same-platform heights and explicit unknown-height masks; no generic water-vapor shift.
-- Notebook 08's hourly storm comparison runs three independent ten-minute forecasts.
-  At valid hour H, its input ends at H−10. NAM uses the newest eligible exact-hour
-  field available in the archive by that cutoff, with older-cycle fallback.
-  Preserve gap evidence. Treat NAM and GOES as distinct fields and units.
+- Notebook 08 starts at H with six GOES frames ending at H and runs six
+  autoregressive steps through H+60. NAM uses a single eligible cycle for each
+  selected variable at H and H+1, available in the archive by H. Preserve gap
+  evidence and native NAM accumulation intervals and units.
 - Controlled DAS/model-window benchmarks require the supported fetch pause.
   Record cache conditions, processing/write/read costs and physical storage separately.
   Successful disposable benchmark stores are removed; processed research data are not.

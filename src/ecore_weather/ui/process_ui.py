@@ -1,146 +1,236 @@
-"""Readable processing controls; construction never reads imagery or starts work."""
+"""Controls for the single managed processing workflow."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
 
-def create():
-    import ipywidgets as w
-    from IPython.display import display,Markdown
-    from ecore_weather.processing.process_cli import parser, run
-    location=w.Text(value='/mnt/p/ecore_eo_datasets',description='Raw data',layout=w.Layout(width='95%'),
-        tooltip='Root containing verified native goes/ and mrms/ monthly archives')
-    destination=w.Text(value='/mnt/p/ecore_eo_datasets/processed',description='Derived',layout=w.Layout(width='95%'),
-        tooltip='Separate DAS directory on workstation; job-local scratch on Polaris')
-    preparation=w.Text(value='/mnt/p/ecore_eo_datasets/preparation',description='Prep path',layout=w.Layout(width='95%'),
-        tooltip='Virtual catalog, temporal index and reusable geometry; no full transformed observations')
+def processing_sections():
     import datetime
-    start=w.DatePicker(value=datetime.date(2022,9,18),description='Start UTC')
-    end=w.DatePicker(value=datetime.date(2022,9,19),description='End UTC',tooltip='Exclusive ending date')
-    resolution=w.Dropdown(options=[('1 km',1),('2 km',2),('3 km',3)],value=1,description='Grid')
-    quality=w.Dropdown(options=[('Good pixels','good'),('Good + conditional','conditional')],description='Quality')
-    mode=w.Dropdown(options=['auto','full','blocks'],description='Storage',tooltip='Auto uses the full selection when it fits with a 5% free-space reserve')
-    layout=w.Dropdown(options=[('Frame chunks',(1,0)),('Six-frame chunks',(6,0)),('24-frame shards',(1,24))],description='Layout',tooltip='Measured layout choices; complete shards are written before checkpointing')
-    correction=w.Dropdown(options=[('Uncorrected','none'),('Cloud heights','cloud-height')],description='Parallax',tooltip='C01/C02/C03/C07/C13 only; requires matched height data')
-    compression=w.Dropdown(options=['zstd','none'],description='Codec',tooltip='Lossless Zstd by default; uncompressed only when measured and affordable')
-    workers=w.BoundedIntText(value=0,min=0,max=1024,description='Processes',tooltip='0 uses all CPUs allowed by this machine/job; each process opens independent native archives')
-    memory=w.BoundedIntText(value=32768,min=1024,max=1048576,description='Memory MiB',tooltip='Budget for process, decoded-source and prefetched output buffers; leave RAM for the operating system')
-    bands=w.SelectMultiple(options=[(f'C{n:02d}',n) for n in [1,2,3,7,8,9,10,13]],
-        value=(1,2,3,7,8,9,10,13),description='GOES bands',rows=4)
-    radar=w.SelectMultiple(options=[('Composite reflectivity','refc'),('Base reflectivity','refc_base')],
-        value=('refc','refc_base'),description='Radar',rows=2,
-        tooltip='Use Ctrl/Cmd to select products; clear the selection for GOES only')
-    selection=w.Text(description='Selection',layout=w.Layout(width='95%'),tooltip='Filled after indexing; paste an existing preparation selection path to reuse it')
-    unit=w.Text(description='Store',layout=w.Layout(width='95%'),tooltip='Completed full/block directory, not a raw monthly archive')
-    def changed_selection(change):
-        selection.value='';unit.value=''
-    for control in (location,start,end,resolution,quality,compression,bands,radar,layout,correction):
-        control.observe(changed_selection,names='value')
-    save=w.Checkbox(value=False,description='Save preview to figures/',indent=False)
-    output=w.Output();buttons=[]
-    instructions=w.HTML('<p>Choose completed native data and a separate output path. <b>Index</b> finds observations; '
-        '<b>Estimate</b> reads a small sample. <b>Materialize</b> writes the chosen derived variant. '
-        'Changing scientific choices clears the saved selection: click <b>Index</b> again. '
-        'A virtual catalog alone does not interpolate data. Dates are UTC and the ending date is excluded.</p>')
-    def arguments(operation):
-        values=[operation,'--location',location.value,'--destination',destination.value,'--preparation-root',preparation.value,
-            '--start',start.value.isoformat(),'--end',end.value.isoformat(),'--resolution-km',str(resolution.value),
-            '--quality',quality.value,'--mode',mode.value,'--compression',compression.value,
-            '--chunk-time',str(layout.value[0]),'--shard-time',str(layout.value[1]),'--correction',correction.value,
-            '--workers',str(workers.value),'--memory-mib',str(memory.value)]
-        values+=['--bands',*[str(n) for n in bands.value],'--radar',*radar.value]
-        if selection.value and operation not in ('index','inventory'):values+=['--selection',selection.value]
-        if unit.value:values+=['--unit',unit.value]
-        return parser().parse_args(values)
-    def action(operation):
-        def clicked(_):
-            for button in buttons:button.disabled=True
-            with output:
-                output.clear_output(wait=True)
-                try:
-                    result=run(arguments(operation))
-                    if result.get('preparation_path'):selection.value=result['preparation_path']
-                    if result.get('units'):
-                        unit.value=result['units'][0]['path']
-                        variable.options=result['units'][0].get('variables',variable.options)
-                    import pandas as pd
-                    display(pd.DataFrame([{k:v for k,v in result.items() if not isinstance(v,(dict,list))}]).T.rename(columns={0:'Result'}))
-                    if result.get('absent_variables'):display(Markdown('Missing products: '+', '.join(result['absent_variables'])))
-                    if result.get('cases'):display(pd.DataFrame(result['cases']))
-                except Exception as exc:display(Markdown(f'**{type(exc).__name__}:** {exc}'))
-                finally:
-                    for button in buttons:button.disabled=False
-        return clicked
-    actions=[]
-    for label,operation,tip in [('Index','index','Build causal observation and model-window indices'),
-        ('Virtual catalog','catalog','Reference native ZIP chunks without copying pixels'),
-        ('Estimate','estimate','Read representative ROI samples and estimate complete-variant storage'),
-        ('Materialize','materialize','Write physical arrays and masks to the Derived path'),
-        ('Validate','validate','Reopen and check all committed processing batches'),
-        ('Statistics','stats','Export training-only moments and geographic invariants'),
-        ('Benchmark','benchmark','Run bounded storage tests; requires the supported fetch pause'),
-        ('Parallax pilot','parallax','Validate C01/C02/C03/C07/C13 with bounded cloud-height examples'),
-        ('Model check','model-check','Report model/data requirements; CLI opts in to experimental geography')]:
-        button=w.Button(description=label,tooltip=tip,layout=w.Layout(min_width='145px',width='auto'))
-        button.on_click(action(operation));buttons.append(button);actions.append(button)
-    preview=w.Button(description='Preview',tooltip='Read one completed derived sample',layout=w.Layout(min_width='145px'))
-    variable=w.Dropdown(options=[f'abi{n:02d}c' for n in [1,2,3,7,8,9,10,13]]+['refc','refc_base'],description='Variable')
-    def draw(_):
-        with output:
-            output.clear_output(wait=True)
+    import subprocess
+    import sys
+
+    import ipywidgets as w
+    from IPython.display import display
+    from ecore_weather.core.paths import repository_root, result_path
+    from ecore_weather.processing.managed_store import primary_store, writer_active
+    from ecore_weather.processing.process_cli import parser, run
+
+    base = Path('/mnt/p/ecore_eo_datasets')
+    location = w.Text(value=str(base), description='Native data', layout=w.Layout(width='95%'))
+    destination = w.Text(value=str(base / 'processed'), description='Output root', layout=w.Layout(width='95%'))
+    start = w.DatePicker(value=datetime.date(2022, 9, 18), description='Start UTC')
+    end = w.DatePicker(value=datetime.date(2022, 9, 19), description='End UTC', tooltip='End excluded')
+    resolution = w.Dropdown(options=[(f'{n} km', n) for n in (1,2,3)], value=3, description='Grid')
+    correction = w.Checkbox(description='Apply cloud-height correction', indent=False)
+    quality = w.Dropdown(options=[('Good pixels', 'good'), ('Good and conditional', 'conditional')], description='Quality')
+    bands = w.SelectMultiple(options=[(f'C{n:02}',n) for n in (1,2,3,7,8,9,10,13)],
+                            value=(1,2,3,7,8,9,10,13), description='GOES bands', rows=4)
+    radar = w.SelectMultiple(options=[('Composite reflectivity','refc'), ('Base reflectivity','refc_base')],
+                            value=('refc','refc_base'), description='Radar', rows=2)
+    workers = w.BoundedIntText(value=8, min=0, max=1024, description='Processes')
+    memory = w.BoundedIntText(value=32768, min=1024, max=1048576, description='Memory MiB')
+    layout = w.Dropdown(options=[('Single-frame chunks', (1,0)), ('Six-frame chunks', (6,0)),
+                                 ('24-frame shards', (1,24))], description='Layout')
+    advanced = w.Accordion(children=[w.VBox([workers,memory,layout])], selected_index=None)
+    advanced.set_title(0, 'Advanced processing settings')
+    refresh = w.Button(description='Refresh status')
+    status_out = w.Output()
+    build_out = w.Output()
+    preview_out = w.Output()
+    check_out = w.Output()
+    review = w.Button(description='Review build')
+    launch = w.Button(description='Build processed dataset', disabled=True, button_style='primary',
+                      layout=w.Layout(width='215px'))
+    replace = w.Checkbox(description='Delete the named store and build this selection', indent=False,
+                         layout=w.Layout(width='auto'), disabled=True)
+    unit = w.Text(description='Store path', layout=w.Layout(width='95%'))
+    variable = w.Dropdown(description='Variable', options=[f'abi{n:02}c' for n in (1,2,3,7,8,9,10,13)]
+                                                           + ['refc','refc_base'], value='abi13c')
+    day = w.DatePicker(value=datetime.date(2022,9,18), description='Date UTC')
+    clock = w.TimePicker(value=datetime.time(16,10), description='Time UTC')
+    save = w.Checkbox(description='Save figure', indent=False)
+    view = w.Button(description='Preview processed')
+    parallax = w.Button(description='Compare parallax')
+    validate = w.Button(description='Validate store')
+    report = w.Button(description='Export report')
+    state = {}
+    result_root = result_path('dataset-processing/notebook-build')
+
+    def current(_=None):
+        with status_out:
+            status_out.clear_output(wait=True)
+            path = primary_store(destination.value)
+            if path:
+                selected = path / 'full'
+                unit.value = str(selected)
+                print(f'Managed store  {selected}')
+                status = selected / 'progress.json'
+                if status.is_file():
+                    print(f"Verified slots  {json.loads(status.read_text())['verified_slots']:,}")
+                if writer_active(selected):
+                    print('A writer is active')
+                else:
+                    print('Complete' if (selected / 'complete.json').is_file() else 'Incomplete and resumable')
+            else:
+                print('No managed processed store found')
+            heights = result_path('dataset-processing/heights/height-summary.json')
+            if heights.is_file():
+                status = json.loads(heights.read_text())
+                print(f"Height fetch  {status['status']}. Latest verified  {status.get('latest', 'unavailable')}")
+            job = state.get('job')
+            if job:
+                code = job.poll()
+                print('Notebook build is running' if code is None else f'Notebook build exit code  {code}')
+            log = result_root / 'build.log'
+            if log.is_file():
+                with log.open('rb') as stream:
+                    stream.seek(max(0, log.stat().st_size - 1200))
+                    recent = stream.read().decode(errors='replace').splitlines()
+                print('\n'.join(recent[-3:]))
+
+    def args(operation):
+        if not start.value or not end.value or start.value >= end.value:
+            raise ValueError('Choose an increasing date range')
+        return [operation, '--location', location.value, '--destination', destination.value,
+            '--preparation-root', str(Path(location.value) / 'preparation'),
+            '--start', start.value.isoformat(), '--end', end.value.isoformat(),
+            '--resolution-km', str(resolution.value), '--quality', quality.value,
+            '--correction', 'cloud-height' if correction.value else 'none',
+            '--workers', str(workers.value), '--memory-mib', str(memory.value),
+            '--chunk-time', str(layout.value[0]), '--shard-time', str(layout.value[1]),
+            '--bands', *map(str,bands.value), '--radar', *radar.value,
+            '--output', str(result_root)]
+
+    def invalidate(_=None):
+        state.pop('review', None)
+        launch.disabled = replace.disabled = True
+        replace.value = False
+
+    def review_build(_):
+        invalidate()
+        with build_out:
+            build_out.clear_output(wait=True)
             try:
-                import numpy as np,matplotlib.pyplot as plt
-                from ecore_weather.processing.process_store import ProcessedSource
-                path=Path(unit.value);state=json.loads((path/'progress.json').read_text())
-                import zarr
-                raw=zarr.open_group(str(path/'data.zarr'),mode='r')
-                choices=raw['variable'][:].tolist()
-                if variable.value not in choices:variable.options=choices
-                times=raw['time'][:]
-                with ProcessedSource(path) as source:
-                    sample=source([times[len(times)//2]],[variable.value]).isel(time=0,variable=0)
-                figure,axis=plt.subplots(figsize=(8,6),layout='constrained')
-                sample.plot(ax=axis);axis.set_title(f'{variable.value} · {str(sample.time.values)}')
-                if save.value:
-                    target=Path('figures/dataset-processing');target.mkdir(parents=True,exist_ok=True)
-                    figure.savefig(target/f'{variable.value}-preview.png',dpi=150)
-                display(figure);plt.close(figure)
-            except Exception as exc:display(Markdown(f'**{type(exc).__name__}:** {exc}'))
-    correction_day=w.DatePicker(value=datetime.date(2022,9,18),description='Preview date')
-    correction_time=w.TimePicker(value=datetime.time(16,10),description='Time UTC')
-    correction_band=w.Dropdown(options=[(f'C{b:02}',b) for b in (1,2,3,7,13)],value=13,description='Cloud band')
-    compare=w.Button(description='Compare parallax',layout=w.Layout(min_width='150px'),
-                     tooltip='Read one verified native GOES and ACHAF pair; use the selected grid')
-    def compare_frame(_):
-        compare.disabled=True
-        try:
-            with output:
-                output.clear_output(wait=True)
-                from matplotlib import pyplot as plt
-                from ecore_weather.ui.forecast_ui import parallax_comparison
-                from ecore_weather.core.paths import repository_root
-                stamp=f'{correction_day.value}T{correction_time.value}Z'
-                fig=parallax_comparison(location.value,stamp,correction_band.value,resolution.value)
-                if save.value:
-                    target=repository_root()/'figures/dataset-processing/parallax'
-                    target.mkdir(parents=True,exist_ok=True)
-                    fig.savefig(target/f'parallax-preview-C{correction_band.value:02d}-{correction_day.value}T{correction_time.value:%H%M}Z-{resolution.value}km.png',dpi=150)
-                display(fig)
-                plt.close(fig)
-        except (ValueError,OSError,KeyError) as exc:
-            with output: print(exc)
-        finally:
-            compare.disabled=False
-    compare.on_click(compare_frame)
-    preview.on_click(draw);buttons.append(preview)
-    return w.VBox([instructions,location,preparation,destination,w.HBox([start,end]),
-        w.HBox([resolution,quality]),w.Box([mode,compression,layout,correction],layout=w.Layout(display='flex',flex_flow='row wrap')),w.HBox([bands,radar]),selection,unit,
-        w.Box(actions,layout=w.Layout(display='flex',flex_flow='row wrap',gap='8px')),
-        w.HBox([workers,memory]),w.HBox([variable,preview,save]),
-        w.HBox([correction_day,correction_time,correction_band,compare]),output])
+                existing = primary_store(destination.value)
+                if existing and writer_active(existing / 'full'):
+                    print('The current store has a writer. Review again after it exits.')
+                    return
+                configuration = args('estimate')
+                parsed = parser().parse_args(configuration)
+                index = run(parser().parse_args(args('index')))
+                selection = ['--selection', index['preparation_path']]
+                estimate = run(parser().parse_args(configuration + selection))
+                target = Path(destination.value).resolve() / index['selection_id']
+                previous = existing if existing and existing != target else None
+                print(f'New selection  {parsed.start} to {parsed.end} UTC (end excluded), '
+                      f'{resolution.value} km, {parsed.correction}')
+                print(f"Estimated storage  {estimate['estimated_stored_bytes']/1e9:.2f} GB")
+                print(f'Target  {target}')
+                if previous:
+                    import zarr
+                    old = zarr.open_group(str(previous/'full/data.zarr'), mode='r', use_consolidated=False)
+                    times = old['time']
+                    marker = previous/'full/complete.json'
+                    storage = json.loads(marker.read_text()).get('stored_bytes') if marker.is_file() else None
+                    if storage is None:
+                        storage = sum(p.stat().st_size for p in previous.rglob('*') if p.is_file())
+                    print(f"Will delete  {previous}\nCurrent store  {times[0]} to {times[-1]}, "
+                          f"{old.attrs['recipe']['resolution_km']} km, {old.attrs['recipe']['parallax']}, {storage/1e9:.2f} GB")
+                    print('An interrupted replacement can resume from its own verified slots.')
+                elif existing:
+                    print('Resume or reuse the existing selection.')
+                if existing and writer_active(existing / 'full'):
+                    print('The current store has a writer. Review again after it exits.')
+                    return
+                state['review'] = (args('materialize') + selection + ['--managed-store'], previous)
+                replace.disabled = previous is None
+                launch.disabled = previous is not None
+            except Exception as exc:
+                print(f'{type(exc).__name__}: {exc}')
 
+    def start_build(_):
+        with build_out:
+            if 'review' not in state:
+                return
+            configuration, previous = state['review']
+            if previous and not replace.value:
+                return
+            job = state.get('job')
+            if job and job.poll() is None:
+                print('A notebook build is already running')
+                return
+            result_root.mkdir(parents=True, exist_ok=True)
+            if previous:
+                configuration += ['--replace-store', str(previous)]
+            with (result_root / 'build.log').open('w') as log:
+                state['job'] = subprocess.Popen([sys.executable, str(repository_root()/'scripts/dataset_jobs.py'),
+                    'process', *configuration], stdout=log, stderr=subprocess.STDOUT)
+            print('Build submitted. Use Refresh status to follow verified slots.')
+            invalidate()
 
+    def preview(corrected):
+        def click(_):
+            with preview_out:
+                preview_out.clear_output(wait=True)
+                try:
+                    from matplotlib import pyplot as plt
+                    stamp = f'{day.value}T{clock.value}Z'
+                    if corrected:
+                        from ecore_weather.ui.forecast_ui import parallax_comparison
+                        if variable.value not in ('abi01c','abi02c','abi03c','abi07c','abi13c'):
+                            raise ValueError('Choose C01/C02/C03/C07/C13 for the correction preview')
+                        figure = parallax_comparison(location.value, stamp, int(variable.value[3:5]), resolution.value)
+                    else:
+                        from ecore_weather.processing.process_store import ProcessedSource
+                        from ecore_weather.processing.storm_demo import as_time
+                        with ProcessedSource(Path(unit.value), allow_partial=True) as source:
+                            frame = source([as_time(stamp)], [variable.value]).isel(time=0, variable=0)
+                        figure, axis = plt.subplots(figsize=(8,6), layout='constrained')
+                        frame.plot(ax=axis)
+                    if save.value:
+                        folder = repository_root()/'figures/dataset-processing'
+                        folder.mkdir(parents=True,exist_ok=True)
+                        figure.savefig(folder/f'{variable.value}-{day.value}-{"parallax" if corrected else "preview"}.png', dpi=150)
+                    display(figure)
+                    plt.close(figure)
+                except Exception as exc:
+                    print(f'{type(exc).__name__}: {exc}')
+        return click
+
+    def check(action):
+        def click(_):
+            with check_out:
+                check_out.clear_output(wait=True)
+                try:
+                    if action == 'validate':
+                        from ecore_weather.processing.process_store import reader_lease, validate_store
+                        with reader_lease(unit.value):
+                            print(validate_store(unit.value))
+                    else:
+                        print(export_report(result_path('dataset-processing'))['path'])
+                except Exception as exc:
+                    print(f'{type(exc).__name__}: {exc}')
+        return click
+
+    for control in (location,destination,start,end,resolution,correction,quality,bands,radar,workers,memory,layout):
+        control.observe(invalidate, names='value')
+    replace.observe(lambda change: setattr(launch, 'disabled', not change['new']), names='value')
+    refresh.on_click(current)
+    review.on_click(review_build)
+    launch.on_click(start_build)
+    view.on_click(preview(False))
+    parallax.on_click(preview(True))
+    validate.on_click(check('validate'))
+    report.on_click(check('report'))
+    return (
+        w.VBox([refresh,status_out]),
+        w.VBox([location,destination,w.HBox([start,end]),w.HBox([resolution,quality]),correction,
+                w.HBox([bands,radar]),advanced]),
+        w.VBox([review,replace,launch,build_out]),
+        w.VBox([unit,variable,w.HBox([day,clock]),save,w.HBox([view,parallax]),preview_out]),
+        w.VBox([w.HBox([validate,report]),check_out]),
+    )
 def export_report(output):
     """One readable Markdown report from compact bounded-experiment receipts."""
     root=Path(output);root.mkdir(parents=True,exist_ok=True)

@@ -1,8 +1,8 @@
 # %% [markdown]
 # # Process native NOAA observations into regional datasets
-# Start with completed monthly archives. This notebook builds time indices and
-# reusable geometry, then creates physical-unit arrays on a declared 1, 2 or 3 km
-# grid. Native archives stay unchanged. The same operations are available through
+# Choose verified NOAA observations and build a processed dataset on a 1, 2 or
+# 3 km grid. Run all displays the controls. Review a selection before starting
+# a build. The same operations are available through
 # `python scripts/dataset_jobs.py process --help` and this file's script interface.
 
 # %%
@@ -16,16 +16,10 @@ if __name__ != '__mp_main__':
         raise SystemExit(main())
 
 # %% [markdown]
-# ## Environment and storage
-# Use the separate processing Conda environment described in
-# [the processing guide](../docs/dataset_processing.md). GPU dependencies belong
-# in the model environment. On the workstation both preparation artifacts and
-# materialized variants use separate directories on P:; Linux SSD use is bounded.
-# On Polaris keep reusable preparation on Eagle and variants on node scratch.
-# Materialization uses independent processes. The Processes control defaults to
-# 0, meaning all CPUs allowed by this machine or job. The workstation study
-# configuration reserves 64 GiB for workers and prefetched output; one writer
-# verifies and commits batches while later batches are being transformed.
+# ## Setup
+# Use the processing Conda environment on the workstation. Keep the derived
+# store and preparation on the DAS. On Polaris set the output root to node
+# scratch. See the [processing guide](../docs/dataset_processing.md).
 
 # %%
 if __name__ != '__mp_main__':
@@ -42,34 +36,53 @@ if __name__ != '__mp_main__':
     os.chdir(root)
     sys.path.insert(0,str(root/'src'))
     from IPython.display import display
-    from ecore_weather.ui.process_ui import create
+    from ecore_weather.ui.process_ui import processing_sections
+    status, choose, build, preview, validation = processing_sections()
 
 # %% [markdown]
-# ## Choose a sample and inspect its preparation
-# Indexing lists completed observations and identifies incomplete histories.
-# Six ten-minute observations span 50 minutes between the first and last times.
-# Compare parallax opens one verified GOES image and its matched cloud height.
-# Select a UTC slot, cloud band and grid spacing to compare the shared valid area.
-# Preparation indexes point to unchanged native ZIPs. Materialization writes
-# calibrated arrays to data.zarr; estimates read a small sample.
+# ## Current status
+# Refresh to see the managed store, verified slots, and latest cloud-height
+# fetch record. You can preview frames that have already been verified.
 
 # %%
 if __name__ != '__mp_main__':
-    display(create())
+    display(status)
 
 # %% [markdown]
-# ## What materialization produces
-# Each variant contains physical values, validity, source support, categorical
-# quality/missingness, actual source times and the common projected coordinates.
-# A complete plain-Zarr store supports arbitrary eligible windows across months. Auto mode
-# chooses it when the complete selection fits with a 5% filesystem reserve;
-# otherwise temporal blocks provide a bounded working set. Both modes can resume.
-# Finer output grids do not create extra measured detail in infrared bands.
-#
-# ## Correction and model experiments
-# The parallax pilot uses separately matched cloud heights for C01/C02/C03/C07/C13 and retains
-# uncertain-height boundaries. It does not silently correct water-vapor bands.
-# The experimental Caribbean model adapter is an engineering forward-pass check,
-# not a claim of regional forecast skill. Earth2Studio supplies solar-zenith
-# conditioning internally. See the guide for explicit opt-in CLI commands and
-# the additional requirements for a future coupled radar/GLM model.
+# ## Choose a selection
+# Dates are UTC and the ending date is excluded. Use 3 km for the Flash demo.
+# Cloud-height correction applies to C01, C02, C03, C07, and C13 where matched
+# height and source observations provide valid pixels.
+
+# %%
+if __name__ != '__mp_main__':
+    display(choose)
+
+# %% [markdown]
+# ## Review and build
+# Review builds a time index and measures a small sample for the storage
+# estimate. **Build processed dataset** starts a background job that may run for
+# hours. An identical selection resumes from its verified slots. A new selection
+# requires confirmation to delete the named managed store first.
+
+# %%
+if __name__ != '__mp_main__':
+    display(build)
+
+# %% [markdown]
+# ## Preview a frame
+# Preview a committed processed frame or compare native GOES with and without
+# cloud-height correction for a UTC time. These actions read only a sample.
+
+# %%
+if __name__ != '__mp_main__':
+    display(preview)
+
+# %% [markdown]
+# ## Validate or export a report
+# Validation rereads committed batches and can take time for a full study.
+# Benchmark and model experiments use the documented CLI.
+
+# %%
+if __name__ != '__mp_main__':
+    display(validation)

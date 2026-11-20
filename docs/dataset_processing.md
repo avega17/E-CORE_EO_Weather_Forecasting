@@ -454,13 +454,98 @@ cycles and decoded 133 NAM messages, plus one operational RRFS temperature
 message. The measured NAM footprint covers about 91.0% of the acquisition box
 on the 3 km grid and 95.9% of the centered model crop.
 
-Notebook 07 loads one NAM and GOES pair on demand. Notebook 08 uses a public
-storm catalog and fetches a single two-hour block on request. The three rows are
-independent ten-minute Flash forecasts. For the center hour H the model uses
-H−60 through H−10. NAM uses the newest exact-hour forecast available by H−10
-and falls back through older runs. The same NAM field appears in each row for
-hourly context, with its own units. Report GOES error only on common valid
-forecast and observation pixels.
+### Select NAM forecasts by tropical cyclone
+
+Use the [North Atlantic IBTrACS v04r01 CSV](https://www.ncei.noaa.gov/products/international-best-track-archive)
+to find main tracks crossing the acquisition box. The selector records the
+snapshot checksum, uses UTC and USA position fields, and checks segments between
+fixes up to six hours apart. A crossing window starts 12 hours before entry
+and ends 24 hours after exit, rounded outward to hourly boundaries and clipped
+to the study period. Overlapping windows for a storm merge. An offshore track
+can still produce rain over Puerto Rico. The review table lists nearby misses
+separately, and local Pass2 rain summaries are available with `--event-rain`.
+
+```bash
+python scripts/dataset_jobs.py process nam-events \
+  --output results/dataset-processing/nam-events \
+  --figure-dir figures/dataset-processing/nam-events
+```
+
+Planning reads the track CSV, NOAA listings and GRIB text indexes. It saves
+`events.csv`, `cycles.csv`, the map and `selection.json.gz`. Use
+`--event-storm Fiona --event-max-hours 3` and a separate output directory to
+repeat the small Fiona pilot. Use `--ibtracs` to reproduce a plan from a local
+snapshot or `--event-limit` to limit the number of closest tracks.
+
+For each initialization hour H, the plan retains every eligible NAM Puerto Rico
+nest cycle supplying a field valid at H or H+1, using the archive timestamp by H.
+The timestamp is evidence of archive availability. The paired-cycle table lists
+the newest same-cycle pair first for each field. Exact-hour selection preserves
+lead time, levels, units and accumulation intervals. A missing comparison hour
+or field remains a gap. This collection includes the ten core fields from the
+[NAM field catalog](nam_audit.md).
+
+```bash
+python scripts/dataset_jobs.py process nam-events --apply \
+  --event-plan results/dataset-processing/nam-events/selection.json.gz \
+  --location /mnt/p/ecore_eo_datasets --output results/dataset-processing/nam-events
+```
+
+Apply reads each selected GRIB message once and reuses shared ranges. Verified
+monthly stores live under `nwp/nam/priconest/<selection>/<YYYY-MM>/data.zarr`
+in the specified location. Open only months with a `complete.json` marker.
+The selection records source identities; the monthly progress record contains
+the field units, accumulation intervals and read-back checksums. The apply
+command reopens and checks saved rows before continuing. It uses a cumulative
+transfer ceiling of 125% of the listed GRIB ranges unless you supply
+`--max-transfer-gib`. The Fiona pilot used 52.1 MB of GRIB ranges and retained
+51.5 MB for 38 forecasts.
+
+The November 17 IBTrACS snapshot yielded 16 storms and 17 encounters, with
+eligible data for 843 of 1,107 requested storm hours. Elsa, Fred, Grace and
+Peter account for the gaps in early 2021. The full selection listed 8,404
+forecast objects and 11.71 GB of selected ranges, alongside 33.45 GB of
+uncompressed cropped fields. These are planning estimates until apply verifies
+the arrays.
+
+Notebook 07 loads one NAM and GOES pair on demand. Notebook 08 reads the
+selected time range from a shared Zarr v3 storm store. Choose an initialization
+hour H and a correction variant. Flash uses six observations from H−50 through H
+and advances its own predictions through H+60 in ten-minute steps. The six maps
+compare predictions with later GOES observations. NAM shows valid hour H in the
+first five rows and H+1 in the last. For each selected variable, both NAM fields
+come from an eligible cycle available in the archive by H. The display includes
+the cycle, valid hour, forecast lead and any accumulation interval.
+
+Band and NAM menus redraw the most recent cached prediction. Changing the
+correction choice changes the model input. Correction applies to C01, C02, C03,
+C07 and C13 where heights provide valid support.
+
+A Fiona test loaded the 12 frames needed for one comparison from a cold local
+Hugging Face cache. The previous NPZ took 2.61 seconds and fetched 27.4 MB.
+Concurrent reads of unsharded six-frame Zarr chunks took 3.62 seconds and
+fetched 18.2 MB. Both layouts loaded from a warm cache in about a third of a
+second. These are medians from three runs per layout on one storm window.
+The Zarr default uses six-frame chunks without sharding. Twelve-frame shards
+took 3.83 seconds with concurrent reads in the same test.
+
+On Colab L4 one Fiona uncorrected run took 62 seconds including the initial
+model load. The corrected run took 8.8 seconds with the model already loaded.
+Changing the displayed GOES band and NAM field made no new inference calls.
+The default dataset revision contains both variants for all seven storms. To try
+the one-hour pilot, set `os.environ['ECORE_STORM_DEMO_REVISION'] = 'zarr-v2-pilot'`
+in a cell before running the notebook. The default revision is the full dataset
+after publication.
+
+Notebook 05 separates job status, selection, build review, previews and
+validation. Use **Review build** to see the estimated storage and the path of
+any old store that would be deleted. **Build processed dataset** starts the
+background job. Identical selections resume from verified slots. A different
+selection requires explicit confirmation and an idle store with no readers.
+For the equivalent CLI workflow, pass `--managed-store` to `process materialize`
+and use `--replace-store /exact/path/to/old/selection` after reviewing the
+existing data. The notebook manages the primary full dataset. Existing
+research outputs and the bounded demo export have separate lifecycles.
 
 The demo data are published at the end of this guide. Colab uses a separate
 Python 3.12 environment for the CUDA 13 model wheels while the widget kernel may
@@ -491,7 +576,8 @@ python scripts/dataset_jobs.py process demo-export --demo-unit /path/to/full \
 ```
 
 Repeat `--demo-unit` for verified bounded stores covering an unfinished part of
-the study. The export keeps the documented approximate elevation calibration and
+the study. Use a fresh `--demo-root` and pass `--location` for the verified native
+GOES and ACHAF archives. Supply `--demo-hour` to export a bounded pilot. The export keeps the documented approximate elevation calibration and
 the original native archives. The Colab execution checks an experimental
 Caribbean adaptation of the CONUS checkpoint against GOES observations.
 An L4 check produced all three ten-minute forecasts for one hour each of Fiona,

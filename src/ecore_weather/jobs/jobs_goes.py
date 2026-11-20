@@ -172,7 +172,7 @@ def main(argv=None):
     parser.add_argument("--destination", default="/mnt/p/ecore_eo_datasets")
     parser.add_argument("--output", default="results/study-goes-native")
     parser.add_argument("--scratch", default="results/study-scratch")
-    parser.add_argument("--workers", type=int, default=8,
+    parser.add_argument("--workers", type=int, default=None,
                         help="Source threads/batch limit per reader; HDF5 serializes calls within each process. Use --read-processes for independent HDF5 reads.")
     from ecore_weather.ingest.goes_shared import add_arguments
     add_arguments(parser)
@@ -180,6 +180,12 @@ def main(argv=None):
                         help="Legacy CMIPF compatibility only; unused by MCMIPF")
     parser.add_argument("--product", choices=("ABI-L2-MCMIPF", "ABI-L2-CMIPF", "ABI-L2-ACHAF"),
                         default="ABI-L2-CMIPF")
+    parser.add_argument("--height-reader-processes", type=int,
+                        help="ACHAF independent HDF5 readers (default four). --workers is an alias for ACHAF.")
+    parser.add_argument("--height-prefetch-observations", type=int, default=8,
+                        help="ACHAF limit including running and ready observations")
+    parser.add_argument("--height-roi-mib", type=int, default=256,
+                        help="ACHAF budget for returned and in-flight cropped arrays")
     parser.add_argument("--storm-heights-first", action="store_true",
                         help="Fetch cloud heights for demo storms and their input histories before the full interval")
     parser.add_argument("--read-profiles", help="Pinned per-band benchmark profiles JSON")
@@ -200,7 +206,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.product=='ABI-L2-ACHAF':
         from ecore_weather.processing.process_parallax import fetch_height_study
+        if args.workers is not None and args.height_reader_processes is not None and args.workers != args.height_reader_processes:
+            parser.error("--workers conflicts with --height-reader-processes")
+        args.height_reader_processes = next((n for n in (args.height_reader_processes, args.workers)
+                                             if n is not None), 4)
+        if min(args.height_reader_processes, args.height_prefetch_observations, args.height_roi_mib) < 1:
+            parser.error("Choose positive ACHAF reader and prefetch limits")
         return fetch_height_study(args)
+    if args.workers is None:
+        args.workers = 8
     if args.storm_heights_first:
         parser.error("--storm-heights-first requires ABI-L2-ACHAF")
     requested = None

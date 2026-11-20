@@ -17,6 +17,9 @@ navigation and [study jobs](study_jobs.md) for operational commands.
   The eight-process workstation profile is measured; the supported-CONUS Flash
   reference has completed in the isolated CUDA 13 model environment.
 
+- Keep the storm-based NAM baseline separate from the seven-storm demo. Select
+  crossings from IBTrACS and retain all eligible forecast cycles for lead-time analysis.
+
 ## Later research work
 
 Bounded 1/2/3 km cloud-height/parallax examples and stock-loader checks are complete.

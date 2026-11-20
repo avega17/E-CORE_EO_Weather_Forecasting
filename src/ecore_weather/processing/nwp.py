@@ -18,6 +18,9 @@ from ecore_weather.processing.transforms import atomic_json
 NAM = 'noaa-nam-pds'
 RRFS = 'noaa-rrfs-ops-pds'
 FIELDS = {
+    'PRES': ('Surface pressure', 'surface', ('sp', 'pres')),
+    'PRMSL': ('Sea-level pressure', 'mean sea level', ('prmsl', 'msl')),
+    'DPT': ('2 m dew point', '2 m above ground', ('2d', 'dpt', 'd')),
     'REFC': ('Composite reflectivity', 'entire atmosphere', ('refc',)),
     'HGT': ('500 hPa geopotential height', '500 mb', ('gh', 'z')),
     'APCP': ('Precipitation accumulation', 'surface', ('tp', 'apcp')),
@@ -27,7 +30,7 @@ FIELDS = {
     'VGRD': ('10 m northward wind', '10 m above ground', ('10v', 'v')),
     'PWAT': ('Precipitable water', 'entire atmosphere', ('pwat', 'tcwv')),
 }
-LEVELS = {'HGT': 500, 'TMP': 2, 'UGRD': 10, 'VGRD': 10}
+LEVELS = {'HGT': 500, 'TMP': 2, 'DPT': 2, 'UGRD': 10, 'VGRD': 10}
 
 
 def parse_index(text, size):
@@ -148,37 +151,59 @@ class ForecastArchive:
                 'cutoff': iso(cutoff), 'skipped': failures}
 
     def decode(self, bucket, obj, record, bbox=PR_BBOX, expected=None):
+        return self.decode_range(bucket, obj, [record], bbox, expected)[record['field']]
+
+    def decode_range(self, bucket, obj, records, bbox=PR_BBOX, expected=None):
+        """Decode fields sharing one physical GRIB message after one range read."""
         import pygrib
-        content = self.get(bucket, obj, record['start'], record['stop'])
+
+        start, stop = records[0]['start'], records[0]['stop']
+        if any((r['start'], r['stop']) != (start, stop) for r in records):
+            raise ValueError('Fields in one decode must share the same GRIB byte range')
+        content = self.get(bucket, obj, start, stop)
         if not content.startswith(b'GRIB') or not content.endswith(b'7777'):
             raise ValueError('Invalid GRIB message boundaries')
-        field = record['field']
+        output = {}
         with tempfile.NamedTemporaryFile(suffix='.grib2') as tmp:
             tmp.write(content)
             tmp.flush()
             with pygrib.open(tmp.name) as messages:
-                message = next((m for m in messages if m.shortName in FIELDS[field][2]
-                                and (field not in LEVELS or m.level == LEVELS[field])), None)
-                if message is None:
-                    raise ValueError(f'GRIB field or level does not match index: {field}')
-                if expected and (utc(message.analDate), utc(message.validDate)) != expected:
-                    raise ValueError('GRIB initialization or valid time differs from selected forecast')
-                values = np.ma.asarray(message.values).astype('float32').filled(np.nan)
-                lat, lon = message.latlons()
-                lon = (lon+180)%360-180
-                west, south, east, north = bbox
-                inside = (lon>=west)&(lon<=east)&(lat>=south)&(lat<=north)
-                yy, xx = np.where(inside)
-                if not yy.size:
-                    raise ValueError('Forecast grid does not intersect the acquisition box')
-                crop = np.s_[yy.min():yy.max()+1, xx.min():xx.max()+1]
-                data = np.where(inside[crop], values[crop], np.nan)
-                return {'values': data, 'latitude': lat[crop], 'longitude': lon[crop],
-                        'source_bounds': [float(lon.min()),float(lat.min()),float(lon.max()),float(lat.max())],
-                        'units': message.units, 'field': field, 'level': record['level'],
-                        'initialization': iso(utc(message.analDate)), 'valid_time': iso(utc(message.validDate)),
-                        'lead': message.forecastTime, 'step_range': str(message.stepRange),
-                        'step_type': str(message.stepType), 'transfer_bytes': len(content)}
+                for message in messages:
+                    for record in records:
+                        field = record['field']
+                        if field in output or message.shortName not in FIELDS[field][2] or (
+                            field in LEVELS and message.level != LEVELS[field]
+                        ):
+                            continue
+                        output[field] = crop_message(message, record, bbox, expected, len(content))
+        if output.keys() != {r['field'] for r in records}:
+            raise ValueError(f'GRIB field or level does not match index: {sorted({r["field"] for r in records} - output.keys())}')
+        return output
+
+
+def crop_message(message, record, bbox, expected, transferred):
+    initialization = utc(message.analDate)
+    valid_time = utc(message.validDate)
+    if message.stepType == 'accum' and message.stepUnits == 1:
+        valid_time = initialization + timedelta(hours=int(message.endStep))
+    if expected and (initialization, valid_time) != expected:
+        raise ValueError('GRIB initialization or valid time differs from selected forecast')
+    values = np.ma.asarray(message.values).astype('float32').filled(np.nan)
+    lat, lon = message.latlons()
+    lon = (lon + 180) % 360 - 180
+    west, south, east, north = bbox
+    inside = (lon >= west) & (lon <= east) & (lat >= south) & (lat <= north)
+    yy, xx = np.where(inside)
+    if not yy.size:
+        raise ValueError('Forecast grid does not intersect the acquisition box')
+    crop = np.s_[yy.min():yy.max()+1, xx.min():xx.max()+1]
+    data = np.where(inside[crop], values[crop], np.nan)
+    return {'values': data, 'latitude': lat[crop], 'longitude': lon[crop],
+            'source_bounds': [float(lon.min()), float(lat.min()), float(lon.max()), float(lat.max())],
+            'units': message.units, 'field': record['field'], 'level': record['level'],
+            'initialization': iso(initialization), 'valid_time': iso(valid_time),
+            'lead': message.forecastTime, 'step_range': str(message.stepRange),
+            'step_type': str(message.stepType), 'transfer_bytes': transferred}
 
 
 def matches_field(record, field):

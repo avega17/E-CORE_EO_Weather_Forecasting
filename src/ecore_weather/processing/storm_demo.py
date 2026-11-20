@@ -177,86 +177,70 @@ def load_flash():
 
 
 def forecast_rows(model, arrays, hour, elevation):
+    """Advance one regional Flash iterator from a six-frame history."""
     import torch
     from collections import OrderedDict
     from ecore_weather.processing.process_model import caribbean_adapter, regional_topography
 
-    topo=regional_topography(elevation,arrays['latitude'],arrays['longitude'],allow_approximate=True)
-    for target,history,values,support,index in comparison_inputs(arrays,hour):
-        truth=np.where(arrays['pixel_valid'][index],arrays['values'][index],np.nan)
-        result={'valid_time':iso(target),'initialized':iso(history[-1]),'truth':truth,'forecast':None}
-        if support.any():
-            torch.manual_seed(0)
-            torch.cuda.manual_seed_all(0)
-            regional=caribbean_adapter(model,arrays['latitude'],arrays['longitude'],
-                                       arrays['y'],arrays['x'],topo,support)
-            coords=OrderedDict(batch=np.asarray([0]),time=np.asarray([as_time(history[-1])]),
-                lead_time=np.arange(-50,1,10).astype('timedelta64[m]'),variable=np.asarray(CHANNELS),
-                y=arrays['y'],x=arrays['x'])
-            inputs=torch.as_tensor(values[None,None],device='cuda',dtype=torch.float32)
-            with torch.inference_mode():
-                iterator=regional.create_iterator(inputs,coords)
-                next(iterator)
-                predicted,out_coords=next(iterator)
-                valid=out_coords['time'][-1]+out_coords['lead_time'][-1]
-                if valid!=as_time(target):
-                    raise ValueError('Flash returned an unexpected forecast time')
-                forecast=predicted.detach().cpu().numpy()[0,0,0]
-                if not np.isfinite(forecast[:,support]).all():
-                    raise ValueError('Flash produced nonfinite predictions on supported pixels')
-            result['forecast']=np.where(support,forecast,np.nan)
-        yield result
+    initial = as_time(hour)
+    times = arrays['time_ns'].astype('datetime64[ns]')
+    expected = initial + np.arange(-50, 61, 10).astype('timedelta64[m]')
+    np.testing.assert_array_equal(times, expected)
+    np.testing.assert_array_equal(arrays['variables'], CHANNELS)
+    ends = arrays['source_end_ns'][:6]
+    if np.any(ends == np.iinfo('int64').min) or np.any(ends > times[:6].astype('int64')[:, None]):
+        raise ValueError('The six-frame history needs causal source scans for every GOES band')
+    values = arrays['values'][:6]
+    support = (arrays['pixel_valid'][:6].astype(bool) & np.isfinite(values)).all(axis=(0, 1))
+    support &= arrays['inside_bbox'].astype(bool)
+    if not support.any():
+        raise ValueError('No pixels have valid observations in all six frames and eight bands')
+    topo = regional_topography(elevation, arrays['latitude'], arrays['longitude'], allow_approximate=True)
+    regional = caribbean_adapter(model, arrays['latitude'], arrays['longitude'],
+                                arrays['y'], arrays['x'], topo, support)
+    torch.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
+    coords = OrderedDict(batch=np.asarray([0]), time=np.asarray([initial]),
+                         lead_time=np.arange(-50, 1, 10).astype('timedelta64[m]'),
+                         variable=np.asarray(CHANNELS), y=arrays['y'], x=arrays['x'])
+    inputs = torch.as_tensor(values[None, None], device='cuda', dtype=torch.float32)
+    with torch.inference_mode():
+        iterator = regional.create_iterator(inputs, coords)
+        next(iterator)  # Earth2Studio 0.20 yields the initial state first.
+        for index in range(6, 12):
+            predicted, out_coords = next(iterator)
+            valid = out_coords['time'][-1] + out_coords['lead_time'][-1]
+            if valid != expected[index]:
+                raise ValueError(f'Flash returned unexpected valid time {valid}')
+            forecast = predicted.detach().cpu().numpy()[0, 0, 0]
+            if not np.isfinite(forecast[:, support]).all():
+                raise ValueError('Flash produced nonfinite predictions on supported pixels')
+            truth = np.where(arrays['pixel_valid'][index], arrays['values'][index], np.nan)
+            yield {'valid_time': iso(valid), 'initialized': iso(initial),
+                   'truth': truth, 'forecast': np.where(support, forecast, np.nan)}
 
 
-def render_rows(rows, arrays, block, hour, band=13):
-    from matplotlib import pyplot as plt
-    from ecore_weather.ui.forecast_ui import map_field, missing_panel
-    index=BANDS.index(band)
-    pos=block['hours'].index(iso(hour))
-    nam=block['nam'][pos]
-    fig,axes=plt.subplots(3,3,figsize=(13,11),layout='constrained')
-    available=[row[k][index] for row in rows for k in ('forecast','truth') if row[k] is not None]
-    flattened=np.concatenate([a[np.isfinite(a)] for a in available])
-    lo,hi=np.percentile(flattened,[2,98]) if flattened.size else (0,1)
-    for row,ax in zip(rows,axes):
-        for col,(key,label) in enumerate((('forecast','Flash +10 min'),('truth','GOES observation'))):
-            values=row[key]
-            if values is None or not np.isfinite(values[index]).any():
-                missing_panel(ax[col],f'{label}\nNo supported data')
-            else:
-                mesh=map_field(ax[col],arrays['longitude'],arrays['latitude'],values[index],vmin=lo,vmax=hi)
-                fig.colorbar(mesh,ax=ax[col],label='K' if band>=7 else 'Reflectance factor')
-            ax[col].set_title(f"{label} · {row['valid_time'][11:16]} UTC")
-        if nam['status']=='available' and f'nam{pos}_values' in arrays:
-            mesh=map_field(ax[2],arrays[f'nam{pos}_longitude'],arrays[f'nam{pos}_latitude'],
-                arrays[f'nam{pos}_values'],cmap='turbo',vmin=0,vmax=60)
-            fig.colorbar(mesh,ax=ax[2],label=nam.get('units','dBZ'))
-            ax[2].set_title(f"NAM REFC · valid {nam['valid_time'][11:16]} UTC\n{nam['initialization'][11:16]} run · +{nam['lead_hours']} h")
-        else:
-            missing_panel(ax[2],'No eligible exact-hour NAM forecast')
-    fig.suptitle(f'C{band:02} · {iso(hour)} · Experimental Caribbean adaptation\n'
-                 'NAM repeats the hourly field. Flash uses approximate regional topography.')
-    return fig
+def serve_forecasts():
+    """Keep the GPU checkpoint loaded while the notebook requests comparisons."""
+    from contextlib import redirect_stdout
+    import sys
+
+    model = None
+    for line in sys.stdin:
+        try:
+            request = json.loads(line)
+            with redirect_stdout(sys.stderr):
+                with np.load(request['input'], allow_pickle=False) as payload:
+                    arrays = dict(payload)
+                if model is None:
+                    model = load_flash()
+                rows = list(forecast_rows(model, arrays, request['hour'], request['elevation']))
+                np.savez(request['output'], forecasts=np.stack([r['forecast'] for r in rows]))
+            reply = {'status': 'complete', 'times': [r['valid_time'] for r in rows]}
+        except Exception as exc:
+            reply = {'status': 'error', 'reason': f'{type(exc).__name__}: {exc}'}
+        print(json.dumps(reply), flush=True)
 
 
-def _run_block_cli():
-    """Execute one block in the isolated GPU interpreter."""
-    import argparse
-    parser=argparse.ArgumentParser(description=_run_block_cli.__doc__)
-    parser.add_argument('payload')
-    parser.add_argument('digest')
-    parser.add_argument('hour')
-    parser.add_argument('elevation')
-    parser.add_argument('output')
-    args=parser.parse_args()
-    rows=list(forecast_rows(load_flash(),read_verified(args.payload,args.digest),args.hour,args.elevation))
-    payload={}
-    for i,row in enumerate(rows):
-        for key,value in row.items():
-            if value is not None:
-                payload[f'{i}_{key}']=value
-    np.savez_compressed(args.output,**payload)
-
-
-if __name__=='__main__':
-    _run_block_cli()
+if __name__ == '__main__':
+    serve_forecasts()

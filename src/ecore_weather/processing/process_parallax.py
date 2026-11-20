@@ -188,6 +188,10 @@ def height_bbox(bbox,margin_km=50):
 def fetch_height_study(args):
     """Existing monthly writer and scan checkpoints, one auxiliary store at a time."""
     import signal,time
+    from functools import partial
+    from ecore_weather.ingest.height_readers import ordered_height_reads
+    from ecore_weather.ingest.goes_memory import MemoryGuard, MemoryPolicy
+    from ecore_weather.ingest.goes_limits import IntentionalPause
     from ecore_weather.core.common import PR_BBOX,utc,iso
     from ecore_weather.jobs.jobs_goes import _months
     from ecore_weather.sources import goes
@@ -203,12 +207,35 @@ def fetch_height_study(args):
     root=Path(args.output);root.mkdir(parents=True,exist_ok=True)
     deadline=time.monotonic()+args.max_hours*3600 if args.max_hours else float('inf')
     stopped=[False];previous={}
+    guard=MemoryGuard(policy=MemoryPolicy(mode='checkpoint_pause', warning_gib=64,
+        minimum_available_gib=8, emergency_available_gib=4, grace_seconds=60, sample_seconds=5),
+        report=root/'memory.json')
+    reader=partial(ordered_height_reads, processes=args.height_reader_processes,
+        admitted=args.height_prefetch_observations, roi_mib=args.height_roi_mib)
+    next_report=0.
     import threading
     if threading.current_thread() is threading.main_thread():
         for signum in (signal.SIGTERM,signal.SIGINT):
             previous[signum]=signal.getsignal(signum);signal.signal(signum,lambda *unused:stopped.__setitem__(0,True))
     def checkpoint(ids):
-        if stopped[0] or time.monotonic()>=deadline:raise InterruptedError('Cloud-height checkpointed pause')
+        nonlocal next_report
+        try:
+            guard.check()
+        except IntentionalPause as exc:
+            raise InterruptedError(str(exc)) from exc
+        if stopped[0] or time.monotonic()>=deadline:
+            raise InterruptedError('Cloud-height checkpointed pause')
+        if time.monotonic() >= next_report and args.scratch:
+            paths=Path(args.scratch).glob('goes-height-*/progress.json')
+            progress=max(paths,key=lambda p:p.stat().st_mtime,default=None)
+            if progress:
+                state=json.loads(progress.read_text())
+                fields=('next_index','active_readers','reader_processes','read_bytes','writer_idle_seconds',
+                        'reader_seconds','attempt_elapsed_seconds','admitted_observations_limit')
+                atomic_json(root/'height-progress.json', {k:state[k] for k in fields if k in state}
+                    | {'pid':os.getpid(),'updated_at':time.time(),'total':len(state.get('asset_ids',()))})
+            next_report=time.monotonic()+15
+
     completed=0;transition=utc('2025-04-07T15:00:00Z')
     try:
         from datetime import timedelta
@@ -229,7 +256,8 @@ def fetch_height_study(args):
         for begin,finish in segments:
             edges=sorted({begin,finish,*([transition] if begin<transition<finish else [])})
             for a,b in zip(edges,edges[1:]):
-                if stopped[0] or time.monotonic()>=deadline:return 75
+                if stopped[0] or time.monotonic()>=deadline or (root/'pause.request').is_file():
+                    raise InterruptedError('ACHAF stopped at a verified month boundary')
                 satellite=goes.east_satellite(a,b)
                 saved=root/'months'/f'{a:%Y-%m}'/f'goes{satellite}-{a:%dT%H%M}-{b:%dT%H%M}.json'
                 if args.dry_run:
@@ -241,7 +269,7 @@ def fetch_height_study(args):
                 if not selection.assets:
                     store_receipt(saved,{'status':'unavailable','start':iso(a),'end_excluded':iso(b),'satellite':satellite});continue
                 target=Path(args.destination)/_relative_path(selection,selection.assets[0])
-                result=_write_one(selection,selection.assets,target,None,workers=min(args.workers,8),scratch=args.scratch,
+                result=_write_one(selection,selection.assets,target,None,workers=args.height_reader_processes,scratch=args.scratch,reader_factory=reader,
                     checkpoint_callback=checkpoint)
                 from ecore_weather.jobs.index import record_fetch
                 record_fetch({'source':'goes','selection_id':selection.id,
