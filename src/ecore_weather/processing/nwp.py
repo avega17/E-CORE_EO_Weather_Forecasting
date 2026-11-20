@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 import re
 import tempfile
+from time import sleep
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -94,6 +95,8 @@ class ForecastArchive:
                     raise
             finally:
                 self.budget.settle(charge, None if data is None else len(data))
+            # Let transient endpoint failures clear before spending another budgeted read.
+            sleep(2 ** attempt)
 
     @lru_cache(maxsize=96)
     def records(self, bucket, key, size, idx_key, idx_size, idx_etag):
