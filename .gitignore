@@ -227,6 +227,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-results/
+
+results/*
+!results/dataset-report/
+results/dataset-report/*
+# Keep the storage report available to collaborators.
+!results/dataset-report/storage-and-fetch-overview.md
 figures/**/*.html
 settings.json
