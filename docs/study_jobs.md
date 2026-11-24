@@ -420,11 +420,11 @@ report that limitation instead of trying alternative access routes.
 
 ### Progress and recovery
 
+Set up the [monitoring shell](#polaris-monitoring-shell) first, then use:
+
 ```bash
-export ECORE_PROJECT_ROOT=/eagle/lighthouse-upr
-watch -n 30 -t "$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu/bin/python \
-  $ECORE_PROJECT_ROOT/ecore-weather/repo/scripts/dataset_jobs.py status mrms \
-  --progress $ECORE_PROJECT_ROOT/ecore-weather/state/study/progress.json"
+watch -n 30 -t -x -- "$ECORE_PYTHON" scripts/dataset_jobs.py status mrms \
+  --progress "$ECORE_STATE_ROOT/study/progress.json"
 ```
 
 The compact shared progress file is updated approximately every 30 seconds.
@@ -521,9 +521,8 @@ This non-sensitive file exports the project/code/Python paths, allocation and
 default fetch dates. It preserves explicit overrides. It does not read `.env`,
 submit jobs or select pilot/study mode. Both GOES and MRMS default to the full
 2021–June 2026 interval. Explicitly exported values remain unchanged when sourcing
-this file: reset an older `PBS_GOES_END` before extending a study. For the pending
-GOES work, start at 2022-01-01 and reuse verified 2022 months, then continue
-through 2026-07-01. The three-node date assignments below cover that same union.
+this file. Reset an older `PBS_GOES_END` before extending a study. Use the Eagle
+archive inventory to choose any recovery dates.
 
 Sourcing runs the documented [project-quota command](https://docs.alcf.anl.gov/data-management/filesystem-and-storage/disk-quota/)
 and exports `ECORE_QUOTA_FREE_GIB` from the exact project/Eagle row. Call
@@ -602,12 +601,51 @@ work competing for bandwidth, not a demonstrated throughput improvement.
 profile/destination. Do not increase resource limits by launching competing jobs
 against the same stores.
 
+#### Polaris monitoring shell
+
+Monitoring uses the CPU Python and state directory on Eagle. These defaults
+match the PBS wrappers. Refresh project quota separately before submission.
+
 ```bash
-qstat -was1 JOBID
-qstat -x -f JOBID
-watch -n 30 -t "$ECORE_PYTHON scripts/dataset_jobs.py status goes --progress $ECORE_PROJECT_ROOT/ecore-weather/state/goes/study/progress.json"
-sbank-list-transactions -r polaris -p lighthouse-upr -j JOBID
+export ECORE_PROJECT_ROOT="${ECORE_PROJECT_ROOT:-/eagle/lighthouse-upr}"
+export ECORE_CODE_ROOT="${ECORE_CODE_ROOT:-$ECORE_PROJECT_ROOT/ecore-weather/repo}"
+export ECORE_PYTHON="${ECORE_PYTHON:-$ECORE_PROJECT_ROOT/ecore-weather/envs/cpu/bin/python}"
+export ECORE_STATE_ROOT="$ECORE_PROJECT_ROOT/ecore-weather/state"
+export GOES_STATE="${ECORE_GOES_STATE_ROOT:-$ECORE_STATE_ROOT/goes/study}"
+cd "$ECORE_CODE_ROOT"
+export PYTHONPATH="$ECORE_CODE_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+
+qstat -u "$USER"
 ```
+
+`ecore_goes` is the single-node job and `ecore_goes_multi` is the three-node
+job. Substitute the PBS job ID below. PBS answers whether a job is queued,
+running or ended. The filtered command omits the submitted environment.
+[ALCF Running Jobs on Polaris](https://docs.alcf.anl.gov/polaris/running-jobs/).
+
+```bash
+job_id=JOBID
+qstat -xf "$job_id" | grep -E '^[[:space:]]*(Job_Name|job_state|stime|obittime|Exit_status|resources_used[.]walltime|comment) ='
+```
+
+For a **single-node** GOES job, read its root progress file. Open the output
+with `less -S` to scroll through the whole table. For `watch`, select a
+narrower window because the terminal displays only the first screen of rows.
+The date filters use UTC and exclude the end date.
+
+```bash
+"$ECORE_PYTHON" scripts/dataset_jobs.py status goes \
+  --progress "$GOES_STATE/progress.json" --start 2025-01-01 --end 2026-07-01 | less -S
+
+watch -n 30 -t -x -- "$ECORE_PYTHON" scripts/dataset_jobs.py status goes \
+  --progress "$GOES_STATE/progress.json" --start 2026-06-01 --end 2026-07-01
+```
+
+Use the [partition monitor](#submit-and-monitor) for a **three-node** job. Its
+workers publish under `partitions/<label>/progress.json`. The root
+`goes/study/progress.json` can retain weeks-old single-node history while
+those partition files advance. A run marked `complete` describes that run's
+selection. Check the Eagle archives for completion of the whole study.
 
 Progress is an atomic aggregate snapshot published about every 30 seconds and
 at shutdown. Completed band records survive scratch deletion. A closed index
@@ -720,8 +758,9 @@ GOES pipeline. It follows ALCF's [multi-node ensemble pattern](https://docs.alcf
 one one-node hostfile and one `mpiexec` per application. Node setup happens on
 each assigned node; the worker then runs Python directly, without nested MPI.
 The readers, native grids, compression and monthly archive paths are unchanged.
-This is implemented and tested locally. **A real multi-node Polaris pilot and
-scaling measurement have not yet run.** Submission is manual.
+The November 20 production allocation used this wrapper to resume the study.
+It reused published archives and durable checkpoints, so its wall time
+does not establish a scaling measurement. Submission is manual.
 
 The [queue guide](https://docs.alcf.anl.gov/polaris/running-jobs/)
 allows three-node requests in `capacity` and `debug-scaling`; ordinary `debug`
@@ -744,8 +783,8 @@ control the single-node wrapper. The launcher supplies each worker's bounds:
 The launcher rejects duplicate labels, overlaps, gaps and boundaries that split
 a physical month. Keep labels stable when resubmitting. Adjust the split dates
 in the JSON before submission if the latest inventory suggests a better balance.
-The October 27 archive inventory found 2021 through April 2023 complete. The new ranges include already complete intervening months, which are reused, rather than splitting physical store ownership. A node
-which finishes its static partition stays allocated until the job ends.
+The ranges include completed months. Workers verify and reuse those archives.
+A node that finishes its partition stays allocated until the job ends.
 
 Every node uses `jobs/goes_polaris.json`: three normal month owners, one C02 tail,
 64 async downloads, eight local HDF5 readers, sixteen C02 range readers, 4 GiB
@@ -850,7 +889,7 @@ qsub -A "$ECORE_PBS_ACCOUNT" \
   jobs/polaris_goes_multinode.pbs
 ```
 
-This queues a three-node, 24-hour `capacity` job for the JSON partitions above.
+This queues a three-node, 14-hour `capacity` job for the JSON partitions above.
 A local/mock test is not a successful Polaris pilot. For the manual bounded pilot
 instead, use the same script with:
 
@@ -868,18 +907,24 @@ Pilot archives are isolated by partition and removed after successful equality
 and reuse checks. Inspect failure evidence before retrying a failed pilot.
 The pilot does not claim to validate the complete production dataset.
 
-To inspect the allocation use `qstat -f JOBID` and later `qstat -x -f JOBID`.
-To leave the readable per-partition tables running:
+Use the [monitoring shell](#polaris-monitoring-shell) and check PBS by job ID.
+The ensemble record identifies the partition labels and date ranges that ran.
+A queued replacement leaves the previous allocation's record in place until
+its launcher starts.
 
 ```bash
-watch -n 30 -t -- "$ECORE_PYTHON" -m ecore_weather.jobs.jobs_multinode status \
-  --state "$ECORE_PROJECT_ROOT/ecore-weather/state/goes/study"
+"$ECORE_PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["pbs_job_id"])' \
+  "$GOES_STATE/ensemble.json"
+
+"$ECORE_PYTHON" -m ecore_weather.jobs.jobs_multinode status \
+  --state "$GOES_STATE" | less -S
+
+watch -n 30 -t -x -- "$ECORE_PYTHON" -m ecore_weather.jobs.jobs_multinode status \
+  --state "$GOES_STATE" --partition part-2 --start 2026-06-01 --end 2026-07-01
 ```
 
-For a smaller table that fits a terminal, add `--partition part-0` and an
-intersecting window such as `--start 2023-01-01 --end 2023-04-01`. Each table
-retains the existing aggregate bandwidth estimates; these are returned-byte
-rates for that worker, not a sum of per-band rates or a measured NIC speed.
+Choose the partition that owns your window. The example uses the assignments
+above. Each table reports the worker's aggregate returned-byte rate.
 
 A worker pause (75) or failure does not kill the other independent applications.
 The allocation returns 1 if any worker failed, otherwise 75 if any paused, or 0
@@ -930,6 +975,62 @@ The ordinary archive index rebuild remains available for discovery recovery;
 this merge operation also preserves run, task, benchmark and backup history.
 No research archives are deleted by consolidation. The workstation fetch and
 its database remain independent.
+
+### Verify the published GOES study on Eagle
+
+Run this once from the [monitoring shell](#polaris-monitoring-shell). It checks
+each expected native CMIPF path for a nonempty verified publication marker and
+ZIP, including both satellites for April 2025. It trusts the verification
+performed at publication and reads only file metadata. It prints missing paths
+and exits nonzero if any are absent. It uses the standard study ROI and bands.
+
+```bash
+"$ECORE_PYTHON" - "${ECORE_DESTINATION:-$ECORE_PROJECT_ROOT/ecore_eo_datasets}" <<'PY'
+from pathlib import Path
+import sys
+
+from ecore_weather.core.common import PR_BBOX, digest
+
+product = "ABI-L2-CMIPF"
+root = Path(sys.argv[1]) / "goes" / product
+if not root.is_dir():
+    raise SystemExit(f"GOES archive directory not found: {root}")
+
+published, missing = 0, []
+for year in range(2021, 2027):
+    for month in range(1, 7 if year == 2026 else 13):
+        year_month = (year, month)
+        if year_month == (2025, 4):
+            satellites = (16, 19)
+        else:
+            satellites = (16,) if year_month < (2025, 4) else (19,)
+        for satellite in satellites:
+            for band in (1, 2, 3, 7, 8, 9, 10, 13):
+                region = digest(dict(source="goes", product=product, satellite=satellite,
+                                     bbox=PR_BBOX, band=band))
+                folder = (root / f"goes{satellite}" / f"C{band:02d}"
+                          / f"roi-{region}" / f"{year}" / f"{month:02d}")
+                marker, archive = folder / "complete.json", folder / "raw.zarr.zip"
+                if marker.is_file() and marker.stat().st_size and archive.is_file() and archive.stat().st_size:
+                    published += 1
+                else:
+                    missing.append(f"{year}-{month:02d} GOES-{satellite} C{band:02d}  {folder}")
+
+print(f"{published}/{published + len(missing)} expected native GOES archives published")
+for row in missing:
+    print(row)
+sys.exit(bool(missing))
+PY
+```
+
+Use this check before resubmitting. A missing path can also reflect a custom
+destination or selection. Check the job's configuration and any documented
+source gaps before assigning recovery dates.
+
+The November 20 check found all 536 expected archives after PBS job 7863950
+ended with exit 0. All three workers completed and Polaris merged their closed
+snapshots into the project-wide database.
+
 
 <a id="single-node-recovery-for-september-2024-through-april-2025"></a>
 ### Single-node recovery
@@ -1060,24 +1161,45 @@ and are not historical NIC-speed measurements.
 
 ## Read-only database queries
 
+On Polaris, use the [monitoring shell](#polaris-monitoring-shell). Choose the
+closed snapshot for the job and dates you want.
 
-The canonical live monitor is `python scripts/dataset_jobs.py status goes`.
-It checks process identity and reads current aggregate counters. SQL alone cannot
-prove that a job is alive. Use read-only connections, retry brief coordinator
-locks, and never rebuild/replace a live index while the job writes.
+| Run | Snapshot on Eagle |
+|---|---|
+| Successful ensemble merge | `$ECORE_STATE_ROOT/archive_index.duckdb` |
+| Single-node GOES | `$GOES_STATE/archive_index.duckdb` |
+| GOES worker awaiting merge | `$GOES_STATE/partitions/<label>/archive_index.duckdb` |
+| MRMS study | `$ECORE_STATE_ROOT/study/archive_index.duckdb` |
 
-```python
+Check the modification time. These files reflect the latest snapshot or merge.
+Use the progress JSON for live counters and PBS for job state. The
+`results/archive_index.duckdb` default is local to the workstation.
+
+```bash
+archive_index="$ECORE_STATE_ROOT/archive_index.duckdb"
+if test -r "$archive_index"; then
+  ls -lh "$archive_index"
+  "$ECORE_PYTHON" scripts/dataset_jobs.py status goes --index-path "$archive_index" \
+    --cache "${TMPDIR:-/tmp}/ecore-goes-index-$USER.json" \
+    --start 2025-01-01 --end 2026-07-01 | less -S
+  "$ECORE_PYTHON" - "$archive_index" docs/sql/goes_2026_progress.sql <<'PY'
 from pathlib import Path
+import sys
 import duckdb
-with duckdb.connect('results/archive_index.duckdb', read_only=True) as db:
-    display(db.execute(Path('docs/sql/fetch_progress.sql').read_text()).fetchdf())
+
+with duckdb.connect(sys.argv[1], read_only=True) as db:
+    frame = db.execute(Path(sys.argv[2]).read_text()).fetchdf()
+    print(frame.to_string(index=False))
+PY
+else
+  printf 'No readable snapshot at %s. Use partition progress or the Eagle inventory.\n' "$archive_index"
+fi
 ```
 
-The query uses typed band/product-month tasks, not per-source rows or ephemeral
-scratch paths. Unknown attempt timestamps stay null. Completed counts and saved
-checkpoints mean different things; changing table status does not verify an archive.
-`goes_2026_progress.sql` is a fixed-window example for January–June 2026. For other
-windows prefer CLI date filters. Inspect current table schemas before adapting SQL.
+Substitute `docs/sql/fetch_progress.sql` for all recorded months or use the CLI
+date and band filters. A missing task row means the selected snapshot has no
+matching record. Confirm publication directly on Eagle. Never rebuild or
+replace an index while its publisher is active.
 
 HF annual ZIPs are backup containers. They can expose small year manifests without
 restoring all data, but DuckDB does not make Zarr pixels into rows automatically.

@@ -34,13 +34,14 @@ def ordered_height_reads(rows, selection, scratch, metrics, *, processes, admitt
     pool = ProcessPoolExecutor(max_workers=processes, mp_context=multiprocessing.get_context('spawn'),
                                initializer=initialize, initargs=(context,))
     try:
-        # ACHA uses a fixed cropped grid. Probe its real payload, then reserve
-        # double that size for each admitted observation, including IPC copies.
+        # Use the first read to size the queue, then share the budget across
+        # its slots. Per-scan metadata can vary on the same science grid.
         first = pool.submit(read, rows[0]['asset']).result()
-        reserve = 2 * max(1, first[0].nbytes)
-        if reserve > budget:
+        first_cost = 2 * max(1, first[0].nbytes)  # Include IPC copies.
+        if first_cost > budget:
             raise MemoryError('One ACHA payload exceeds the configured ROI budget')
-        limit = min(admitted, budget // reserve)
+        limit = min(admitted, len(rows), budget // first_cost)
+        reserve = budget // limit
         metrics.update(reader_processes=processes, admitted_observations_limit=limit,
                        roi_queue_budget_bytes=budget, roi_reserved_per_observation=reserve)
         pending, ready = {}, {0: first}
@@ -61,7 +62,9 @@ def ordered_height_reads(rows, selection, scratch, metrics, *, processes, admitt
                     except Exception as exc:
                         raise OSError(f"ACHA read failed for {rows[index]['asset'].key}") from exc
                     if result[0].nbytes * 2 > reserve:
-                        raise MemoryError('ACHA payload size changed within a monthly archive')
+                        raise MemoryError(f"ACHA payload for {rows[index]['asset'].key} exceeds "
+                                          f"its {reserve}-byte reservation; increase --height-roi-mib "
+                                          "or reduce --height-prefetch-observations")
                     ready[index] = result
                 continue
             ds, timing, size, elapsed = ready.pop(expected)

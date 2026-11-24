@@ -491,6 +491,33 @@ def test_height_job_clips_partial_month_dates(tmp_path,capsys):
     assert '2026-01-31T23:50:00' in text and '2026-02-01T00:10:00' in text
 
 
+def test_height_queue_accepts_larger_scan_metadata(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from ecore_weather.ingest import height_readers
+
+    def executor(max_workers, **_):
+        return ThreadPoolExecutor(max_workers=max_workers)
+
+    def read(asset):
+        dataset = xr.Dataset({'HT': (('y', 'x'), np.ones((2, 2), dtype='int16')),
+                              'source_metadata': 'x' * asset})
+        return dataset, {}, asset, 0
+
+    monkeypatch.setattr(height_readers, 'ProcessPoolExecutor', executor)
+    monkeypatch.setattr(height_readers, 'read', read)
+    rows = [{'asset': size} for size in (1, 8, 4)]
+    selection = SimpleNamespace(source='goes', bbox=(), product='ABI-L2-ACHAF', bands=())
+    metrics = {}
+    results = list(height_readers.ordered_height_reads(
+        rows, selection, None, metrics, processes=2, admitted=2, roi_mib=1))
+
+    assert [row for row, _ in results] == rows
+    assert results[1][1][0].nbytes > results[0][1][0].nbytes
+    assert metrics['admitted_observations_limit'] == 2
+    assert metrics['roi_reserved_per_observation'] * 2 <= metrics['roi_queue_budget_bytes']
+    assert metrics['read_bytes'] == 13
+
+
 def test_missing_height_stays_unknown_instead_of_zero_or_uncorrected(native_selection,tmp_path):
     from ecore_weather.processing.process_catalog import load_index
     from ecore_weather.processing.process_store import transform_records
